@@ -15,7 +15,7 @@ cursor = conn.cursor()
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
-    balance INTEGER,
+    balance INTEGER DEFAULT 0,
     ref INTEGER
 )
 """)
@@ -24,34 +24,16 @@ cursor.execute("""
 CREATE TABLE IF NOT EXISTS orders (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER,
-    order_text TEXT,
-    price INTEGER
+    text TEXT,
+    price INTEGER,
+    status TEXT
 )
 """)
 
 conn.commit()
 
-# --- ДАННЫЕ ---
-zones = {
-    0: {"1GB": 200, "3GB": 450, "5GB": 650, "10GB": 1100},
-    1: {"1GB": 300, "3GB": 700, "5GB": 1000, "10GB": 1800},
-    2: {"1GB": 700, "3GB": 1100, "5GB": 2000, "10GB": 3500}
-}
-
-countries = {
-    "Германия": 0,
-    "Франция": 0,
-    "Италия": 0,
-    "Испания": 1,
-    "США": 1,
-    "Турция": 0,
-    "Таиланд": 2,
-    "Япония": 2,
-    "ОАЭ": 2,
-    "Казахстан": 1,
-    "Грузия": 1,
-    "Армения": 1
-}
+countries = ["Германия","Франция","Италия","США","Турция","Таиланд","ОАЭ"]
+plans = {"1GB":300,"3GB":700,"5GB":1000,"10GB":1800}
 
 rf_plans = {
     "1GB / 7 дней": 499,
@@ -63,180 +45,129 @@ rf_plans = {
     "100GB / 180 дней": 15990
 }
 
-user_state = {}
-
-# --- КНОПКИ ---
-def main_menu():
+def main():
     m = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    m.add("🇷🇺 Интернет по РФ", "🌍 Путешествия")
-    m.add("👤 Кабинет", "❓ Помощь")
+    m.add("🇷🇺 РФ","🌍 Путешествия")
+    m.add("👤 Кабинет","❓ Помощь")
     return m
 
-def back_menu():
+def nav():
     m = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    m.add("🔙 Назад")
-    m.add("🏠 В начало")
+    m.add("🔙 Назад","🏠 В начало")
     return m
 
-# --- СТАРТ ---
 @bot.message_handler(commands=['start'])
-def start(message):
-    user_id = message.from_user.id
+def start(m):
+    uid = m.from_user.id
+    ref = None
+    if len(m.text.split())>1:
+        ref = int(m.text.split()[1])
 
-    cursor.execute("SELECT * FROM users WHERE user_id=?", (user_id,))
+    cursor.execute("SELECT * FROM users WHERE user_id=?", (uid,))
     if not cursor.fetchone():
-        cursor.execute(
-            "INSERT INTO users (user_id, balance, ref) VALUES (?, ?, ?)",
-            (user_id, 0, None)
-        )
+        cursor.execute("INSERT INTO users VALUES (?,?,?)",(uid,0,ref))
         conn.commit()
 
-    bot.send_message(
-        message.chat.id,
-        "🚀 esimlime\n\n"
-        "📶 Интернет по миру и РФ\n"
-        "🔓 Без VPN\n"
-        "⚡ Подключение за 1 минуту\n\n"
-        "Выбери нужный раздел 👇",
-        reply_markup=main_menu()
-    )
+    bot.send_message(m.chat.id,"🚀 esimlime\nИнтернет без VPN",reply_markup=main())
 
-# --- ОБРАБОТКА ---
-@bot.message_handler(func=lambda message: True)
-def handler(message):
-    text = message.text
+@bot.message_handler(func=lambda m: True)
+def handler(m):
+    t = m.text
 
-    if text == "🏠 В начало":
-        start(message)
-        return
+    if t=="🏠 В начало":
+        start(m)
 
-    if text == "🔙 Назад":
-        start(message)
-        return
+    elif t=="🌍 Путешествия":
+        bot.send_message(m.chat.id,"Напиши страну",reply_markup=nav())
 
-    if text == "🌍 Путешествия":
-        user_state[message.from_user.id] = "search"
-        bot.send_message(
-            message.chat.id,
-            "🔍 Напиши страну (например: Турция)",
-            reply_markup=back_menu()
-        )
-        return
+    elif t=="🇷🇺 РФ":
+        k=types.ReplyKeyboardMarkup(resize_keyboard=True)
+        for n,p in rf_plans.items():
+            k.add(f"{n} — {p}₽")
+        k.add("🔙 Назад","🏠 В начало")
+        bot.send_message(m.chat.id,"РФ тарифы",reply_markup=k)
 
-    if text == "🇷🇺 Интернет по РФ":
-        show_rf(message)
-        return
+    elif t=="👤 Кабинет":
+        uid=m.from_user.id
+        cursor.execute("SELECT balance FROM users WHERE user_id=?", (uid,))
+        bal=cursor.fetchone()[0]
+        bot.send_message(m.chat.id,f"Баланс: {bal}₽")
 
-    if text == "👤 Кабинет":
-        cabinet(message)
-        return
+    elif t=="❓ Помощь":
+        bot.send_message(m.chat.id,"@F_Evdokimov")
 
-    if text == "❓ Помощь":
-        help_msg(message)
-        return
+    elif "₽" in t:
+        buy(m)
 
-    if user_state.get(message.from_user.id) == "search":
-        search_country(message)
-        return
+def buy(m):
+    price=int(m.text.split("—")[1].replace("₽","").strip())
+    uid=m.from_user.id
 
-    if text in countries:
-        show_plans(message, text)
-        return
+    cursor.execute("INSERT INTO orders (user_id,text,price,status) VALUES (?,?,?,?)",
+                   (uid,m.text,price,"wait"))
+    conn.commit()
 
-    if "₽" in text:
-        buy(message)
-        return
-
-# --- ПОИСК ---
-def search_country(message):
-    query = message.text.lower()
-    results = [c for c in countries if query in c.lower()]
-
-    if not results:
-        bot.send_message(message.chat.id, "❌ Страна не найдена", reply_markup=back_menu())
-        return
-
-    m = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    for r in results[:10]:
-        m.add(r)
-
-    m.add("🔙 Назад")
-    m.add("🏠 В начало")
-
-    bot.send_message(message.chat.id, "Выбери страну:", reply_markup=m)
-
-# --- ТАРИФЫ ---
-def show_plans(message, country):
-    zone = countries[country]
-
-    m = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    for gb, price in zones[zone].items():
-        m.add(f"{country} {gb} — {price}₽")
-
-    m.add("🔙 Назад")
-    m.add("🏠 В начало")
-
-    bot.send_message(message.chat.id, f"{country}\nВыбери тариф:", reply_markup=m)
-
-# --- РФ ---
-def show_rf(message):
-    m = types.ReplyKeyboardMarkup(resize_keyboard=True)
-
-    for name, price in rf_plans.items():
-        m.add(f"{name} — {price}₽")
-
-    m.add("🔙 Назад")
-    m.add("🏠 В начало")
-
-    bot.send_message(message.chat.id, "🇷🇺 Тарифы для РФ:", reply_markup=m)
-
-# --- ПОКУПКА ---
-def buy(message):
-    text = message.text
-    price = int(text.split("—")[1].replace("₽", "").strip())
-
-    m = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    m.add("✅ Я оплатил")
-    m.add("🏠 В начало")
+    k=types.ReplyKeyboardMarkup(resize_keyboard=True)
+    k.add("📸 Отправить чек","🏠 В начало")
 
     bot.send_message(
-        message.chat.id,
-        f"{text}\n\n"
-        "💳 Оплата:\n"
-        "89870005569\n"
-        "Т-Банк\n"
-        "Федор Е.\n\n"
-        "После оплаты нажми кнопку",
-        reply_markup=m
+        m.chat.id,
+        f"{m.text}\n\nОплата:\n89870005569\nТ-Банк\nФедор Е.",
+        reply_markup=k
     )
 
-    bot.register_next_step_handler(message, lambda m: wait_payment(m, text, price))
+@bot.message_handler(content_types=['photo'])
+def check(m):
+    uid=m.from_user.id
 
-def wait_payment(message, text, price):
-    if message.text == "✅ Я оплатил":
-        bot.send_message(ADMIN_ID, f"Новый заказ:\n{text}")
-        bot.send_message(message.chat.id, "⏳ Проверяем оплату")
+    cursor.execute("SELECT id,text,price FROM orders WHERE user_id=? AND status='wait' ORDER BY id DESC",(uid,))
+    o=cursor.fetchone()
+    if not o:
+        return
 
-# --- КАБИНЕТ ---
-def cabinet(message):
-    user_id = message.from_user.id
+    oid,text,price=o
 
-    cursor.execute("SELECT COUNT(*) FROM orders WHERE user_id=?", (user_id,))
-    count = cursor.fetchone()[0]
-
-    bot.send_message(
-        message.chat.id,
-        f"📦 Ваши заказы: {count}\n\n"
-        "Реферальная программа скоро будет доступна"
+    k=types.InlineKeyboardMarkup()
+    k.add(
+        types.InlineKeyboardButton("✅ Подтвердить",callback_data=f"ok_{oid}_{uid}_{price}"),
+        types.InlineKeyboardButton("❌ Отклонить",callback_data=f"no_{oid}")
     )
 
-# --- ПОМОЩЬ ---
-def help_msg(message):
-    bot.send_message(
-        message.chat.id,
-        "❓ Поддержка:\n@F_Evdokimov\n\n"
-        "Напиши, если нужна помощь или есть вопросы"
+    bot.send_photo(
+        ADMIN_ID,
+        m.photo[-1].file_id,
+        caption=f"Чек\n{uid}\n{text}",
+        reply_markup=k
     )
 
-# --- ЗАПУСК ---
+    bot.send_message(m.chat.id,"Чек отправлен, ожидайте")
+
+@bot.callback_query_handler(func=lambda c: True)
+def admin(c):
+    if c.data.startswith("ok"):
+        _,oid,uid,price=c.data.split("_")
+        uid=int(uid); price=int(price)
+
+        cursor.execute("UPDATE orders SET status='paid' WHERE id=?", (oid,))
+        cursor.execute("SELECT ref FROM users WHERE user_id=?", (uid,))
+        ref=cursor.fetchone()[0]
+
+        if ref:
+            bonus=int(price*0.1)
+            cursor.execute("UPDATE users SET balance=balance+? WHERE user_id=?", (bonus,ref))
+
+        conn.commit()
+
+        bot.send_message(uid,"✅ Заказ принят, ожидайте QR с инструкцией")
+
+        bot.send_message(uid,"📷 Отправьте QR сюда (администратор)")
+        
+        bot.send_message(ADMIN_ID,f"Отправь QR пользователю {uid}")
+
+    if c.data.startswith("no"):
+        oid=c.data.split("_")[1]
+        cursor.execute("UPDATE orders SET status='cancel' WHERE id=?", (oid,))
+        conn.commit()
+        bot.send_message(ADMIN_ID,"❌ Отклонено")
+
 bot.polling(none_stop=True)
