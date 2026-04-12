@@ -4,7 +4,7 @@ import sqlite3
 import os
 
 TOKEN = os.getenv("TOKEN")
-ADMIN_ID = 1157537072
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
 bot = telebot.TeleBot(TOKEN)
 
