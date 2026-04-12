@@ -32,8 +32,22 @@ CREATE TABLE IF NOT EXISTS orders (
 
 conn.commit()
 
-countries = ["Германия","Франция","Италия","США","Турция","Таиланд","ОАЭ"]
-plans = {"1GB":300,"3GB":700,"5GB":1000,"10GB":1800}
+# --- ДАННЫЕ ---
+popular = ["🇹🇷 Турция","🇦🇪 ОАЭ","🇹🇭 Таиланд","🇬🇪 Грузия","🇰🇿 Казахстан","🇦🇲 Армения","🇮🇩 Индонезия (Бали)"]
+
+regions = {
+    "🌍 Европа": ["🇩🇪 Германия","🇫🇷 Франция","🇮🇹 Италия","🇪🇸 Испания","🇳🇱 Нидерланды"],
+    "🌏 Азия": ["🇹🇭 Таиланд","🇦🇪 ОАЭ","🇯🇵 Япония","🇮🇩 Индонезия (Бали)","🇨🇳 Китай"],
+    "🌎 Америка": ["🇺🇸 США","🇧🇷 Бразилия"],
+    "🌐 СНГ": ["🇬🇪 Грузия","🇰🇿 Казахстан","🇦🇲 Армения","🇺🇿 Узбекистан"]
+}
+
+plans = {
+    "1GB": 300,
+    "3GB": 700,
+    "5GB": 1000,
+    "10GB": 1800
+}
 
 rf_plans = {
     "1GB / 7 дней": 499,
@@ -45,22 +59,25 @@ rf_plans = {
     "100GB / 180 дней": 15990
 }
 
+# --- МЕНЮ ---
 def main():
-    m = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    m.add("🇷🇺 РФ","🌍 Путешествия")
-    m.add("👤 Кабинет","❓ Помощь")
-    return m
+    k = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    k.add("🇷🇺 Интернет РФ","🌍 Путешествия")
+    k.add("👤 Кабинет","❓ Помощь")
+    return k
 
 def nav():
-    m = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    m.add("🔙 Назад","🏠 В начало")
-    return m
+    k = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    k.add("🔙 Назад","🏠 В начало")
+    return k
 
+# --- СТАРТ ---
 @bot.message_handler(commands=['start'])
 def start(m):
     uid = m.from_user.id
     ref = None
-    if len(m.text.split())>1:
+
+    if len(m.text.split()) > 1:
         ref = int(m.text.split()[1])
 
     cursor.execute("SELECT * FROM users WHERE user_id=?", (uid,))
@@ -68,46 +85,111 @@ def start(m):
         cursor.execute("INSERT INTO users VALUES (?,?,?)",(uid,0,ref))
         conn.commit()
 
-    bot.send_message(m.chat.id,"🚀 esimlime\nИнтернет без VPN",reply_markup=main())
+    bot.send_message(
+        m.chat.id,
+        "🚀 esimlime\n\n📶 Интернет по миру и РФ\n🔓 Без VPN\n⚡ Подключение за 1 минуту",
+        reply_markup=main()
+    )
 
+# --- ВИТРИНА ---
+def show_travel(m):
+    k = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    k.add("🔥 Популярные")
+    for r in regions:
+        k.add(r)
+    k.add("🔙 Назад","🏠 В начало")
+
+    bot.send_message(m.chat.id,"🌍 Выбери направление:",reply_markup=k)
+
+def show_popular(m):
+    k = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    for c in popular:
+        k.add(c)
+    k.add("🔙 Назад","🏠 В начало")
+
+    bot.send_message(m.chat.id,"🔥 Популярные страны:",reply_markup=k)
+
+def show_countries(m, region):
+    k = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    for c in regions[region]:
+        k.add(c)
+    k.add("🔙 Назад","🏠 В начало")
+
+    bot.send_message(m.chat.id,region,reply_markup=k)
+
+def show_plans(m, country):
+    k = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    for gb,price in plans.items():
+        k.add(f"{country} {gb} — {price}₽")
+    k.add("🔙 Назад","🏠 В начало")
+
+    bot.send_message(m.chat.id,f"{country} тарифы:",reply_markup=k)
+
+# --- РФ ---
+def show_rf(m):
+    k = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    for n,p in rf_plans.items():
+        k.add(f"{n} — {p}₽")
+    k.add("🔙 Назад","🏠 В начало")
+
+    bot.send_message(m.chat.id,"Тарифы РФ:",reply_markup=k)
+
+# --- ОБРАБОТКА ---
 @bot.message_handler(func=lambda m: True)
 def handler(m):
     t = m.text
 
-    if t=="🏠 В начало":
+    if t == "🏠 В начало":
         start(m)
 
-    elif t=="🌍 Путешествия":
-        bot.send_message(m.chat.id,"Напиши страну",reply_markup=nav())
+    elif t == "🌍 Путешествия":
+        show_travel(m)
 
-    elif t=="🇷🇺 РФ":
-        k=types.ReplyKeyboardMarkup(resize_keyboard=True)
-        for n,p in rf_plans.items():
-            k.add(f"{n} — {p}₽")
-        k.add("🔙 Назад","🏠 В начало")
-        bot.send_message(m.chat.id,"РФ тарифы",reply_markup=k)
+    elif t == "🔥 Популярные":
+        show_popular(m)
 
-    elif t=="👤 Кабинет":
-        uid=m.from_user.id
+    elif t in regions:
+        show_countries(m, t)
+
+    elif t in popular or t in sum(regions.values(), []):
+        show_plans(m, t)
+
+    elif t == "🇷🇺 Интернет РФ":
+        show_rf(m)
+
+    elif t == "👤 Кабинет":
+        uid = m.from_user.id
         cursor.execute("SELECT balance FROM users WHERE user_id=?", (uid,))
-        bal=cursor.fetchone()[0]
-        bot.send_message(m.chat.id,f"Баланс: {bal}₽")
+        bal = cursor.fetchone()[0]
 
-    elif t=="❓ Помощь":
-        bot.send_message(m.chat.id,"@F_Evdokimov")
+        cursor.execute("SELECT COUNT(*) FROM orders WHERE user_id=?", (uid,))
+        orders = cursor.fetchone()[0]
+
+        link = f"https://t.me/esimlimebot?start={uid}"
+
+        bot.send_message(
+            m.chat.id,
+            f"👤 Кабинет\n\nБаланс: {bal}₽\nЗаказы: {orders}\n\nРеферальная ссылка:\n{link}"
+        )
+
+    elif t == "❓ Помощь":
+        bot.send_message(m.chat.id,"Поддержка: @F_Evdokimov")
 
     elif "₽" in t:
         buy(m)
 
+# --- ПОКУПКА ---
 def buy(m):
-    price=int(m.text.split("—")[1].replace("₽","").strip())
-    uid=m.from_user.id
+    uid = m.from_user.id
+    price = int(m.text.split("—")[1].replace("₽","").strip())
 
-    cursor.execute("INSERT INTO orders (user_id,text,price,status) VALUES (?,?,?,?)",
-                   (uid,m.text,price,"wait"))
+    cursor.execute(
+        "INSERT INTO orders (user_id,text,price,status) VALUES (?,?,?,?)",
+        (uid,m.text,price,"wait")
+    )
     conn.commit()
 
-    k=types.ReplyKeyboardMarkup(resize_keyboard=True)
+    k = types.ReplyKeyboardMarkup(resize_keyboard=True)
     k.add("📸 Отправить чек","🏠 В начало")
 
     bot.send_message(
@@ -116,18 +198,19 @@ def buy(m):
         reply_markup=k
     )
 
+# --- ЧЕК ---
 @bot.message_handler(content_types=['photo'])
 def check(m):
-    uid=m.from_user.id
+    uid = m.from_user.id
 
     cursor.execute("SELECT id,text,price FROM orders WHERE user_id=? AND status='wait' ORDER BY id DESC",(uid,))
-    o=cursor.fetchone()
+    o = cursor.fetchone()
     if not o:
         return
 
-    oid,text,price=o
+    oid,text,price = o
 
-    k=types.InlineKeyboardMarkup()
+    k = types.InlineKeyboardMarkup()
     k.add(
         types.InlineKeyboardButton("✅ Подтвердить",callback_data=f"ok_{oid}_{uid}_{price}"),
         types.InlineKeyboardButton("❌ Отклонить",callback_data=f"no_{oid}")
@@ -142,32 +225,32 @@ def check(m):
 
     bot.send_message(m.chat.id,"Чек отправлен, ожидайте")
 
+# --- АДМИН ---
 @bot.callback_query_handler(func=lambda c: True)
 def admin(c):
     if c.data.startswith("ok"):
-        _,oid,uid,price=c.data.split("_")
-        uid=int(uid); price=int(price)
+        _,oid,uid,price = c.data.split("_")
+        uid = int(uid); price = int(price)
 
         cursor.execute("UPDATE orders SET status='paid' WHERE id=?", (oid,))
+
         cursor.execute("SELECT ref FROM users WHERE user_id=?", (uid,))
-        ref=cursor.fetchone()[0]
+        ref = cursor.fetchone()[0]
 
         if ref:
-            bonus=int(price*0.1)
-            cursor.execute("UPDATE users SET balance=balance+? WHERE user_id=?", (bonus,ref))
+            bonus = int(price * 0.1)
+            cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (bonus, ref))
 
         conn.commit()
 
         bot.send_message(uid,"✅ Заказ принят, ожидайте QR с инструкцией")
-
-        bot.send_message(uid,"📷 Отправьте QR сюда (администратор)")
-        
         bot.send_message(ADMIN_ID,f"Отправь QR пользователю {uid}")
 
-    if c.data.startswith("no"):
-        oid=c.data.split("_")[1]
+    elif c.data.startswith("no"):
+        oid = c.data.split("_")[1]
         cursor.execute("UPDATE orders SET status='cancel' WHERE id=?", (oid,))
         conn.commit()
         bot.send_message(ADMIN_ID,"❌ Отклонено")
 
+# --- ЗАПУСК ---
 bot.polling(none_stop=True)
