@@ -1,27 +1,24 @@
 import os
 import sqlite3
-from typing import Optional, Tuple, List, Dict
+from typing import Optional, Dict, List, Tuple
 
 import telebot
 from telebot import types
 
-# =========================
-# CONFIG
-# =========================
 TOKEN = os.getenv("TOKEN")
 ADMIN_ID_RAW = os.getenv("ADMIN_ID")
 
 if not TOKEN:
-    raise ValueError("TOKEN not found in environment variables")
+    raise ValueError("TOKEN not found")
 if not ADMIN_ID_RAW:
-    raise ValueError("ADMIN_ID not found in environment variables")
+    raise ValueError("ADMIN_ID not found")
 
 ADMIN_ID = int(ADMIN_ID_RAW)
 
 bot = telebot.TeleBot(TOKEN)
 
 # =========================
-# DATABASE
+# DB
 # =========================
 conn = sqlite3.connect("db.db", check_same_thread=False)
 cursor = conn.cursor()
@@ -49,8 +46,6 @@ conn.commit()
 # =========================
 # DATA
 # =========================
-
-# РФ тарифы от пользователя
 RF_PLANS = {
     "1GB / 7 дней": 499,
     "3GB / 30 дней": 990,
@@ -61,7 +56,6 @@ RF_PLANS = {
     "100GB / 180 дней": 15990,
 }
 
-# Travel тарифы по зонам из таблицы
 ZONE_PRICES = {
     0: {
         "1GB / 7 дней": 200,
@@ -129,7 +123,6 @@ ZONE_PRICES = {
     },
 }
 
-# Страны по зонам
 ZONE_COUNTRIES = {
     0: [
         "Austria", "Belgium", "Bulgaria", "Croatia", "Cyprus", "Czech Republic",
@@ -188,9 +181,13 @@ ZONE_COUNTRIES = {
     ],
 }
 
-# Региональная витрина
+COUNTRY_TO_ZONE: Dict[str, int] = {}
+for zone, countries in ZONE_COUNTRIES.items():
+    for c in countries:
+        COUNTRY_TO_ZONE[c] = zone
+
 REGIONS = {
-    "🔥 Популярные": [
+    "🔥 Популярные страны": [
         "Turkey", "United Arab Emirates", "Thailand", "Georgia",
         "Kazakhstan", "Armenia", "Spain", "Italy"
     ],
@@ -218,26 +215,8 @@ REGIONS = {
         "Colombia", "Ecuador", "Peru", "Panama", "Paraguay", "Uruguay",
         "Costa Rica", "El Salvador"
     ],
-    "🌴 Карибы": [
-        "Anguilla", "Antigua and Barbuda", "Bahamas carib", "Barbados",
-        "British Virgin Islands", "Cayman Islands", "Dominica", "Grenada",
-        "Jamaica", "Puerto Rico Carib", "Saint Kitts and Nevis",
-        "Saint Lucia", "Turks and Caicos Islands carib"
-    ],
-    "🌍 Африка": [
-        "Algeria", "Benin", "Côte d'Ivoire", "Egypt", "Gabon", "Ghana",
-        "Guinea", "Guinea-Bissau", "Kenya", "Liberia", "Madagascar",
-        "Malawi", "Mauritius", "Morocco", "Nigeria", "Reunion",
-        "Rwanda", "Seychelles", "South Africa", "Sudan", "Tunisia",
-        "Tanzania", "Uganda", "Zambia"
-    ],
-    "🌏 Другое": [
-        "Australia", "New Zealand", "Fiji", "Samoa", "Guam",
-        "Maldives", "Mongolia", "Papua New Guinea", "Tonga"
-    ],
 }
 
-# Emoji mapping for nicer display
 EMOJI = {
     "Turkey": "🇹🇷", "United Arab Emirates": "🇦🇪", "Thailand": "🇹🇭",
     "Georgia": "🇬🇪", "Kazakhstan": "🇰🇿", "Armenia": "🇦🇲", "Spain": "🇪🇸",
@@ -251,38 +230,16 @@ EMOJI = {
     "Malaysia": "🇲🇾", "Saudi Arabia": "🇸🇦", "Qatar": "🇶🇦",
     "Egypt": "🇪🇬", "Tunisia": "🇹🇳", "South Africa": "🇿🇦",
     "New Zealand": "🇳🇿", "Israel": "🇮🇱", "Ukraine": "🇺🇦",
-    "Azerbaijan": "🇦🇿", "Kyrgyzstan": "🇰🇬", "Tajikistan": "🇹🇯",
-    "Uzbekistan": "🇺🇿", "Romania": "🇷🇴", "Ireland": "🇮🇪",
-    "Belgium": "🇧🇪", "Czech Republic": "🇨🇿", "Denmark": "🇩🇰",
-    "Estonia": "🇪🇪", "Finland": "🇫🇮", "Hungary": "🇭🇺",
-    "Latvia": "🇱🇻", "Lithuania": "🇱🇹", "Luxembourg": "🇱🇺",
-    "Malta": "🇲🇹", "Norway": "🇳🇴", "Slovakia": "🇸🇰",
-    "Slovenia": "🇸🇮", "Sweden": "🇸🇪", "Bulgaria": "🇧🇬",
-    "Cyprus": "🇨🇾", "Montenegro": "🇲🇪", "Serbia": "🇷🇸",
-    "Moldova": "🇲🇩", "Albania": "🇦🇱", "Iceland": "🇮🇸",
-    "Pakistan": "🇵🇰", "Bangladesh": "🇧🇩", "Sri Lanka": "🇱🇰",
-    "Philippines": "🇵🇭", "Vietnam": "🇻🇳", "Cambodia": "🇰🇭",
-    "Morocco": "🇲🇦", "Kenya": "🇰🇪",
 }
-
-def pretty_country(name: str) -> str:
-    return f"{EMOJI.get(name, '🌐')} {name}"
-
-COUNTRY_TO_ZONE: Dict[str, int] = {}
-for zone_id, country_list in ZONE_COUNTRIES.items():
-    for country_name in country_list:
-        COUNTRY_TO_ZONE[country_name] = zone_id
-
-TRAVEL_COUNTRIES = sorted(COUNTRY_TO_ZONE.keys())
 
 REF_PERCENT = 10
 
 # =========================
 # STATE
 # =========================
-user_nav: Dict[int, List[Tuple[str, Optional[str]]]] = {}
-user_mode: Dict[int, Optional[str]] = {}         # None / "search"
-admin_qr_target: Dict[int, int] = {}             # admin_id -> target user_id
+history: Dict[int, List[Tuple[str, Optional[str]]]] = {}
+search_mode: Dict[int, bool] = {}
+admin_send_qr_target: Optional[int] = None
 
 # =========================
 # HELPERS
@@ -299,323 +256,285 @@ def ensure_user(user_id: int, ref: Optional[int] = None) -> None:
     )
     conn.commit()
 
-def set_nav(user_id: int, screen: str, payload: Optional[str] = None, reset: bool = False) -> None:
-    if reset:
-        user_nav[user_id] = [(screen, payload)]
-        return
-    stack = user_nav.setdefault(user_id, [])
+def country_label(country: str) -> str:
+    return f"{EMOJI.get(country, '🌐')} {country}"
+
+def push_screen(user_id: int, screen: str, payload: Optional[str] = None) -> None:
+    stack = history.setdefault(user_id, [])
     if not stack or stack[-1] != (screen, payload):
         stack.append((screen, payload))
 
-def current_nav(user_id: int) -> Tuple[str, Optional[str]]:
-    stack = user_nav.get(user_id, [])
-    if not stack:
-        return ("main", None)
-    return stack[-1]
+def reset_to_main(user_id: int) -> None:
+    history[user_id] = [("main", None)]
+    search_mode[user_id] = False
 
 def go_back(user_id: int) -> Tuple[str, Optional[str]]:
-    stack = user_nav.setdefault(user_id, [("main", None)])
+    stack = history.setdefault(user_id, [("main", None)])
     if len(stack) > 1:
         stack.pop()
     return stack[-1]
 
-def main_menu() -> types.ReplyKeyboardMarkup:
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add("🇷🇺 Интернет РФ", "🌍 Путешествия")
-    kb.add("👤 Личный кабинет", "❓ Помощь")
-    return kb
-
-def nav_menu() -> types.ReplyKeyboardMarkup:
+def nav_keyboard() -> types.ReplyKeyboardMarkup:
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add("🔙 Назад", "🏠 В начало")
     return kb
 
-def format_price(value: int) -> str:
-    return f"{value}₽"
+def main_keyboard() -> types.ReplyKeyboardMarkup:
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add("🇷🇺 eSIM для России", "✈️ eSIM для путешествий")
+    kb.add("📘 Инструкции")
+    kb.add("👤 Личный кабинет", "❓ Помощь")
+    return kb
 
-def get_last_waiting_order(user_id: int) -> Optional[Tuple[int, str, int, str]]:
-    cursor.execute("""
-        SELECT id, text, price, status
-        FROM orders
-        WHERE user_id=? AND status IN ('awaiting_receipt', 'pending_review')
-        ORDER BY id DESC
-        LIMIT 1
-    """, (user_id,))
-    return cursor.fetchone()
-
-def render_screen(chat_id: int, user_id: int, screen: str, payload: Optional[str] = None, push: bool = True) -> None:
-    if screen == "main":
-        render_main(chat_id, user_id, push=push)
-    elif screen == "travel_home":
-        render_travel_home(chat_id, user_id, push=push)
-    elif screen == "region":
-        render_region(chat_id, user_id, payload or "", push=push)
-    elif screen == "country":
-        render_country(chat_id, user_id, payload or "", push=push)
-    elif screen == "search_prompt":
-        render_search_prompt(chat_id, user_id, push=push)
-    elif screen == "search_results":
-        render_search_results(chat_id, user_id, payload or "", push=push)
-    elif screen == "rf":
-        render_rf(chat_id, user_id, push=push)
-    elif screen == "cabinet":
-        render_cabinet(chat_id, user_id, push=push)
-    elif screen == "help":
-        render_help(chat_id, user_id, push=push)
-    elif screen == "rf_instruction":
-        render_rf_instruction(chat_id, user_id, push=push)
-    elif screen == "travel_instruction":
-        render_travel_instruction(chat_id, user_id, push=push)
-    else:
-        render_main(chat_id, user_id, push=push)
+def parse_price_from_order_text(text: str) -> Optional[int]:
+    try:
+        return int(text.split("—")[1].replace("₽", "").strip())
+    except Exception:
+        return None
 
 # =========================
-# RENDERS
+# SCREENS
 # =========================
-def render_main(chat_id: int, user_id: int, push: bool = True) -> None:
-    user_mode[user_id] = None
-    if push:
-        set_nav(user_id, "main", None, reset=True)
+def show_main(chat_id: int, user_id: int, add_to_history: bool = True) -> None:
+    search_mode[user_id] = False
+    if add_to_history:
+        reset_to_main(user_id)
 
-    text = (
-        "🚀 esimlime\n\n"
-        "Здесь можно купить eSIM:\n"
-        "• для путешествий\n"
-        "• для пользования в России без VPN\n\n"
-        "Выберите раздел 👇"
+    bot.send_message(
+        chat_id,
+        "👋 Добро пожаловать в esimlime\n\n"
+        "Здесь можно быстро подключить eSIM:\n"
+        "• для путешествий за границу\n"
+        "• для интернета в России без VPN\n\n"
+        "Почему это удобно:\n"
+        "• не нужно искать местную сим-карту\n"
+        "• можно подключить заранее\n"
+        "• установка занимает всего несколько минут\n\n"
+        "Выберите нужный раздел ниже 👇",
+        reply_markup=main_keyboard()
     )
-    bot.send_message(chat_id, text, reply_markup=main_menu())
 
-def render_travel_home(chat_id: int, user_id: int, push: bool = True) -> None:
-    user_mode[user_id] = None
-    if push:
-        set_nav(user_id, "travel_home")
+def show_travel_home(chat_id: int, user_id: int, add_to_history: bool = True) -> None:
+    search_mode[user_id] = False
+    if add_to_history:
+        push_screen(user_id, "travel")
 
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add("🔥 Популярные")
+    kb.add("🔥 Популярные страны")
     kb.add("🌍 Европа", "🌏 Азия")
     kb.add("🌐 СНГ", "🌎 Америка")
-    kb.add("🌴 Карибы", "🌍 Африка")
-    kb.add("🌏 Другое", "🔎 Поиск страны")
+    kb.add("🔎 Поиск страны")
     kb.add("✈️ Инструкция для путешествий")
     kb.add("🔙 Назад", "🏠 В начало")
 
     bot.send_message(
         chat_id,
-        "🌍 Путешествия\n\nВыберите раздел:",
+        "✈️ eSIM для путешествий\n\n"
+        "Выберите страну или регион.\n"
+        "Сначала можно посмотреть популярные направления — это самый быстрый вариант 👇",
         reply_markup=kb
     )
 
-def render_region(chat_id: int, user_id: int, region: str, push: bool = True) -> None:
-    user_mode[user_id] = None
-    if push:
-        set_nav(user_id, "region", region)
+def show_region(chat_id: int, user_id: int, region: str, add_to_history: bool = True) -> None:
+    search_mode[user_id] = False
+    if add_to_history:
+        push_screen(user_id, "region", region)
 
-    countries = REGIONS.get(region, [])
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    for country in countries:
-        kb.add(pretty_country(country))
+    for country in REGIONS.get(region, []):
+        kb.add(country_label(country))
     kb.add("🔙 Назад", "🏠 В начало")
 
     bot.send_message(chat_id, f"{region}\n\nВыберите страну:", reply_markup=kb)
 
-def render_country(chat_id: int, user_id: int, country: str, push: bool = True) -> None:
-    user_mode[user_id] = None
-    if push:
-        set_nav(user_id, "country", country)
+def show_country(chat_id: int, user_id: int, country: str, add_to_history: bool = True) -> None:
+    search_mode[user_id] = False
+    if add_to_history:
+        push_screen(user_id, "country", country)
 
     zone = COUNTRY_TO_ZONE.get(country)
     if zone is None:
-        bot.send_message(chat_id, "Страна пока недоступна.", reply_markup=nav_menu())
+        bot.send_message(chat_id, "Страна пока недоступна.", reply_markup=nav_keyboard())
         return
 
-    prices = ZONE_PRICES[zone]
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    for plan_name, price in prices.items():
-        kb.add(f"{pretty_country(country)} | {plan_name} — {format_price(price)}")
+    for plan_name, price in ZONE_PRICES[zone].items():
+        kb.add(f"{country_label(country)} | {plan_name} — {price}₽")
     kb.add("✈️ Инструкция для путешествий")
     kb.add("🔙 Назад", "🏠 В начало")
 
-    bot.send_message(
-        chat_id,
-        f"{pretty_country(country)}\n\nВыберите тариф:",
-        reply_markup=kb
-    )
+    bot.send_message(chat_id, f"{country_label(country)}\n\nВыберите тариф:", reply_markup=kb)
 
-def render_search_prompt(chat_id: int, user_id: int, push: bool = True) -> None:
-    user_mode[user_id] = "search"
-    if push:
-        set_nav(user_id, "search_prompt")
-
-    bot.send_message(
-        chat_id,
-        "🔎 Напишите страну, например:\nTurkey\nThailand\nItaly\nUnited States",
-        reply_markup=nav_menu()
-    )
-
-def render_search_results(chat_id: int, user_id: int, query: str, push: bool = True) -> None:
-    user_mode[user_id] = "search"
-    if push:
-        set_nav(user_id, "search_results", query)
-
-    q = query.lower().strip()
-    results = [c for c in TRAVEL_COUNTRIES if q in c.lower()]
-
-    if not results:
-        bot.send_message(chat_id, "Ничего не найдено. Попробуйте другое название страны.", reply_markup=nav_menu())
-        return
-
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    for country in results[:20]:
-        kb.add(pretty_country(country))
-    kb.add("🔙 Назад", "🏠 В начало")
-
-    bot.send_message(chat_id, "Результаты поиска:", reply_markup=kb)
-
-def render_rf(chat_id: int, user_id: int, push: bool = True) -> None:
-    user_mode[user_id] = None
-    if push:
-        set_nav(user_id, "rf")
+def show_rf(chat_id: int, user_id: int, add_to_history: bool = True) -> None:
+    search_mode[user_id] = False
+    if add_to_history:
+        push_screen(user_id, "rf")
 
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     for plan_name, price in RF_PLANS.items():
-        kb.add(f"{plan_name} — {format_price(price)}")
+        kb.add(f"{plan_name} — {price}₽")
     kb.add("📱 Инструкция для России")
     kb.add("🔙 Назад", "🏠 В начало")
 
-    bot.send_message(chat_id, "🇷🇺 Тарифы для России:", reply_markup=kb)
+    bot.send_message(
+        chat_id,
+        "🇷🇺 eSIM для России\n\n"
+        "Подходит для интернета в России без VPN.\n"
+        "Выберите подходящий тариф ниже 👇",
+        reply_markup=kb
+    )
 
-def render_cabinet(chat_id: int, user_id: int, push: bool = True) -> None:
-    user_mode[user_id] = None
-    if push:
-        set_nav(user_id, "cabinet")
+def show_help(chat_id: int, user_id: int, add_to_history: bool = True) -> None:
+    search_mode[user_id] = False
+    if add_to_history:
+        push_screen(user_id, "help")
+
+    bot.send_message(
+        chat_id,
+        "❓ Помощь\n\nПо всем вопросам: @F_Evdokimov",
+        reply_markup=nav_keyboard()
+    )
+
+def show_cabinet(chat_id: int, user_id: int, add_to_history: bool = True) -> None:
+    search_mode[user_id] = False
+    if add_to_history:
+        push_screen(user_id, "cabinet")
 
     cursor.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
     row = cursor.fetchone()
     balance = row[0] if row else 0
 
     cursor.execute("SELECT COUNT(*) FROM orders WHERE user_id=? AND status='paid'", (user_id,))
-    paid_orders = cursor.fetchone()[0]
+    orders_count = cursor.fetchone()[0]
 
     cursor.execute("SELECT COUNT(*) FROM users WHERE ref=?", (user_id,))
-    referrals = cursor.fetchone()[0]
-
-    cursor.execute("""
-        SELECT text
-        FROM orders
-        WHERE user_id=? AND status='paid'
-        ORDER BY id DESC
-        LIMIT 5
-    """, (user_id,))
-    last_orders = [r[0] for r in cursor.fetchall()]
+    ref_count = cursor.fetchone()[0]
 
     ref_link = f"https://t.me/esimlimebot?start={user_id}"
 
-    text = (
-        "👤 Личный кабинет\n\n"
+    bot.send_message(
+        chat_id,
+        f"👤 Личный кабинет\n\n"
         f"Баланс: {balance}₽\n"
-        f"Куплено eSIM: {paid_orders}\n"
-        f"Рефералов: {referrals}\n\n"
-        f"Реферальная ссылка:\n{ref_link}\n"
+        f"Куплено eSIM: {orders_count}\n"
+        f"Рефералов: {ref_count}\n\n"
+        f"Реферальная ссылка:\n{ref_link}",
+        reply_markup=nav_keyboard()
     )
 
-    if last_orders:
-        text += "\nПоследние покупки:\n" + "\n".join([f"• {o}" for o in last_orders])
+def show_instructions_menu(chat_id: int, user_id: int, add_to_history: bool = True) -> None:
+    search_mode[user_id] = False
+    if add_to_history:
+        push_screen(user_id, "instructions")
 
-    bot.send_message(chat_id, text, reply_markup=nav_menu())
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add("📱 Инструкция для России")
+    kb.add("✈️ Инструкция для путешествий")
+    kb.add("🔙 Назад", "🏠 В начало")
 
-def render_help(chat_id: int, user_id: int, push: bool = True) -> None:
-    user_mode[user_id] = None
-    if push:
-        set_nav(user_id, "help")
+    bot.send_message(chat_id, "📘 Инструкции\n\nВыберите нужную инструкцию:", reply_markup=kb)
+
+def show_rf_instruction(chat_id: int, user_id: int, add_to_history: bool = True) -> None:
+    search_mode[user_id] = False
+    if add_to_history:
+        push_screen(user_id, "rf_instruction")
 
     text = (
-        "❓ Помощь\n\n"
-        "По всем вопросам: @F_Evdokimov\n\n"
-        "Если не получается установить eSIM или нужна помощь с покупкой — напишите."
+        "📱 Инструкция по установке eSIM\n\n"
+        "Проверьте совместимость телефона.\n"
+        "Наберите на телефоне команду: *#06#\n"
+        "На экране появятся серийные номера (IMEI и др.).\n"
+        "Если в списке есть строка EID — смартфон оснащён модулем eSIM.\n\n"
+        "Выберите и оплатите тариф.\n\n"
+        "Получите письмо с eSIM.\n\n"
+        "Установите eSIM.\n"
+        "Откройте камеру, просканируйте QR-код — профиль активируется автоматически.\n\n"
+        "Если через камеру не активировалось, то попробуйте отсканировать камерой с экрана другого устройства.\n\n"
+        "Активация и включение интернета:\n"
+        "• Включите роуминг, в настройках телефона на eSIM.\n"
+        "• Вам придет сообщение от оператора со ссылкой на активацию.\n"
+        "• Переключите передачу данных на eSIM.\n"
+        "• Активация может занять до 24 часов, но обычно происходит мгновенно.\n\n"
+        "Все, вы великолепны. Хорошего пользования.\n"
+        "Если трафик закончился, напишите мне и подключим еще.\n\n"
+        "Важно, во время тестов «белых списков» так же работать возможно не будет, т.к. блокируется именно поток данных.\n\n"
+        "📌 После установки:\n"
+        "1. Включите роуминг в настройках eSIM\n"
+        "2. По прилету установите eSIM для передачи данных\n\n"
+        "⚠️ QR-код одноразовый — не удаляйте eSIM с устройства, восстановить доступ не получится."
     )
-    bot.send_message(chat_id, text, reply_markup=nav_menu())
+    bot.send_message(chat_id, text, reply_markup=nav_keyboard())
 
-def render_rf_instruction(chat_id: int, user_id: int, push: bool = True) -> None:
-    user_mode[user_id] = None
-    if push:
-        set_nav(user_id, "rf_instruction")
-
-    text = (
-        "📱 Инструкция по установке eSIM для России\n\n"
-        "1. Проверьте совместимость телефона.\n"
-        "Наберите команду *#06#\n"
-        "Если в списке есть строка EID — телефон поддерживает eSIM.\n\n"
-        "2. Выберите и оплатите тариф.\n\n"
-        "3. Получите QR-код.\n\n"
-        "4. Установите eSIM.\n"
-        "Откройте камеру, отсканируйте QR-код — профиль активируется автоматически.\n\n"
-        "5. Если через камеру не активировалось, попробуйте отсканировать с экрана другого устройства.\n\n"
-        "6. Включите роуминг на eSIM и переключите передачу данных на eSIM.\n"
-        "Активация может занять до 24 часов, но обычно происходит быстрее.\n\n"
-        "Если трафик закончится — напишите мне, подключим еще."
-    )
-    bot.send_message(chat_id, text, reply_markup=nav_menu())
-
-def render_travel_instruction(chat_id: int, user_id: int, push: bool = True) -> None:
-    user_mode[user_id] = None
-    if push:
-        set_nav(user_id, "travel_instruction")
+def show_travel_instruction(chat_id: int, user_id: int, add_to_history: bool = True) -> None:
+    search_mode[user_id] = False
+    if add_to_history:
+        push_screen(user_id, "travel_instruction")
 
     text = (
         "✈️ Инструкция для путешествий\n\n"
         "1. Выберите страну и тариф.\n"
-        "2. Оплатите заказ.\n"
-        "3. Отправьте чек скриншотом.\n"
-        "4. Дождитесь подтверждения.\n"
+        "2. Проверьте, что телефон поддерживает eSIM.\n"
+        "3. После оплаты отправьте чек.\n"
+        "4. Дождитесь подтверждения заказа.\n"
         "5. Получите QR-код и инструкцию.\n"
-        "6. Установите eSIM и включите роуминг на этой eSIM.\n"
-        "7. Переключите интернет на eSIM.\n\n"
-        "Если нужна помощь — напишите @F_Evdokimov"
+        "6. Установите eSIM до поездки или по прилету.\n"
+        "7. Включите роуминг на eSIM.\n"
+        "8. Переключите передачу данных на eSIM.\n\n"
+        "📌 После установки:\n"
+        "• включите роуминг на eSIM\n"
+        "• используйте eSIM для передачи данных\n\n"
+        "⚠️ QR-код одноразовый — не удаляйте eSIM с устройства, восстановить доступ не получится.\n\n"
+        "Если нужна помощь — @F_Evdokimov"
     )
-    bot.send_message(chat_id, text, reply_markup=nav_menu())
+    bot.send_message(chat_id, text, reply_markup=nav_keyboard())
 
-# =========================
-# ORDER FLOW
-# =========================
-def create_order_and_request_payment(chat_id: int, user_id: int, order_text: str, price: int) -> None:
-    cursor.execute(
-        "INSERT INTO orders (user_id, text, price, status) VALUES (?, ?, ?, ?)",
-        (user_id, order_text, price, "awaiting_receipt")
+def show_search(chat_id: int, user_id: int, add_to_history: bool = True) -> None:
+    search_mode[user_id] = True
+    if add_to_history:
+        push_screen(user_id, "search")
+
+    bot.send_message(
+        chat_id,
+        "🔎 Напишите страну, например:\nTurkey\nThailand\nItaly\nUnited States",
+        reply_markup=nav_keyboard()
     )
-    conn.commit()
 
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add("📸 Отправить чек")
-    kb.add("🔙 Назад", "🏠 В начало")
+def render_from_state(chat_id: int, user_id: int, state: Tuple[str, Optional[str]]) -> None:
+    screen, payload = state
 
-    text = (
-        f"🧾 Ваш заказ:\n{order_text}\n\n"
-        "Оплата по СБП:\n"
-        "Номер: 89870005569\n"
-        "Банк: Т-Банк\n"
-        "Получатель: Федор Е.\n\n"
-        "После оплаты нажмите «📸 Отправить чек» и отправьте скриншот одним сообщением."
-    )
-    bot.send_message(chat_id, text, reply_markup=kb)
-
-def parse_order_text(text: str) -> Optional[Tuple[str, int]]:
-    if "—" not in text:
-        return None
-    try:
-        price = int(text.split("—")[1].replace("₽", "").strip())
-        return text, price
-    except Exception:
-        return None
+    if screen == "main":
+        show_main(chat_id, user_id, add_to_history=False)
+    elif screen == "travel":
+        show_travel_home(chat_id, user_id, add_to_history=False)
+    elif screen == "region":
+        show_region(chat_id, user_id, payload or "", add_to_history=False)
+    elif screen == "country":
+        show_country(chat_id, user_id, payload or "", add_to_history=False)
+    elif screen == "rf":
+        show_rf(chat_id, user_id, add_to_history=False)
+    elif screen == "help":
+        show_help(chat_id, user_id, add_to_history=False)
+    elif screen == "cabinet":
+        show_cabinet(chat_id, user_id, add_to_history=False)
+    elif screen == "instructions":
+        show_instructions_menu(chat_id, user_id, add_to_history=False)
+    elif screen == "rf_instruction":
+        show_rf_instruction(chat_id, user_id, add_to_history=False)
+    elif screen == "travel_instruction":
+        show_travel_instruction(chat_id, user_id, add_to_history=False)
+    elif screen == "search":
+        show_search(chat_id, user_id, add_to_history=False)
+    else:
+        show_main(chat_id, user_id, add_to_history=False)
 
 # =========================
 # START
 # =========================
 @bot.message_handler(commands=["start"])
-def start_cmd(message):
-    uid = message.from_user.id
-    ref = None
+def start_handler(message):
+    user_id = message.from_user.id
 
+    ref = None
     parts = message.text.split()
     if len(parts) > 1:
         try:
@@ -623,14 +542,16 @@ def start_cmd(message):
         except ValueError:
             ref = None
 
-    ensure_user(uid, ref)
-    render_main(message.chat.id, uid, push=True)
+    ensure_user(user_id, ref)
+    show_main(message.chat.id, user_id, add_to_history=True)
 
 # =========================
-# ADMIN COMMANDS
+# ADMIN SEND QR
 # =========================
 @bot.message_handler(commands=["sendqr"])
-def send_qr_command(message):
+def sendqr_handler(message):
+    global admin_send_qr_target
+
     if message.from_user.id != ADMIN_ID:
         return
 
@@ -640,183 +561,193 @@ def send_qr_command(message):
         return
 
     try:
-        target_user_id = int(parts[1])
+        admin_send_qr_target = int(parts[1])
     except ValueError:
         bot.send_message(message.chat.id, "USER_ID должен быть числом.")
         return
 
-    admin_qr_target[message.from_user.id] = target_user_id
     bot.send_message(
         message.chat.id,
-        f"Теперь отправь ОДНО фото QR-кода, и я перешлю его пользователю {target_user_id} с инструкцией."
+        f"Теперь отправь ОДНО фото QR-кода. Я перешлю его пользователю {admin_send_qr_target}."
     )
 
 # =========================
 # TEXT HANDLER
 # =========================
-@bot.message_handler(func=lambda m: m.content_type == "text")
+@bot.message_handler(content_types=["text"])
 def text_handler(message):
-    uid = message.from_user.id
+    user_id = message.from_user.id
+    chat_id = message.chat.id
     text = message.text.strip()
 
-    ensure_user(uid)
+    ensure_user(user_id)
 
-    # Глобальная навигация
     if text == "🏠 В начало":
-        render_main(message.chat.id, uid, push=True)
+        show_main(chat_id, user_id, add_to_history=True)
         return
 
     if text == "🔙 Назад":
-        screen, payload = go_back(uid)
-        render_screen(message.chat.id, uid, screen, payload, push=False)
+        state = go_back(user_id)
+        render_from_state(chat_id, user_id, state)
         return
 
-    # Админ в режиме ожидания QR, но отправил текст
-    if uid == ADMIN_ID and uid in admin_qr_target:
-        bot.send_message(message.chat.id, "Сейчас жду от тебя фото QR-кода. Либо отправь фото, либо сначала закончи текущую отправку.")
+    if text == "🇷🇺 eSIM для России":
+        show_rf(chat_id, user_id, add_to_history=True)
         return
 
-    # Поиск страны
-    if user_mode.get(uid) == "search":
-        if text:
-            render_search_results(message.chat.id, uid, text, push=True)
-            return
-
-    # Главное меню
-    if text == "🇷🇺 Интернет РФ":
-        render_rf(message.chat.id, uid, push=True)
+    if text == "✈️ eSIM для путешествий":
+        show_travel_home(chat_id, user_id, add_to_history=True)
         return
 
-    if text == "🌍 Путешествия":
-        render_travel_home(message.chat.id, uid, push=True)
+    if text == "📘 Инструкции":
+        show_instructions_menu(chat_id, user_id, add_to_history=True)
         return
 
     if text == "👤 Личный кабинет":
-        render_cabinet(message.chat.id, uid, push=True)
+        show_cabinet(chat_id, user_id, add_to_history=True)
         return
 
     if text == "❓ Помощь":
-        render_help(message.chat.id, uid, push=True)
+        show_help(chat_id, user_id, add_to_history=True)
         return
 
-    # Витрина
-    if text == "🔥 Популярные":
-        render_region(message.chat.id, uid, "🔥 Популярные", push=True)
+    if text == "🔥 Популярные страны":
+        show_region(chat_id, user_id, "🔥 Популярные страны", add_to_history=True)
         return
 
     if text in REGIONS:
-        render_region(message.chat.id, uid, text, push=True)
+        show_region(chat_id, user_id, text, add_to_history=True)
         return
 
     if text == "🔎 Поиск страны":
-        render_search_prompt(message.chat.id, uid, push=True)
+        show_search(chat_id, user_id, add_to_history=True)
         return
 
     if text == "📱 Инструкция для России":
-        render_rf_instruction(message.chat.id, uid, push=True)
+        show_rf_instruction(chat_id, user_id, add_to_history=True)
         return
 
     if text == "✈️ Инструкция для путешествий":
-        render_travel_instruction(message.chat.id, uid, push=True)
+        show_travel_instruction(chat_id, user_id, add_to_history=True)
         return
 
-    # Выбор страны
-    normalized_country = None
-    for c in TRAVEL_COUNTRIES:
-        if text == pretty_country(c) or text == c:
-            normalized_country = c
+    if text == "📸 Отправить чек":
+        bot.send_message(chat_id, "Отправьте скрин чека одним сообщением как фото.", reply_markup=nav_keyboard())
+        return
+
+    if search_mode.get(user_id):
+        matches = [c for c in COUNTRY_TO_ZONE.keys() if text.lower() in c.lower()]
+        if not matches:
+            bot.send_message(chat_id, "Ничего не найдено. Попробуйте другое название страны.", reply_markup=nav_keyboard())
+            return
+
+        kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+        for c in matches[:20]:
+            kb.add(country_label(c))
+        kb.add("🔙 Назад", "🏠 В начало")
+        bot.send_message(chat_id, "Результаты поиска:", reply_markup=kb)
+        return
+
+    selected_country = None
+    for c in COUNTRY_TO_ZONE.keys():
+        if text == c or text == country_label(c):
+            selected_country = c
             break
 
-    if normalized_country:
-        render_country(message.chat.id, uid, normalized_country, push=True)
+    if selected_country:
+        show_country(chat_id, user_id, selected_country, add_to_history=True)
         return
 
-    # Выбор тарифа
-    parsed = parse_order_text(text)
-    if parsed:
-        order_text, price = parsed
-        create_order_and_request_payment(message.chat.id, uid, order_text, price)
-        return
+    if "—" in text and "₽" in text:
+        price = parse_price_from_order_text(text)
+        if price is None:
+            bot.send_message(chat_id, "Не удалось определить цену.", reply_markup=main_keyboard())
+            return
 
-    # Просьба отправить чек
-    if text == "📸 Отправить чек":
+        if "|" in text:
+            show_travel_instruction(chat_id, user_id, add_to_history=False)
+        else:
+            show_rf_instruction(chat_id, user_id, add_to_history=False)
+
+        cursor.execute(
+            "INSERT INTO orders (user_id, text, price, status) VALUES (?, ?, ?, ?)",
+            (user_id, text, price, "awaiting_receipt")
+        )
+        conn.commit()
+
+        kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+        kb.add("📸 Отправить чек")
+        kb.add("🔙 Назад", "🏠 В начало")
+
         bot.send_message(
-            message.chat.id,
-            "Отправьте скрин чека ОДНИМ сообщением как фото.",
-            reply_markup=nav_menu()
+            chat_id,
+            f"🧾 Ваш заказ:\n{text}\n\n"
+            f"Оплата по СБП:\n"
+            f"Номер: 89870005569\n"
+            f"Банк: Т-Банк\n"
+            f"Получатель: Федор Е.\n\n"
+            f"После оплаты нажмите «📸 Отправить чек» и отправьте скриншот.",
+            reply_markup=kb
         )
         return
 
-    bot.send_message(
-        message.chat.id,
-        "Не понял команду. Нажмите нужную кнопку 👇",
-        reply_markup=main_menu()
-    )
+    bot.send_message(chat_id, "Не понял команду. Нажмите нужную кнопку 👇", reply_markup=main_keyboard())
 
 # =========================
 # PHOTO HANDLER
 # =========================
 @bot.message_handler(content_types=["photo"])
 def photo_handler(message):
-    uid = message.from_user.id
+    global admin_send_qr_target
 
-    # 1) Админ отправляет QR пользователю
-    if uid == ADMIN_ID and uid in admin_qr_target:
-        target_user_id = admin_qr_target.pop(uid)
+    user_id = message.from_user.id
 
+    if user_id == ADMIN_ID and admin_send_qr_target:
         instruction = (
             "✅ Ваш QR-код eSIM\n\n"
-            "1. Откройте камеру и отсканируйте QR-код.\n"
-            "2. Если не сработает — попробуйте отсканировать с другого устройства.\n"
-            "3. Включите роуминг на eSIM.\n"
-            "4. Переключите интернет на eSIM.\n\n"
+            "📌 После установки:\n"
+            "1. Включите роуминг в настройках eSIM\n"
+            "2. Используйте eSIM для передачи данных\n\n"
+            "⚠️ QR-код одноразовый — не удаляйте eSIM с устройства, восстановить доступ не получится.\n\n"
             "Если нужна помощь — @F_Evdokimov"
         )
-
-        bot.send_photo(
-            target_user_id,
-            message.photo[-1].file_id,
-            caption=instruction
-        )
-        bot.send_message(uid, f"QR отправлен пользователю {target_user_id}")
+        bot.send_photo(admin_send_qr_target, message.photo[-1].file_id, caption=instruction)
+        bot.send_message(ADMIN_ID, f"QR отправлен пользователю {admin_send_qr_target}")
+        admin_send_qr_target = None
         return
 
-    # 2) Пользователь отправляет чек
-    order = get_last_waiting_order(uid)
-    if not order:
-        bot.send_message(
-            message.chat.id,
-            "Не нашел заказ, который ждет чек. Сначала выберите тариф.",
-            reply_markup=main_menu()
-        )
+    cursor.execute("""
+        SELECT id, text, price
+        FROM orders
+        WHERE user_id=? AND status='awaiting_receipt'
+        ORDER BY id DESC
+        LIMIT 1
+    """, (user_id,))
+    row = cursor.fetchone()
+
+    if not row:
+        bot.send_message(message.chat.id, "Не нашел заказ, который ждет чек. Сначала выберите тариф.", reply_markup=main_keyboard())
         return
 
-    order_id, order_text, price, status = order
+    order_id, order_text, price = row
 
-    cursor.execute(
-        "UPDATE orders SET status='pending_review' WHERE id=?",
-        (order_id,)
-    )
+    cursor.execute("UPDATE orders SET status='pending_review' WHERE id=?", (order_id,))
     conn.commit()
 
     kb = types.InlineKeyboardMarkup()
     kb.add(
-        types.InlineKeyboardButton("✅ Подтвердить", callback_data=f"ok_{order_id}_{uid}_{price}"),
-        types.InlineKeyboardButton("❌ Отклонить", callback_data=f"no_{order_id}_{uid}")
+        types.InlineKeyboardButton("✅ Подтвердить", callback_data=f"ok_{order_id}_{user_id}_{price}"),
+        types.InlineKeyboardButton("❌ Отклонить", callback_data=f"no_{order_id}_{user_id}")
     )
 
     bot.send_photo(
         ADMIN_ID,
         message.photo[-1].file_id,
-        caption=f"Чек от пользователя {uid}\nЗаказ: {order_text}",
+        caption=f"Чек от пользователя {user_id}\nЗаказ: {order_text}",
         reply_markup=kb
     )
 
-    bot.send_message(
-        message.chat.id,
-        "Чек отправлен. Заказ принят в обработку.",
-        reply_markup=main_menu()
-    )
+    bot.send_message(message.chat.id, "Чек отправлен. Заказ принят в обработку.", reply_markup=main_keyboard())
 
 # =========================
 # CALLBACKS
@@ -839,22 +770,12 @@ def callback_handler(call):
 
         if ref:
             bonus = int(price * REF_PERCENT / 100)
-            cursor.execute(
-                "UPDATE users SET balance = balance + ? WHERE user_id=?",
-                (bonus, ref)
-            )
+            cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (bonus, ref))
 
         conn.commit()
 
-        bot.send_message(
-            user_id,
-            "✅ Заказ принят, ожидайте QR с инструкцией",
-            reply_markup=main_menu()
-        )
-        bot.send_message(
-            ADMIN_ID,
-            f"Оплата подтверждена.\nЧтобы отправить QR, напиши:\n/sendqr {user_id}"
-        )
+        bot.send_message(user_id, "✅ Заказ принят, ожидайте QR с инструкцией", reply_markup=main_keyboard())
+        bot.send_message(ADMIN_ID, f"Оплата подтверждена.\nЧтобы отправить QR, напиши:\n/sendqr {user_id}")
         bot.answer_callback_query(call.id, "Оплата подтверждена")
         return
 
@@ -863,19 +784,14 @@ def callback_handler(call):
         order_id = int(order_id)
         user_id = int(user_id)
 
-        cursor.execute("UPDATE orders SET status='cancel'",)
         cursor.execute("UPDATE orders SET status='cancel' WHERE id=?", (order_id,))
         conn.commit()
 
-        bot.send_message(
-            user_id,
-            "❌ Оплата не подтверждена.\nЕсли это ошибка — напишите в поддержку: @F_Evdokimov",
-            reply_markup=main_menu()
-        )
+        bot.send_message(user_id, "❌ Оплата не подтверждена. Если это ошибка — напишите @F_Evdokimov", reply_markup=main_keyboard())
         bot.answer_callback_query(call.id, "Заказ отклонен")
         return
 
 # =========================
-# POLLING
+# RUN
 # =========================
 bot.polling(none_stop=True)
