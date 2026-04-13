@@ -5,7 +5,7 @@ from typing import Optional, Dict, List, Tuple
 import telebot
 from telebot import types
 
-TOKEN = 8740697928:AAH8Uhtcb6_Kh5VSbONmWds2_0JkCd-5XPo
+TOKEN = "8740697928:AAH8Uhtcb6_Kh5VSbONmWds2_0JkCd-5XPo"
 ADMIN_ID_RAW = 1157537072
 if not TOKEN:
     raise ValueError("TOKEN not found")
