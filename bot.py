@@ -5,6 +5,9 @@ from typing import Optional, Dict, List, Tuple
 import telebot
 from telebot import types
 
+# =========================
+# CONFIG
+# =========================
 TOKEN = os.getenv("TOKEN")
 ADMIN_ID_RAW = os.getenv("ADMIN_ID")
 
@@ -14,7 +17,6 @@ if not ADMIN_ID_RAW:
     raise ValueError("ADMIN_ID not found")
 
 ADMIN_ID = int(ADMIN_ID_RAW)
-
 bot = telebot.TeleBot(TOKEN)
 
 # =========================
@@ -43,9 +45,23 @@ CREATE TABLE IF NOT EXISTS orders (
 
 conn.commit()
 
+# --- DB MIGRATIONS ---
+def add_column_if_not_exists(table: str, column: str, definition: str):
+    cursor.execute(f"PRAGMA table_info({table})")
+    columns = [row[1] for row in cursor.fetchall()]
+    if column not in columns:
+        cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        conn.commit()
+
+add_column_if_not_exists("orders", "pay_amount", "INTEGER DEFAULT 0")
+add_column_if_not_exists("orders", "discount_used", "INTEGER DEFAULT 0")
+add_column_if_not_exists("orders", "ref_bonus_given", "INTEGER DEFAULT 0")
+
 # =========================
 # DATA
 # =========================
+REF_BONUS = 100
+
 RF_PLANS = {
     "1GB / 7 дней": 499,
     "3GB / 30 дней": 990,
@@ -230,9 +246,63 @@ EMOJI = {
     "Malaysia": "🇲🇾", "Saudi Arabia": "🇸🇦", "Qatar": "🇶🇦",
     "Egypt": "🇪🇬", "Tunisia": "🇹🇳", "South Africa": "🇿🇦",
     "New Zealand": "🇳🇿", "Israel": "🇮🇱", "Ukraine": "🇺🇦",
+    "Azerbaijan": "🇦🇿", "Kyrgyzstan": "🇰🇬", "Tajikistan": "🇹🇯",
+    "Uzbekistan": "🇺🇿",
 }
 
-REF_PERCENT = 10
+RU_COUNTRIES = {
+    "турция": "Turkey",
+    "оаэ": "United Arab Emirates",
+    "эмираты": "United Arab Emirates",
+    "тайланд": "Thailand",
+    "таиланд": "Thailand",
+    "грузия": "Georgia",
+    "казахстан": "Kazakhstan",
+    "армения": "Armenia",
+    "испания": "Spain",
+    "италия": "Italy",
+    "германия": "Germany",
+    "франция": "France",
+    "сша": "United States",
+    "америка": "United States",
+    "япония": "Japan",
+    "китай": "China",
+    "индия": "India",
+    "индонезия": "Indonesia",
+    "бали": "Indonesia",
+    "великобритания": "United Kingdom",
+    "англия": "United Kingdom",
+    "португалия": "Portugal",
+    "нидерланды": "Netherlands",
+    "голландия": "Netherlands",
+    "греция": "Greece",
+    "австрия": "Austria",
+    "швейцария": "Switzerland",
+    "хорватия": "Croatia",
+    "польша": "Poland",
+    "бразилия": "Brazil",
+    "аргентина": "Argentina",
+    "чили": "Chile",
+    "южная корея": "South Korea",
+    "корея": "South Korea",
+    "сингапур": "Singapore",
+    "малайзия": "Malaysia",
+    "саудовская аравия": "Saudi Arabia",
+    "катар": "Qatar",
+    "египет": "Egypt",
+    "тунис": "Tunisia",
+    "юар": "South Africa",
+    "новая зеландия": "New Zealand",
+    "израиль": "Israel",
+    "украина": "Ukraine",
+    "азербайджан": "Azerbaijan",
+    "киргизия": "Kyrgyzstan",
+    "кыргызстан": "Kyrgyzstan",
+    "таджикистан": "Tajikistan",
+    "узбекистан": "Uzbekistan",
+    "мексика": "Mexico",
+    "канада": "Canada",
+}
 
 # =========================
 # STATE
@@ -248,8 +318,10 @@ def ensure_user(user_id: int, ref: Optional[int] = None) -> None:
     cursor.execute("SELECT user_id FROM users WHERE user_id=?", (user_id,))
     if cursor.fetchone():
         return
+
     if ref == user_id:
         ref = None
+
     cursor.execute(
         "INSERT INTO users (user_id, balance, ref) VALUES (?, ?, ?)",
         (user_id, 0, ref)
@@ -279,11 +351,15 @@ def nav_keyboard() -> types.ReplyKeyboardMarkup:
     kb.add("🔙 Назад", "🏠 В начало")
     return kb
 
-def main_keyboard() -> types.ReplyKeyboardMarkup:
+def main_keyboard(user_id: Optional[int] = None) -> types.ReplyKeyboardMarkup:
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add("🇷🇺 eSIM для России", "✈️ eSIM для путешествий")
     kb.add("📘 Инструкции")
     kb.add("👤 Личный кабинет", "❓ Помощь")
+
+    if user_id == ADMIN_ID:
+        kb.add("📊 Админ-статистика")
+
     return kb
 
 def parse_price_from_order_text(text: str) -> Optional[int]:
@@ -291,6 +367,51 @@ def parse_price_from_order_text(text: str) -> Optional[int]:
         return int(text.split("—")[1].replace("₽", "").strip())
     except Exception:
         return None
+
+def normalize_country_text(text: str) -> Optional[str]:
+    clean = text.strip()
+    lowered = clean.lower()
+
+    if lowered in RU_COUNTRIES:
+        return RU_COUNTRIES[lowered]
+
+    for country in COUNTRY_TO_ZONE.keys():
+        if clean == country or clean == country_label(country):
+            return country
+
+    return None
+
+def get_user_balance(user_id: int) -> int:
+    cursor.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
+    row = cursor.fetchone()
+    return row[0] if row else 0
+
+def add_balance(user_id: int, amount: int):
+    cursor.execute(
+        "UPDATE users SET balance = balance + ? WHERE user_id=?",
+        (amount, user_id)
+    )
+    conn.commit()
+
+def subtract_balance(user_id: int, amount: int):
+    cursor.execute(
+        "UPDATE users SET balance = MAX(balance - ?, 0) WHERE user_id=?",
+        (amount, user_id)
+    )
+    conn.commit()
+
+def has_paid_orders(user_id: int, exclude_order_id: Optional[int] = None) -> bool:
+    if exclude_order_id:
+        cursor.execute(
+            "SELECT COUNT(*) FROM orders WHERE user_id=? AND status='paid' AND id!=?",
+            (user_id, exclude_order_id)
+        )
+    else:
+        cursor.execute(
+            "SELECT COUNT(*) FROM orders WHERE user_id=? AND status='paid'",
+            (user_id,)
+        )
+    return cursor.fetchone()[0] > 0
 
 # =========================
 # SCREENS
@@ -302,16 +423,15 @@ def show_main(chat_id: int, user_id: int, add_to_history: bool = True) -> None:
 
     bot.send_message(
         chat_id,
-        "👋 Добро пожаловать в esimlime\n\n"
-        "Здесь можно быстро подключить eSIM:\n"
-        "• для путешествий за границу\n"
-        "• для интернета в России без VPN\n\n"
-        "Почему это удобно:\n"
-        "• не нужно искать местную сим-карту\n"
-        "• можно подключить заранее\n"
-        "• установка занимает всего несколько минут\n\n"
-        "Выберите нужный раздел ниже 👇",
-        reply_markup=main_keyboard()
+        "🌍 Интернет в поездках без роуминга\n\n"
+        "Подключаете eSIM за несколько минут и пользуетесь интернетом сразу по прилёту.\n\n"
+        "✔ Работает в 100+ странах\n"
+        "✔ Не нужно искать местную SIM-карту\n"
+        "✔ Можно подключить заранее\n"
+        "✔ Поддержка, если что-то не получится\n\n"
+        "Также есть отдельное решение для России без VPN.\n\n"
+        "👇 Выберите, куда вам нужен интернет",
+        reply_markup=main_keyboard(user_id)
     )
 
 def show_travel_home(chat_id: int, user_id: int, add_to_history: bool = True) -> None:
@@ -324,14 +444,19 @@ def show_travel_home(chat_id: int, user_id: int, add_to_history: bool = True) ->
     kb.add("🌍 Европа", "🌏 Азия")
     kb.add("🌐 СНГ", "🌎 Америка")
     kb.add("🔎 Поиск страны")
+    kb.add("❓ Как это работает")
     kb.add("✈️ Инструкция для путешествий")
     kb.add("🔙 Назад", "🏠 В начало")
 
     bot.send_message(
         chat_id,
-        "✈️ eSIM для путешествий\n\n"
-        "Выберите страну или регион.\n"
-        "Сначала можно посмотреть популярные направления — это самый быстрый вариант 👇",
+        "✈️ Интернет в путешествиях\n\n"
+        "Обычно в поездках возникают одни и те же проблемы:\n"
+        "— дорогой роуминг\n"
+        "— нестабильный Wi-Fi\n"
+        "— сложно вызвать такси, открыть карты или написать близким\n\n"
+        "С eSIM интернет можно подключить заранее и пользоваться им в поездке без смены основной SIM-карты.\n\n"
+        "👇 Выберите страну или регион",
         reply_markup=kb
     )
 
@@ -360,10 +485,20 @@ def show_country(chat_id: int, user_id: int, country: str, add_to_history: bool 
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     for plan_name, price in ZONE_PRICES[zone].items():
         kb.add(f"{country_label(country)} | {plan_name} — {price}₽")
+    kb.add("❓ Как это работает")
     kb.add("✈️ Инструкция для путешествий")
     kb.add("🔙 Назад", "🏠 В начало")
 
-    bot.send_message(chat_id, f"{country_label(country)}\n\nВыберите тариф:", reply_markup=kb)
+    bot.send_message(
+        chat_id,
+        f"{country_label(country)}\n\n"
+        "Интернет для поездки без роуминга и поиска местной SIM-карты.\n\n"
+        "✔ Подходит для карт, такси, мессенджеров и соцсетей\n"
+        "✔ Не нужно менять основную SIM-карту\n"
+        "✔ Можно установить заранее\n\n"
+        "👇 Выберите тариф",
+        reply_markup=kb
+    )
 
 def show_rf(chat_id: int, user_id: int, add_to_history: bool = True) -> None:
     search_mode[user_id] = False
@@ -373,15 +508,35 @@ def show_rf(chat_id: int, user_id: int, add_to_history: bool = True) -> None:
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     for plan_name, price in RF_PLANS.items():
         kb.add(f"{plan_name} — {price}₽")
+    kb.add("❓ Как это работает")
     kb.add("📱 Инструкция для России")
     kb.add("🔙 Назад", "🏠 В начало")
 
     bot.send_message(
         chat_id,
         "🇷🇺 eSIM для России\n\n"
-        "Подходит для интернета в России без VPN.\n"
-        "Выберите подходящий тариф ниже 👇",
+        "Решение для интернета в России без VPN.\n"
+        "Подходит, если нужен стабильный доступ к интернету без лишних настроек.\n\n"
+        "👇 Выберите подходящий тариф",
         reply_markup=kb
+    )
+
+def show_how_it_works(chat_id: int, user_id: int, add_to_history: bool = True) -> None:
+    search_mode[user_id] = False
+    if add_to_history:
+        push_screen(user_id, "how")
+
+    bot.send_message(
+        chat_id,
+        "❓ Как работает eSIM\n\n"
+        "1. Вы выбираете страну или тариф\n"
+        "2. Оплачиваете заказ\n"
+        "3. Отправляете чек\n"
+        "4. Получаете QR-код\n"
+        "5. Сканируете QR-код камерой телефона\n"
+        "6. Включаете eSIM для передачи данных\n\n"
+        "Без салонов связи, без физической SIM-карты и без сложных настроек.",
+        reply_markup=nav_keyboard()
     )
 
 def show_help(chat_id: int, user_id: int, add_to_history: bool = True) -> None:
@@ -391,7 +546,9 @@ def show_help(chat_id: int, user_id: int, add_to_history: bool = True) -> None:
 
     bot.send_message(
         chat_id,
-        "❓ Помощь\n\nПо всем вопросам: @F_Evdokimov",
+        "❓ Помощь\n\n"
+        "По всем вопросам: @F_Evdokimov\n\n"
+        "Напишите, если нужна помощь с выбором тарифа, оплатой или установкой eSIM.",
         reply_markup=nav_keyboard()
     )
 
@@ -399,6 +556,8 @@ def show_cabinet(chat_id: int, user_id: int, add_to_history: bool = True) -> Non
     search_mode[user_id] = False
     if add_to_history:
         push_screen(user_id, "cabinet")
+
+    balance = get_user_balance(user_id)
 
     cursor.execute("SELECT COUNT(*) FROM orders WHERE user_id=? AND status='paid'", (user_id,))
     orders_count = cursor.fetchone()[0]
@@ -411,11 +570,75 @@ def show_cabinet(chat_id: int, user_id: int, add_to_history: bool = True) -> Non
     bot.send_message(
         chat_id,
         f"👤 Личный кабинет\n\n"
+        f"Баланс: {balance}₽\n"
         f"Куплено eSIM: {orders_count}\n"
         f"Рефералов: {ref_count}\n\n"
+        f"За каждого реферала после его первой покупки вы получаете {REF_BONUS}₽ на баланс.\n"
+        f"Баланс автоматически списывается при следующей покупке.\n\n"
         f"Реферальная ссылка:\n{ref_link}",
         reply_markup=nav_keyboard()
     )
+
+def show_admin_stats(chat_id: int, user_id: int):
+    if user_id != ADMIN_ID:
+        bot.send_message(chat_id, "Раздел доступен только администратору.", reply_markup=main_keyboard(user_id))
+        return
+
+    cursor.execute("SELECT COUNT(*) FROM users")
+    total_users = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(*) FROM orders")
+    total_orders = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(*) FROM orders WHERE status='paid'")
+    paid_orders = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(*) FROM orders WHERE status='awaiting_receipt'")
+    awaiting_orders = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(*) FROM orders WHERE status='pending_review'")
+    pending_orders = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(*) FROM orders WHERE status='cancel'")
+    cancelled_orders = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COALESCE(SUM(pay_amount), 0) FROM orders WHERE status='paid'")
+    revenue = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COALESCE(SUM(discount_used), 0) FROM orders WHERE status='paid'")
+    discounts = cursor.fetchone()[0]
+
+    cursor.execute("""
+        SELECT ref, COUNT(*) as cnt
+        FROM users
+        WHERE ref IS NOT NULL
+        GROUP BY ref
+        ORDER BY cnt DESC
+        LIMIT 5
+    """)
+    top_refs = cursor.fetchall()
+
+    top_text = ""
+    if top_refs:
+        for i, (ref_id, cnt) in enumerate(top_refs, start=1):
+            top_text += f"{i}. ID {ref_id} — {cnt} реф.\n"
+    else:
+        top_text = "Пока нет рефералов\n"
+
+    text = (
+        "📊 Админ-статистика\n\n"
+        f"Пользователей всего: {total_users}\n\n"
+        f"Заказов всего: {total_orders}\n"
+        f"Оплачено: {paid_orders}\n"
+        f"Ожидают чек: {awaiting_orders}\n"
+        f"На проверке: {pending_orders}\n"
+        f"Отменено: {cancelled_orders}\n\n"
+        f"Выручка: {revenue}₽\n"
+        f"Списано бонусами: {discounts}₽\n\n"
+        f"Топ рефералов:\n{top_text}"
+    )
+
+    bot.send_message(chat_id, text, reply_markup=nav_keyboard())
 
 def show_instructions_menu(chat_id: int, user_id: int, add_to_history: bool = True) -> None:
     search_mode[user_id] = False
@@ -444,18 +667,19 @@ def show_rf_instruction(chat_id: int, user_id: int, add_to_history: bool = True)
         "Получите письмо с eSIM.\n\n"
         "Установите eSIM.\n"
         "Откройте камеру, просканируйте QR-код — профиль активируется автоматически.\n\n"
-        "Если через камеру не активировалось, то попробуйте отсканировать камерой с экрана другого устройства.\n\n"
+        "Если через камеру не активировалось, попробуйте отсканировать камерой с экрана другого устройства.\n\n"
         "Активация и включение интернета:\n"
-        "• Включите роуминг, в настройках телефона на eSIM.\n"
+        "• Включите роуминг в настройках телефона на eSIM.\n"
         "• Вам придет сообщение от оператора со ссылкой на активацию.\n"
         "• Переключите передачу данных на eSIM.\n"
         "• Активация может занять до 24 часов, но обычно происходит мгновенно.\n\n"
         "Все, вы великолепны. Хорошего пользования.\n"
         "Если трафик закончился, напишите мне и подключим еще.\n\n"
-        "Важно, во время тестов «белых списков» так же работать возможно не будет, т.к. блокируется именно поток данных.\n\n"
+        "Важно: во время тестов «белых списков» связь также может не работать, "
+        "так как блокируется именно поток данных.\n\n"
         "📌 После установки:\n"
         "1. Включите роуминг в настройках eSIM\n"
-        "2. По прилету установите eSIM для передачи данных\n\n"
+        "2. По прилёту установите eSIM для передачи данных\n\n"
         "⚠️ QR-код одноразовый — не удаляйте eSIM с устройства, восстановить доступ не получится."
     )
     bot.send_message(chat_id, text, reply_markup=nav_keyboard())
@@ -472,7 +696,7 @@ def show_travel_instruction(chat_id: int, user_id: int, add_to_history: bool = T
         "3. После оплаты отправьте чек.\n"
         "4. Дождитесь подтверждения заказа.\n"
         "5. Получите QR-код и инструкцию.\n"
-        "6. Установите eSIM до поездки или по прилету.\n"
+        "6. Установите eSIM до поездки или по прилёту.\n"
         "7. Включите роуминг на eSIM.\n"
         "8. Переключите передачу данных на eSIM.\n\n"
         "📌 После установки:\n"
@@ -490,8 +714,11 @@ def show_search(chat_id: int, user_id: int, add_to_history: bool = True) -> None
 
     bot.send_message(
         chat_id,
-        "🔎 Напишите страну, например:\nTurkey\nThailand\nItaly\nUnited States\n\n"
-        "Можно писать и на русском: Турция, Таиланд, Италия, США",
+        "🔎 Напишите страну.\n\n"
+        "Можно на русском:\n"
+        "Турция, Таиланд, ОАЭ, Италия, США\n\n"
+        "Можно на английском:\n"
+        "Turkey, Thailand, United States, Italy",
         reply_markup=nav_keyboard()
     )
 
@@ -520,6 +747,8 @@ def render_from_state(chat_id: int, user_id: int, state: Tuple[str, Optional[str
         show_travel_instruction(chat_id, user_id, add_to_history=False)
     elif screen == "search":
         show_search(chat_id, user_id, add_to_history=False)
+    elif screen == "how":
+        show_how_it_works(chat_id, user_id, add_to_history=False)
     else:
         show_main(chat_id, user_id, add_to_history=False)
 
@@ -603,8 +832,16 @@ def text_handler(message):
         show_cabinet(chat_id, user_id, add_to_history=True)
         return
 
+    if text == "📊 Админ-статистика":
+        show_admin_stats(chat_id, user_id)
+        return
+
     if text == "❓ Помощь":
         show_help(chat_id, user_id, add_to_history=True)
+        return
+
+    if text == "❓ Как это работает":
+        show_how_it_works(chat_id, user_id, add_to_history=True)
         return
 
     if text == "🔥 Популярные страны":
@@ -631,114 +868,96 @@ def text_handler(message):
         bot.send_message(chat_id, "Отправьте скрин чека одним сообщением как фото.", reply_markup=nav_keyboard())
         return
 
-    # Поиск по-русски и по-английски
-    ru_map = {
-        "турция": "Turkey",
-        "оаэ": "United Arab Emirates",
-        "тайланд": "Thailand",
-        "таиланд": "Thailand",
-        "грузия": "Georgia",
-        "казахстан": "Kazakhstan",
-        "армения": "Armenia",
-        "испания": "Spain",
-        "италия": "Italy",
-        "германия": "Germany",
-        "франция": "France",
-        "сша": "United States",
-        "япония": "Japan",
-        "китай": "China",
-        "индия": "India",
-        "индонезия": "Indonesia",
-        "великобритания": "United Kingdom",
-        "португалия": "Portugal",
-        "нидерланды": "Netherlands",
-        "греция": "Greece",
-        "австрия": "Austria",
-        "швейцария": "Switzerland",
-        "хорватия": "Croatia",
-        "польша": "Poland",
-        "бразилия": "Brazil",
-        "аргентина": "Argentina",
-        "чили": "Chile",
-        "южная корея": "South Korea",
-        "сингапур": "Singapore",
-        "малайзия": "Malaysia",
-        "саудовская аравия": "Saudi Arabia",
-        "катар": "Qatar",
-        "египет": "Egypt",
-        "тунис": "Tunisia",
-        "юар": "South Africa",
-        "новая зеландия": "New Zealand",
-        "израиль": "Israel",
-        "украина": "Ukraine",
-        "азербайджан": "Azerbaijan",
-        "киргизия": "Kyrgyzstan",
-        "кыргызстан": "Kyrgyzstan",
-        "таджикистан": "Tajikistan",
-        "узбекистан": "Uzbekistan",
-        "румыния": "Romania",
-        "ирландия": "Ireland",
-        "бельгия": "Belgium",
-        "чехия": "Czech Republic",
-        "дания": "Denmark",
-        "эстония": "Estonia",
-        "финляндия": "Finland",
-        "венгрия": "Hungary",
-        "латвия": "Latvia",
-        "литва": "Lithuania",
-        "люксембург": "Luxembourg",
-        "мальта": "Malta",
-        "норвегия": "Norway",
-        "словакия": "Slovakia",
-        "словения": "Slovenia",
-        "швеция": "Sweden",
-    }
+    selected_country = normalize_country_text(text)
+
+    if selected_country:
+        search_mode[user_id] = False
+        show_country(chat_id, user_id, selected_country, add_to_history=True)
+        return
 
     if search_mode.get(user_id):
         q = text.lower()
-        if q in ru_map:
-            match_country = ru_map[q]
-            show_country(chat_id, user_id, match_country, add_to_history=True)
-            return
 
-        matches = [c for c in COUNTRY_TO_ZONE.keys() if q in c.lower()]
+        matches = []
+        for country in COUNTRY_TO_ZONE.keys():
+            if q in country.lower():
+                matches.append(country)
+
         if not matches:
-            bot.send_message(chat_id, "Ничего не найдено. Попробуйте другое название страны.", reply_markup=nav_keyboard())
+            bot.send_message(
+                chat_id,
+                "Ничего не найдено. Попробуйте другое название страны.",
+                reply_markup=nav_keyboard()
+            )
             return
 
         kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-        for c in matches[:20]:
-            kb.add(country_label(c))
+        for country in matches[:20]:
+            kb.add(country_label(country))
         kb.add("🔙 Назад", "🏠 В начало")
+
         bot.send_message(chat_id, "Результаты поиска:", reply_markup=kb)
-        return
-
-    selected_country = None
-    for c in COUNTRY_TO_ZONE.keys():
-        if text == c or text == country_label(c):
-            selected_country = c
-            break
-
-    if selected_country:
-        show_country(chat_id, user_id, selected_country, add_to_history=True)
         return
 
     if "—" in text and "₽" in text:
         price = parse_price_from_order_text(text)
         if price is None:
-            bot.send_message(chat_id, "Не удалось определить цену.", reply_markup=main_keyboard())
+            bot.send_message(chat_id, "Не удалось определить цену.", reply_markup=main_keyboard(user_id))
             return
+
+        balance = get_user_balance(user_id)
+        discount_used = min(balance, price)
+        pay_amount = price - discount_used
+
+        if discount_used > 0:
+            subtract_balance(user_id, discount_used)
 
         if "|" in text:
             show_travel_instruction(chat_id, user_id, add_to_history=False)
         else:
             show_rf_instruction(chat_id, user_id, add_to_history=False)
 
+        status = "pending_review" if pay_amount == 0 else "awaiting_receipt"
+
         cursor.execute(
-            "INSERT INTO orders (user_id, text, price, status) VALUES (?, ?, ?, ?)",
-            (user_id, text, price, "awaiting_receipt")
+            """
+            INSERT INTO orders (user_id, text, price, pay_amount, discount_used, status)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (user_id, text, price, pay_amount, discount_used, status)
         )
         conn.commit()
+
+        order_id = cursor.lastrowid
+
+        if pay_amount == 0:
+            kb = types.InlineKeyboardMarkup()
+            kb.add(
+                types.InlineKeyboardButton("✅ Подтвердить", callback_data=f"ok_{order_id}_{user_id}_{pay_amount}"),
+                types.InlineKeyboardButton("❌ Отклонить", callback_data=f"no_{order_id}_{user_id}")
+            )
+
+            bot.send_message(
+                chat_id,
+                f"🧾 Ваш заказ:\n{text}\n\n"
+                f"Стоимость: {price}₽\n"
+                f"Списано с баланса: {discount_used}₽\n"
+                f"К оплате: 0₽\n\n"
+                f"Заказ отправлен на подтверждение. Ожидайте QR с инструкцией.",
+                reply_markup=main_keyboard(user_id)
+            )
+
+            bot.send_message(
+                ADMIN_ID,
+                f"🧾 Новый заказ за баланс\n\n"
+                f"Пользователь ID: {user_id}\n"
+                f"Заказ: {text}\n"
+                f"Стоимость: {price}₽\n"
+                f"Списано с баланса: {discount_used}₽\n"
+                f"К оплате: 0₽",
+                reply_markup=kb
+            )
+            return
 
         kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
         kb.add("📸 Отправить чек")
@@ -746,7 +965,14 @@ def text_handler(message):
 
         bot.send_message(
             chat_id,
+            "Перед оплатой:\n\n"
+            "✔ Убедитесь, что телефон поддерживает eSIM\n"
+            "✔ Установка занимает несколько минут\n"
+            "✔ QR-код одноразовый — не удаляйте eSIM после установки\n\n"
             f"🧾 Ваш заказ:\n{text}\n\n"
+            f"Стоимость: {price}₽\n"
+            f"Списано с баланса: {discount_used}₽\n"
+            f"К оплате: {pay_amount}₽\n\n"
             f"Оплата по СБП:\n"
             f"Номер: 89870005569\n"
             f"Банк: Т-Банк\n"
@@ -756,7 +982,7 @@ def text_handler(message):
         )
         return
 
-    bot.send_message(chat_id, "Не понял команду. Нажмите нужную кнопку 👇", reply_markup=main_keyboard())
+    bot.send_message(chat_id, "Не понял команду. Нажмите нужную кнопку 👇", reply_markup=main_keyboard(user_id))
 
 # =========================
 # PHOTO HANDLER
@@ -782,7 +1008,7 @@ def photo_handler(message):
         return
 
     cursor.execute("""
-        SELECT id, text, price
+        SELECT id, text, price, pay_amount, discount_used
         FROM orders
         WHERE user_id=? AND status='awaiting_receipt'
         ORDER BY id DESC
@@ -791,10 +1017,14 @@ def photo_handler(message):
     row = cursor.fetchone()
 
     if not row:
-        bot.send_message(message.chat.id, "Не нашел заказ, который ждет чек. Сначала выберите тариф.", reply_markup=main_keyboard())
+        bot.send_message(
+            message.chat.id,
+            "Не нашел заказ, который ждет чек. Сначала выберите тариф.",
+            reply_markup=main_keyboard(user_id)
+        )
         return
 
-    order_id, order_text, price = row
+    order_id, order_text, price, pay_amount, discount_used = row
 
     cursor.execute("UPDATE orders SET status='pending_review' WHERE id=?", (order_id,))
     conn.commit()
@@ -809,7 +1039,7 @@ def photo_handler(message):
 
     kb = types.InlineKeyboardMarkup()
     kb.add(
-        types.InlineKeyboardButton("✅ Подтвердить", callback_data=f"ok_{order_id}_{user_id}_{price}"),
+        types.InlineKeyboardButton("✅ Подтвердить", callback_data=f"ok_{order_id}_{user_id}_{pay_amount}"),
         types.InlineKeyboardButton("❌ Отклонить", callback_data=f"no_{order_id}_{user_id}")
     )
 
@@ -821,12 +1051,18 @@ def photo_handler(message):
             f"Покупатель: {user_text}\n"
             f"ID: {user_id}\n"
             f"Заказ: {order_text}\n"
-            f"Сумма: {price}₽"
+            f"Стоимость: {price}₽\n"
+            f"Списано с баланса: {discount_used}₽\n"
+            f"К оплате: {pay_amount}₽"
         ),
         reply_markup=kb
     )
 
-    bot.send_message(message.chat.id, "Чек отправлен. Заказ принят в обработку.", reply_markup=main_keyboard())
+    bot.send_message(
+        message.chat.id,
+        "Чек отправлен. Заказ принят в обработку.",
+        reply_markup=main_keyboard(user_id)
+    )
 
 # =========================
 # CALLBACKS
@@ -836,10 +1072,11 @@ def callback_handler(call):
     data = call.data
 
     if data.startswith("ok_"):
-        _, order_id, user_id, price = data.split("_")
+        _, order_id, user_id, pay_amount = data.split("_")
         order_id = int(order_id)
         user_id = int(user_id)
-        price = int(price)
+
+        already_had_paid_orders = has_paid_orders(user_id, exclude_order_id=order_id)
 
         cursor.execute("UPDATE orders SET status='paid' WHERE id=?", (order_id,))
 
@@ -847,19 +1084,33 @@ def callback_handler(call):
         row = cursor.fetchone()
         ref = row[0] if row else None
 
-        if ref:
-            bonus = int(price * REF_PERCENT / 100)
-            cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (bonus, ref))
+        if ref and not already_had_paid_orders:
+            add_balance(ref, REF_BONUS)
+            cursor.execute("UPDATE orders SET ref_bonus_given=1 WHERE id=?", (order_id,))
+            bot.send_message(
+                ref,
+                f"🎉 Вам начислено {REF_BONUS}₽ за реферала.\n"
+                f"Баланс можно использовать при следующей покупке."
+            )
 
         conn.commit()
 
-        bot.send_message(user_id, "✅ Заказ принят, ожидайте QR с инструкцией", reply_markup=main_keyboard())
+        bot.send_message(
+            user_id,
+            "✅ Заказ принят\n\n"
+            "Мы проверили оплату и подготовим QR-код с инструкцией.\n\n"
+            "Обычно это занимает 5–15 минут.\n\n"
+            "Если есть вопросы — напишите @F_Evdokimov",
+            reply_markup=main_keyboard(user_id)
+        )
+
         bot.send_message(
             ADMIN_ID,
             f"✅ Оплата подтверждена\n\n"
             f"Чтобы отправить QR этому пользователю, отправь команду:\n"
             f"/sendqr {user_id}"
         )
+
         bot.answer_callback_query(call.id, "Оплата подтверждена")
         return
 
@@ -868,10 +1119,23 @@ def callback_handler(call):
         order_id = int(order_id)
         user_id = int(user_id)
 
+        cursor.execute("SELECT discount_used FROM orders WHERE id=?", (order_id,))
+        row = cursor.fetchone()
+        discount_used = row[0] if row else 0
+
+        if discount_used > 0:
+            add_balance(user_id, discount_used)
+
         cursor.execute("UPDATE orders SET status='cancel' WHERE id=?", (order_id,))
         conn.commit()
 
-        bot.send_message(user_id, "❌ Оплата не подтверждена. Если это ошибка — напишите @F_Evdokimov", reply_markup=main_keyboard())
+        bot.send_message(
+            user_id,
+            "❌ Оплата не подтверждена.\n\n"
+            "Если это ошибка — напишите в поддержку: @F_Evdokimov",
+            reply_markup=main_keyboard(user_id)
+        )
+
         bot.answer_callback_query(call.id, "Заказ отклонен")
         return
 
