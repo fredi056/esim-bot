@@ -5,8 +5,9 @@ from typing import Optional, Dict, List, Tuple
 import telebot
 from telebot import types
 
-TOKEN = "8740697928:AAH8Uhtcb6_Kh5VSbONmWds2_0JkCd-5XPo"
-ADMIN_ID_RAW = 1157537072
+TOKEN = os.getenv("TOKEN")
+ADMIN_ID_RAW = os.getenv("ADMIN_ID")
+
 if not TOKEN:
     raise ValueError("TOKEN not found")
 if not ADMIN_ID_RAW:
@@ -399,10 +400,6 @@ def show_cabinet(chat_id: int, user_id: int, add_to_history: bool = True) -> Non
     if add_to_history:
         push_screen(user_id, "cabinet")
 
-    cursor.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
-    row = cursor.fetchone()
-    balance = row[0] if row else 0
-
     cursor.execute("SELECT COUNT(*) FROM orders WHERE user_id=? AND status='paid'", (user_id,))
     orders_count = cursor.fetchone()[0]
 
@@ -414,7 +411,6 @@ def show_cabinet(chat_id: int, user_id: int, add_to_history: bool = True) -> Non
     bot.send_message(
         chat_id,
         f"👤 Личный кабинет\n\n"
-        f"Баланс: {balance}₽\n"
         f"Куплено eSIM: {orders_count}\n"
         f"Рефералов: {ref_count}\n\n"
         f"Реферальная ссылка:\n{ref_link}",
@@ -494,7 +490,8 @@ def show_search(chat_id: int, user_id: int, add_to_history: bool = True) -> None
 
     bot.send_message(
         chat_id,
-        "🔎 Напишите страну, например:\nTurkey\nThailand\nItaly\nUnited States",
+        "🔎 Напишите страну, например:\nTurkey\nThailand\nItaly\nUnited States\n\n"
+        "Можно писать и на русском: Турция, Таиланд, Италия, США",
         reply_markup=nav_keyboard()
     )
 
@@ -634,8 +631,77 @@ def text_handler(message):
         bot.send_message(chat_id, "Отправьте скрин чека одним сообщением как фото.", reply_markup=nav_keyboard())
         return
 
+    # Поиск по-русски и по-английски
+    ru_map = {
+        "турция": "Turkey",
+        "оаэ": "United Arab Emirates",
+        "тайланд": "Thailand",
+        "таиланд": "Thailand",
+        "грузия": "Georgia",
+        "казахстан": "Kazakhstan",
+        "армения": "Armenia",
+        "испания": "Spain",
+        "италия": "Italy",
+        "германия": "Germany",
+        "франция": "France",
+        "сша": "United States",
+        "япония": "Japan",
+        "китай": "China",
+        "индия": "India",
+        "индонезия": "Indonesia",
+        "великобритания": "United Kingdom",
+        "португалия": "Portugal",
+        "нидерланды": "Netherlands",
+        "греция": "Greece",
+        "австрия": "Austria",
+        "швейцария": "Switzerland",
+        "хорватия": "Croatia",
+        "польша": "Poland",
+        "бразилия": "Brazil",
+        "аргентина": "Argentina",
+        "чили": "Chile",
+        "южная корея": "South Korea",
+        "сингапур": "Singapore",
+        "малайзия": "Malaysia",
+        "саудовская аравия": "Saudi Arabia",
+        "катар": "Qatar",
+        "египет": "Egypt",
+        "тунис": "Tunisia",
+        "юар": "South Africa",
+        "новая зеландия": "New Zealand",
+        "израиль": "Israel",
+        "украина": "Ukraine",
+        "азербайджан": "Azerbaijan",
+        "киргизия": "Kyrgyzstan",
+        "кыргызстан": "Kyrgyzstan",
+        "таджикистан": "Tajikistan",
+        "узбекистан": "Uzbekistan",
+        "румыния": "Romania",
+        "ирландия": "Ireland",
+        "бельгия": "Belgium",
+        "чехия": "Czech Republic",
+        "дания": "Denmark",
+        "эстония": "Estonia",
+        "финляндия": "Finland",
+        "венгрия": "Hungary",
+        "латвия": "Latvia",
+        "литва": "Lithuania",
+        "люксембург": "Luxembourg",
+        "мальта": "Malta",
+        "норвегия": "Norway",
+        "словакия": "Slovakia",
+        "словения": "Slovenia",
+        "швеция": "Sweden",
+    }
+
     if search_mode.get(user_id):
-        matches = [c for c in COUNTRY_TO_ZONE.keys() if text.lower() in c.lower()]
+        q = text.lower()
+        if q in ru_map:
+            match_country = ru_map[q]
+            show_country(chat_id, user_id, match_country, add_to_history=True)
+            return
+
+        matches = [c for c in COUNTRY_TO_ZONE.keys() if q in c.lower()]
         if not matches:
             bot.send_message(chat_id, "Ничего не найдено. Попробуйте другое название страны.", reply_markup=nav_keyboard())
             return
@@ -733,6 +799,14 @@ def photo_handler(message):
     cursor.execute("UPDATE orders SET status='pending_review' WHERE id=?", (order_id,))
     conn.commit()
 
+    username = message.from_user.username
+    first_name = message.from_user.first_name or "Без имени"
+
+    if username:
+        user_text = f"@{username}"
+    else:
+        user_text = f"{first_name} (ID: {user_id})"
+
     kb = types.InlineKeyboardMarkup()
     kb.add(
         types.InlineKeyboardButton("✅ Подтвердить", callback_data=f"ok_{order_id}_{user_id}_{price}"),
@@ -742,7 +816,13 @@ def photo_handler(message):
     bot.send_photo(
         ADMIN_ID,
         message.photo[-1].file_id,
-        caption=f"Чек от пользователя {user_id}\nЗаказ: {order_text}",
+        caption=(
+            f"🧾 Новый чек\n\n"
+            f"Покупатель: {user_text}\n"
+            f"ID: {user_id}\n"
+            f"Заказ: {order_text}\n"
+            f"Сумма: {price}₽"
+        ),
         reply_markup=kb
     )
 
@@ -774,7 +854,12 @@ def callback_handler(call):
         conn.commit()
 
         bot.send_message(user_id, "✅ Заказ принят, ожидайте QR с инструкцией", reply_markup=main_keyboard())
-        bot.send_message(ADMIN_ID, f"Оплата подтверждена.\nЧтобы отправить QR, напиши:\n/sendqr {user_id}")
+        bot.send_message(
+            ADMIN_ID,
+            f"✅ Оплата подтверждена\n\n"
+            f"Чтобы отправить QR этому пользователю, отправь команду:\n"
+            f"/sendqr {user_id}"
+        )
         bot.answer_callback_query(call.id, "Оплата подтверждена")
         return
 
