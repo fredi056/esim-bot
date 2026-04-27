@@ -5,9 +5,6 @@ from typing import Optional, Dict, List, Tuple
 import telebot
 from telebot import types
 
-# =========================
-# CONFIG
-# =========================
 TOKEN = os.getenv("TOKEN")
 ADMIN_ID_RAW = os.getenv("ADMIN_ID")
 
@@ -19,9 +16,6 @@ if not ADMIN_ID_RAW:
 ADMIN_ID = int(ADMIN_ID_RAW)
 bot = telebot.TeleBot(TOKEN)
 
-# =========================
-# DB
-# =========================
 conn = sqlite3.connect("db.db", check_same_thread=False)
 cursor = conn.cursor()
 
@@ -45,7 +39,6 @@ CREATE TABLE IF NOT EXISTS orders (
 
 conn.commit()
 
-# --- DB MIGRATIONS ---
 def add_column_if_not_exists(table: str, column: str, definition: str):
     cursor.execute(f"PRAGMA table_info({table})")
     columns = [row[1] for row in cursor.fetchall()]
@@ -57,9 +50,6 @@ add_column_if_not_exists("orders", "pay_amount", "INTEGER DEFAULT 0")
 add_column_if_not_exists("orders", "discount_used", "INTEGER DEFAULT 0")
 add_column_if_not_exists("orders", "ref_bonus_given", "INTEGER DEFAULT 0")
 
-# =========================
-# DATA
-# =========================
 REF_BONUS = 100
 
 RF_PLANS = {
@@ -73,259 +63,87 @@ RF_PLANS = {
 }
 
 ZONE_PRICES = {
-    0: {
-        "1GB / 7 дней": 200,
-        "3GB / 30 дней": 450,
-        "5GB / 30 дней": 650,
-        "10GB / 30 дней": 1100,
-        "20GB / 30 дней": 2000,
-        "50GB / 90 дней": 4600,
-    },
-    1: {
-        "1GB / 7 дней": 250,
-        "3GB / 30 дней": 550,
-        "5GB / 30 дней": 800,
-        "10GB / 30 дней": 1400,
-        "20GB / 30 дней": 2500,
-        "50GB / 90 дней": 6000,
-    },
-    2: {
-        "1GB / 7 дней": 300,
-        "3GB / 30 дней": 700,
-        "5GB / 30 дней": 1000,
-        "10GB / 30 дней": 1800,
-        "20GB / 30 дней": 3000,
-        "50GB / 90 дней": 7200,
-    },
-    3: {
-        "1GB / 7 дней": 450,
-        "3GB / 30 дней": 1100,
-        "5GB / 30 дней": 2000,
-        "10GB / 30 дней": 3500,
-        "20GB / 30 дней": 6500,
-        "50GB / 90 дней": 15000,
-    },
-    4: {
-        "1GB / 7 дней": 700,
-        "3GB / 30 дней": 2000,
-        "5GB / 30 дней": 3000,
-        "10GB / 30 дней": 6000,
-        "20GB / 30 дней": 12000,
-        "50GB / 90 дней": 28000,
-    },
-    5: {
-        "1GB / 7 дней": 1100,
-        "3GB / 30 дней": 2700,
-        "5GB / 30 дней": 4000,
-        "10GB / 30 дней": 7000,
-        "20GB / 30 дней": 13000,
-        "50GB / 90 дней": 30000,
-    },
-    6: {
-        "1GB / 7 дней": 1300,
-        "3GB / 30 дней": 3400,
-        "5GB / 30 дней": 5000,
-        "10GB / 30 дней": 8600,
-        "20GB / 30 дней": 14800,
-        "50GB / 90 дней": 35000,
-    },
-    7: {
-        "1GB / 7 дней": 2600,
-        "3GB / 30 дней": 6600,
-        "5GB / 30 дней": 9600,
-        "10GB / 30 дней": 18200,
-        "20GB / 30 дней": 35200,
-        "50GB / 90 дней": 84000,
-    },
+    0: {"1GB / 7 дней": 200, "3GB / 30 дней": 450, "5GB / 30 дней": 650, "10GB / 30 дней": 1100, "20GB / 30 дней": 2000, "50GB / 90 дней": 4600},
+    1: {"1GB / 7 дней": 250, "3GB / 30 дней": 550, "5GB / 30 дней": 800, "10GB / 30 дней": 1400, "20GB / 30 дней": 2500, "50GB / 90 дней": 6000},
+    2: {"1GB / 7 дней": 300, "3GB / 30 дней": 700, "5GB / 30 дней": 1000, "10GB / 30 дней": 1800, "20GB / 30 дней": 3000, "50GB / 90 дней": 7200},
+    3: {"1GB / 7 дней": 450, "3GB / 30 дней": 1100, "5GB / 30 дней": 2000, "10GB / 30 дней": 3500, "20GB / 30 дней": 6500, "50GB / 90 дней": 15000},
+    4: {"1GB / 7 дней": 700, "3GB / 30 дней": 2000, "5GB / 30 дней": 3000, "10GB / 30 дней": 6000, "20GB / 30 дней": 12000, "50GB / 90 дней": 28000},
+    5: {"1GB / 7 дней": 1100, "3GB / 30 дней": 2700, "5GB / 30 дней": 4000, "10GB / 30 дней": 7000, "20GB / 30 дней": 13000, "50GB / 90 дней": 30000},
+    6: {"1GB / 7 дней": 1300, "3GB / 30 дней": 3400, "5GB / 30 дней": 5000, "10GB / 30 дней": 8600, "20GB / 30 дней": 14800, "50GB / 90 дней": 35000},
+    7: {"1GB / 7 дней": 2600, "3GB / 30 дней": 6600, "5GB / 30 дней": 9600, "10GB / 30 дней": 18200, "20GB / 30 дней": 35200, "50GB / 90 дней": 84000},
 }
 
 ZONE_COUNTRIES = {
-    0: [
-        "Austria", "Belgium", "Bulgaria", "Croatia", "Cyprus", "Czech Republic",
-        "Denmark", "Estonia", "Finland", "France", "Germany", "Greece", "Hungary",
-        "Ireland", "Italy", "Kazakhstan", "Kyrgyzstan", "Latvia", "Liechtenstein",
-        "Lithuania", "Luxembourg", "Malta", "Netherlands", "Norway", "Pakistan",
-        "Poland", "Portugal", "Romania", "Slovakia", "Slovenia", "Sweden",
-        "Turkey", "Ukraine", "United Kingdom", "Uzbekistan"
-    ],
-    1: [
-        "Albania", "Israel", "Malaysia", "Moldova", "Montenegro",
-        "New Zealand", "Serbia", "Spain", "Switzerland", "USA Carib"
-    ],
-    2: [
-        "Armenia", "Bangladesh", "Egypt", "Iceland", "Indonesia", "Kuwait",
-        "Reunion", "Tajikistan", "Thailand", "Tunisia", "United States"
-    ],
-    3: [
-        "Algeria", "Andorra", "Australia", "Azerbaijan", "Bahrain", "Belarus",
-        "Bosnia & Herzegovina", "Brazil", "Cambodia", "Chile", "China", "Ecuador",
-        "Faroe Islands", "Fiji", "Georgia", "Ghana", "Guernsey", "Hong Kong",
-        "India", "Japan", "Kosovo", "Macao", "Morocco", "North Macedonia", "Oman",
-        "Philippines", "Qatar", "Saudi Arabia", "Singapore", "South Africa",
-        "South Korea", "Sri Lanka", "Taiwan", "United Arab Emirates",
-        "Uruguay", "Vietnam"
-    ],
-    4: [
-        "Afghanistan", "Argentina", "Canada", "Costa Rica", "Costa Rica carib",
-        "Democratic Republic of Congo", "El Salvador", "French Guiana", "Gibraltar",
-        "Iraq", "Laos", "Mexico", "Nigeria", "Peru",
-        "Puerto Rico & US Virgin Islands carib", "Samoa", "Uganda", "Uruguay"
-    ],
-    5: [
-        "Anguilla", "ANGUILLA carib", "Antigua and Barbuda",
-        "ANTIGUA AND BARBUDA carib", "BAHAMAS carib", "Barbados", "BARBADOS carib",
-        "Benin", "Bolivia", "BR VIRGIN ISLANDS carib", "British Virgin Islands",
-        "CAYMAN ISLAND carib", "Cayman Islands", "Colombia", "Dominica",
-        "DOMINICA carib", "Grenada", "GRENADA carib", "Jamaica", "JAMAICA carib",
-        "Jersey", "Kenya", "Madagascar", "Montserrat", "MONTSERRAT carib",
-        "Netherlands and French Antilles carib", "Panama", "PANAMA carib",
-        "Paraguay", "Puerto Rico Carib", "Saint Kitts and Nevis",
-        "SAINT KITTS AND NEVIS carib", "Saint Lucia", "SAINT LUCIA carib",
-        "SAINT VINCENT AND THE GRENADINES carib", "Tanzania",
-        "TURKS AND CAICOS ISLANDS carib", "Uganda", "Zambia"
-    ],
-    6: [
-        "Dominican Republic", "Gabon", "Guadeloupe", "Guam", "Honduras",
-        "Jordan", "Malawi", "Mauritius", "Mongolia", "Puerto Rico"
-    ],
-    7: [
-        "Benin", "Côte d'Ivoire", "Curacao", "Dominican Republic", "Guatemala",
-        "Guinea", "Guinea-Bissau", "Haiti", "Honduras", "Kiribati", "Liberia",
-        "Maldives", "Martinique", "Monaco", "Nicaragua", "Papua New Guinea",
-        "Rwanda", "Saint Vincent and the Grenadines", "Seychelles",
-        "Sudan", "Tonga"
-    ],
+    0: ["Austria", "Belgium", "Bulgaria", "Croatia", "Cyprus", "Czech Republic", "Denmark", "Estonia", "Finland", "France", "Germany", "Greece", "Hungary", "Ireland", "Italy", "Kazakhstan", "Kyrgyzstan", "Latvia", "Liechtenstein", "Lithuania", "Luxembourg", "Malta", "Netherlands", "Norway", "Pakistan", "Poland", "Portugal", "Romania", "Slovakia", "Slovenia", "Sweden", "Turkey", "Ukraine", "United Kingdom", "Uzbekistan"],
+    1: ["Albania", "Israel", "Malaysia", "Moldova", "Montenegro", "New Zealand", "Serbia", "Spain", "Switzerland", "USA Carib"],
+    2: ["Armenia", "Bangladesh", "Egypt", "Iceland", "Indonesia", "Kuwait", "Reunion", "Tajikistan", "Thailand", "Tunisia", "United States"],
+    3: ["Algeria", "Andorra", "Australia", "Azerbaijan", "Bahrain", "Belarus", "Bosnia & Herzegovina", "Brazil", "Cambodia", "Chile", "China", "Ecuador", "Faroe Islands", "Fiji", "Georgia", "Ghana", "Guernsey", "Hong Kong", "India", "Japan", "Kosovo", "Macao", "Morocco", "North Macedonia", "Oman", "Philippines", "Qatar", "Saudi Arabia", "Singapore", "South Africa", "South Korea", "Sri Lanka", "Taiwan", "United Arab Emirates", "Uruguay", "Vietnam"],
+    4: ["Afghanistan", "Argentina", "Canada", "Costa Rica", "Costa Rica carib", "Democratic Republic of Congo", "El Salvador", "French Guiana", "Gibraltar", "Iraq", "Laos", "Mexico", "Nigeria", "Peru", "Puerto Rico & US Virgin Islands carib", "Samoa", "Uganda", "Uruguay"],
+    5: ["Anguilla", "ANGUILLA carib", "Antigua and Barbuda", "ANTIGUA AND BARBUDA carib", "BAHAMAS carib", "Barbados", "BARBADOS carib", "Benin", "Bolivia", "BR VIRGIN ISLANDS carib", "British Virgin Islands", "CAYMAN ISLAND carib", "Cayman Islands", "Colombia", "Dominica", "DOMINICA carib", "Grenada", "GRENADA carib", "Jamaica", "JAMAICA carib", "Jersey", "Kenya", "Madagascar", "Montserrat", "MONTSERRAT carib", "Netherlands and French Antilles carib", "Panama", "PANAMA carib", "Paraguay", "Puerto Rico Carib", "Saint Kitts and Nevis", "SAINT KITTS AND NEVIS carib", "Saint Lucia", "SAINT LUCIA carib", "SAINT VINCENT AND THE GRENADINES carib", "Tanzania", "TURKS AND CAICOS ISLANDS carib", "Uganda", "Zambia"],
+    6: ["Dominican Republic", "Gabon", "Guadeloupe", "Guam", "Honduras", "Jordan", "Malawi", "Mauritius", "Mongolia", "Puerto Rico"],
+    7: ["Benin", "Côte d'Ivoire", "Curacao", "Dominican Republic", "Guatemala", "Guinea", "Guinea-Bissau", "Haiti", "Honduras", "Kiribati", "Liberia", "Maldives", "Martinique", "Monaco", "Nicaragua", "Papua New Guinea", "Rwanda", "Saint Vincent and the Grenadines", "Seychelles", "Sudan", "Tonga"],
 }
 
-COUNTRY_TO_ZONE: Dict[str, int] = {}
+COUNTRY_TO_ZONE = {}
 for zone, countries in ZONE_COUNTRIES.items():
     for c in countries:
         COUNTRY_TO_ZONE[c] = zone
 
 REGIONS = {
     "🔥 Популярные страны": [
-        "Turkey", "United Arab Emirates", "Thailand", "Georgia",
-        "Kazakhstan", "Armenia", "Spain", "Italy"
+        "Turkey", "Egypt", "United Arab Emirates", "Thailand", "Vietnam",
+        "China", "Kazakhstan", "Georgia", "Armenia", "Indonesia"
     ],
-    "🌍 Европа": [
-        "Austria", "Belgium", "Croatia", "Czech Republic", "Denmark", "Estonia",
-        "Finland", "France", "Germany", "Greece", "Hungary", "Ireland", "Italy",
-        "Latvia", "Lithuania", "Luxembourg", "Malta", "Netherlands", "Norway",
-        "Poland", "Portugal", "Romania", "Slovakia", "Slovenia", "Spain",
-        "Sweden", "Switzerland", "United Kingdom"
-    ],
-    "🌏 Азия": [
-        "Armenia", "Azerbaijan", "Bangladesh", "Cambodia", "China", "Georgia",
-        "Hong Kong", "India", "Indonesia", "Israel", "Japan", "Kazakhstan",
-        "Kuwait", "Macao", "Malaysia", "Oman", "Pakistan", "Philippines",
-        "Qatar", "Saudi Arabia", "Singapore", "South Korea", "Sri Lanka",
-        "Taiwan", "Tajikistan", "Thailand", "Turkey",
-        "United Arab Emirates", "Uzbekistan", "Vietnam"
-    ],
-    "🌐 СНГ": [
-        "Armenia", "Azerbaijan", "Georgia", "Kazakhstan",
-        "Kyrgyzstan", "Moldova", "Tajikistan", "Ukraine", "Uzbekistan"
-    ],
-    "🌎 Америка": [
-        "United States", "Canada", "Mexico", "Brazil", "Argentina", "Chile",
-        "Colombia", "Ecuador", "Peru", "Panama", "Paraguay", "Uruguay",
-        "Costa Rica", "El Salvador"
-    ],
+    "🌍 Европа": ["Austria", "Belgium", "Croatia", "Czech Republic", "Denmark", "Estonia", "Finland", "France", "Germany", "Greece", "Hungary", "Ireland", "Italy", "Latvia", "Lithuania", "Luxembourg", "Malta", "Netherlands", "Norway", "Poland", "Portugal", "Romania", "Slovakia", "Slovenia", "Spain", "Sweden", "Switzerland", "United Kingdom"],
+    "🌏 Азия": ["Armenia", "Azerbaijan", "Bangladesh", "Cambodia", "China", "Georgia", "Hong Kong", "India", "Indonesia", "Israel", "Japan", "Kazakhstan", "Kuwait", "Macao", "Malaysia", "Oman", "Pakistan", "Philippines", "Qatar", "Saudi Arabia", "Singapore", "South Korea", "Sri Lanka", "Taiwan", "Tajikistan", "Thailand", "Turkey", "United Arab Emirates", "Uzbekistan", "Vietnam"],
+    "🌐 СНГ": ["Armenia", "Azerbaijan", "Georgia", "Kazakhstan", "Kyrgyzstan", "Moldova", "Tajikistan", "Ukraine", "Uzbekistan"],
+    "🌎 Америка": ["United States", "Canada", "Mexico", "Brazil", "Argentina", "Chile", "Colombia", "Ecuador", "Peru", "Panama", "Paraguay", "Uruguay", "Costa Rica", "El Salvador"],
 }
 
 EMOJI = {
-    "Turkey": "🇹🇷", "United Arab Emirates": "🇦🇪", "Thailand": "🇹🇭",
-    "Georgia": "🇬🇪", "Kazakhstan": "🇰🇿", "Armenia": "🇦🇲", "Spain": "🇪🇸",
-    "Italy": "🇮🇹", "France": "🇫🇷", "Germany": "🇩🇪", "United States": "🇺🇸",
-    "Canada": "🇨🇦", "Mexico": "🇲🇽", "Japan": "🇯🇵", "China": "🇨🇳",
-    "India": "🇮🇳", "Indonesia": "🇮🇩", "Australia": "🇦🇺",
-    "United Kingdom": "🇬🇧", "Portugal": "🇵🇹", "Netherlands": "🇳🇱",
-    "Greece": "🇬🇷", "Austria": "🇦🇹", "Switzerland": "🇨🇭",
-    "Croatia": "🇭🇷", "Poland": "🇵🇱", "Brazil": "🇧🇷", "Argentina": "🇦🇷",
-    "Chile": "🇨🇱", "South Korea": "🇰🇷", "Singapore": "🇸🇬",
-    "Malaysia": "🇲🇾", "Saudi Arabia": "🇸🇦", "Qatar": "🇶🇦",
-    "Egypt": "🇪🇬", "Tunisia": "🇹🇳", "South Africa": "🇿🇦",
-    "New Zealand": "🇳🇿", "Israel": "🇮🇱", "Ukraine": "🇺🇦",
-    "Azerbaijan": "🇦🇿", "Kyrgyzstan": "🇰🇬", "Tajikistan": "🇹🇯",
-    "Uzbekistan": "🇺🇿",
+    "Turkey": "🇹🇷", "Egypt": "🇪🇬", "United Arab Emirates": "🇦🇪", "Thailand": "🇹🇭",
+    "Vietnam": "🇻🇳", "China": "🇨🇳", "Kazakhstan": "🇰🇿", "Georgia": "🇬🇪",
+    "Armenia": "🇦🇲", "Indonesia": "🇮🇩", "Spain": "🇪🇸", "Italy": "🇮🇹",
+    "France": "🇫🇷", "Germany": "🇩🇪", "United States": "🇺🇸", "Canada": "🇨🇦",
+    "Mexico": "🇲🇽", "Japan": "🇯🇵", "India": "🇮🇳", "United Kingdom": "🇬🇧",
+    "Portugal": "🇵🇹", "Netherlands": "🇳🇱", "Greece": "🇬🇷", "Austria": "🇦🇹",
+    "Switzerland": "🇨🇭", "Croatia": "🇭🇷", "Poland": "🇵🇱", "Brazil": "🇧🇷",
+    "Argentina": "🇦🇷", "Chile": "🇨🇱", "South Korea": "🇰🇷", "Singapore": "🇸🇬",
+    "Malaysia": "🇲🇾", "Saudi Arabia": "🇸🇦", "Qatar": "🇶🇦", "Tunisia": "🇹🇳",
+    "South Africa": "🇿🇦", "New Zealand": "🇳🇿", "Israel": "🇮🇱", "Ukraine": "🇺🇦",
+    "Azerbaijan": "🇦🇿", "Kyrgyzstan": "🇰🇬", "Tajikistan": "🇹🇯", "Uzbekistan": "🇺🇿",
 }
 
 RU_COUNTRIES = {
-    "турция": "Turkey",
-    "оаэ": "United Arab Emirates",
-    "эмираты": "United Arab Emirates",
-    "тайланд": "Thailand",
-    "таиланд": "Thailand",
-    "грузия": "Georgia",
-    "казахстан": "Kazakhstan",
-    "армения": "Armenia",
-    "испания": "Spain",
-    "италия": "Italy",
-    "германия": "Germany",
-    "франция": "France",
-    "сша": "United States",
-    "америка": "United States",
-    "япония": "Japan",
-    "китай": "China",
-    "индия": "India",
-    "индонезия": "Indonesia",
-    "бали": "Indonesia",
-    "великобритания": "United Kingdom",
-    "англия": "United Kingdom",
-    "португалия": "Portugal",
-    "нидерланды": "Netherlands",
-    "голландия": "Netherlands",
-    "греция": "Greece",
-    "австрия": "Austria",
-    "швейцария": "Switzerland",
-    "хорватия": "Croatia",
-    "польша": "Poland",
-    "бразилия": "Brazil",
-    "аргентина": "Argentina",
-    "чили": "Chile",
-    "южная корея": "South Korea",
-    "корея": "South Korea",
-    "сингапур": "Singapore",
-    "малайзия": "Malaysia",
-    "саудовская аравия": "Saudi Arabia",
-    "катар": "Qatar",
-    "египет": "Egypt",
-    "тунис": "Tunisia",
-    "юар": "South Africa",
-    "новая зеландия": "New Zealand",
-    "израиль": "Israel",
-    "украина": "Ukraine",
-    "азербайджан": "Azerbaijan",
-    "киргизия": "Kyrgyzstan",
-    "кыргызстан": "Kyrgyzstan",
-    "таджикистан": "Tajikistan",
-    "узбекистан": "Uzbekistan",
-    "мексика": "Mexico",
-    "канада": "Canada",
+    "турция": "Turkey", "египет": "Egypt", "оаэ": "United Arab Emirates",
+    "эмираты": "United Arab Emirates", "дубай": "United Arab Emirates",
+    "таиланд": "Thailand", "тайланд": "Thailand", "вьетнам": "Vietnam",
+    "китай": "China", "пекин": "China", "шанхай": "China",
+    "казахстан": "Kazakhstan", "грузия": "Georgia", "армения": "Armenia",
+    "индонезия": "Indonesia", "бали": "Indonesia", "испания": "Spain",
+    "италия": "Italy", "германия": "Germany", "франция": "France",
+    "сша": "United States", "америка": "United States", "япония": "Japan",
+    "индия": "India", "великобритания": "United Kingdom", "англия": "United Kingdom",
+    "португалия": "Portugal", "нидерланды": "Netherlands", "голландия": "Netherlands",
+    "греция": "Greece", "австрия": "Austria", "швейцария": "Switzerland",
+    "хорватия": "Croatia", "польша": "Poland", "бразилия": "Brazil",
+    "аргентина": "Argentina", "чили": "Chile", "корея": "South Korea",
+    "южная корея": "South Korea", "сингапур": "Singapore", "малайзия": "Malaysia",
+    "катар": "Qatar", "тунис": "Tunisia", "мексика": "Mexico", "канада": "Canada",
 }
 
-# =========================
-# STATE
-# =========================
 history: Dict[int, List[Tuple[str, Optional[str]]]] = {}
 search_mode: Dict[int, bool] = {}
+selection_mode: Dict[int, Dict[str, str]] = {}
 admin_send_qr_target: Optional[int] = None
 
-# =========================
-# HELPERS
-# =========================
 def ensure_user(user_id: int, ref: Optional[int] = None) -> None:
     cursor.execute("SELECT user_id FROM users WHERE user_id=?", (user_id,))
     if cursor.fetchone():
         return
-
     if ref == user_id:
         ref = None
-
-    cursor.execute(
-        "INSERT INTO users (user_id, balance, ref) VALUES (?, ?, ?)",
-        (user_id, 0, ref)
-    )
+    cursor.execute("INSERT INTO users (user_id, balance, ref) VALUES (?, ?, ?)", (user_id, 0, ref))
     conn.commit()
 
 def country_label(country: str) -> str:
@@ -339,6 +157,7 @@ def push_screen(user_id: int, screen: str, payload: Optional[str] = None) -> Non
 def reset_to_main(user_id: int) -> None:
     history[user_id] = [("main", None)]
     search_mode[user_id] = False
+    selection_mode.pop(user_id, None)
 
 def go_back(user_id: int) -> Tuple[str, Optional[str]]:
     stack = history.setdefault(user_id, [("main", None)])
@@ -346,20 +165,19 @@ def go_back(user_id: int) -> Tuple[str, Optional[str]]:
         stack.pop()
     return stack[-1]
 
-def nav_keyboard() -> types.ReplyKeyboardMarkup:
+def nav_keyboard():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add("🔙 Назад", "🏠 В начало")
     return kb
 
-def main_keyboard(user_id: Optional[int] = None) -> types.ReplyKeyboardMarkup:
+def main_keyboard(user_id: Optional[int] = None):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add("🇷🇺 eSIM для России", "✈️ eSIM для путешествий")
+    kb.add("✈️ eSIM для путешествий")
+    kb.add("⚡ Подобрать eSIM", "🇷🇺 eSIM для России")
     kb.add("📘 Инструкции")
     kb.add("👤 Личный кабинет", "❓ Помощь")
-
     if user_id == ADMIN_ID:
         kb.add("📊 Админ-статистика")
-
     return kb
 
 def parse_price_from_order_text(text: str) -> Optional[int]:
@@ -371,14 +189,11 @@ def parse_price_from_order_text(text: str) -> Optional[int]:
 def normalize_country_text(text: str) -> Optional[str]:
     clean = text.strip()
     lowered = clean.lower()
-
     if lowered in RU_COUNTRIES:
         return RU_COUNTRIES[lowered]
-
     for country in COUNTRY_TO_ZONE.keys():
         if clean == country or clean == country_label(country):
             return country
-
     return None
 
 def get_user_balance(user_id: int) -> int:
@@ -387,37 +202,78 @@ def get_user_balance(user_id: int) -> int:
     return row[0] if row else 0
 
 def add_balance(user_id: int, amount: int):
-    cursor.execute(
-        "UPDATE users SET balance = balance + ? WHERE user_id=?",
-        (amount, user_id)
-    )
+    cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (amount, user_id))
     conn.commit()
 
 def subtract_balance(user_id: int, amount: int):
-    cursor.execute(
-        "UPDATE users SET balance = MAX(balance - ?, 0) WHERE user_id=?",
-        (amount, user_id)
-    )
+    cursor.execute("UPDATE users SET balance = MAX(balance - ?, 0) WHERE user_id=?", (amount, user_id))
     conn.commit()
 
 def has_paid_orders(user_id: int, exclude_order_id: Optional[int] = None) -> bool:
     if exclude_order_id:
-        cursor.execute(
-            "SELECT COUNT(*) FROM orders WHERE user_id=? AND status='paid' AND id!=?",
-            (user_id, exclude_order_id)
-        )
+        cursor.execute("SELECT COUNT(*) FROM orders WHERE user_id=? AND status='paid' AND id!=?", (user_id, exclude_order_id))
     else:
-        cursor.execute(
-            "SELECT COUNT(*) FROM orders WHERE user_id=? AND status='paid'",
-            (user_id,)
-        )
+        cursor.execute("SELECT COUNT(*) FROM orders WHERE user_id=? AND status='paid'", (user_id,))
     return cursor.fetchone()[0] > 0
 
-# =========================
-# SCREENS
-# =========================
-def show_main(chat_id: int, user_id: int, add_to_history: bool = True) -> None:
+def available_plan_by_gb(country: str, desired_gb: int) -> str:
+    zone = COUNTRY_TO_ZONE.get(country)
+    if zone is None:
+        return "10GB / 30 дней"
+
+    prices = ZONE_PRICES[zone]
+    available = list(prices.keys())
+
+    def gb_value(plan: str) -> int:
+        try:
+            return int(plan.split("GB")[0])
+        except Exception:
+            return 999
+
+    sorted_plans = sorted(available, key=gb_value)
+    for plan in sorted_plans:
+        if gb_value(plan) >= desired_gb:
+            return plan
+    return sorted_plans[-1]
+
+def recommend_gb(days: int, usage: str) -> int:
+    if days <= 5:
+        if usage == "light":
+            return 3
+        if usage == "medium":
+            return 5
+        return 10
+
+    if days <= 10:
+        if usage == "light":
+            return 5
+        if usage == "medium":
+            return 10
+        return 20
+
+    if days <= 20:
+        if usage == "light":
+            return 10
+        if usage == "medium":
+            return 20
+        return 50
+
+    if usage == "light":
+        return 20
+    if usage == "medium":
+        return 50
+    return 100
+
+def usage_label(usage: str) -> str:
+    return {
+        "light": "карты и мессенджеры",
+        "medium": "карты, соцсети, фото",
+        "heavy": "активно: видео, Reels, YouTube, раздача интернета",
+    }.get(usage, usage)
+
+def show_main(chat_id: int, user_id: int, add_to_history: bool = True):
     search_mode[user_id] = False
+    selection_mode.pop(user_id, None)
     if add_to_history:
         reset_to_main(user_id)
 
@@ -429,18 +285,19 @@ def show_main(chat_id: int, user_id: int, add_to_history: bool = True) -> None:
         "✔ Не нужно искать местную SIM-карту\n"
         "✔ Можно подключить заранее\n"
         "✔ Поддержка, если что-то не получится\n\n"
-        "Также есть отдельное решение для России без VPN.\n\n"
         "👇 Выберите, куда вам нужен интернет",
         reply_markup=main_keyboard(user_id)
     )
 
-def show_travel_home(chat_id: int, user_id: int, add_to_history: bool = True) -> None:
+def show_travel_home(chat_id: int, user_id: int, add_to_history: bool = True):
     search_mode[user_id] = False
+    selection_mode.pop(user_id, None)
     if add_to_history:
         push_screen(user_id, "travel")
 
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add("🔥 Популярные страны")
+    kb.add("⚡ Подобрать eSIM")
     kb.add("🌍 Европа", "🌏 Азия")
     kb.add("🌐 СНГ", "🌎 Америка")
     kb.add("🔎 Поиск страны")
@@ -455,13 +312,14 @@ def show_travel_home(chat_id: int, user_id: int, add_to_history: bool = True) ->
         "— дорогой роуминг\n"
         "— нестабильный Wi-Fi\n"
         "— сложно вызвать такси, открыть карты или написать близким\n\n"
-        "С eSIM интернет можно подключить заранее и пользоваться им в поездке без смены основной SIM-карты.\n\n"
-        "👇 Выберите страну или регион",
+        "С eSIM интернет можно подключить заранее и пользоваться им без смены основной SIM-карты.\n\n"
+        "👇 Выберите страну, регион или подбор тарифа",
         reply_markup=kb
     )
 
-def show_region(chat_id: int, user_id: int, region: str, add_to_history: bool = True) -> None:
+def show_region(chat_id: int, user_id: int, region: str, add_to_history: bool = True):
     search_mode[user_id] = False
+    selection_mode.pop(user_id, None)
     if add_to_history:
         push_screen(user_id, "region", region)
 
@@ -472,8 +330,9 @@ def show_region(chat_id: int, user_id: int, region: str, add_to_history: bool = 
 
     bot.send_message(chat_id, f"{region}\n\nВыберите страну:", reply_markup=kb)
 
-def show_country(chat_id: int, user_id: int, country: str, add_to_history: bool = True) -> None:
+def show_country(chat_id: int, user_id: int, country: str, add_to_history: bool = True):
     search_mode[user_id] = False
+    selection_mode.pop(user_id, None)
     if add_to_history:
         push_screen(user_id, "country", country)
 
@@ -500,8 +359,9 @@ def show_country(chat_id: int, user_id: int, country: str, add_to_history: bool 
         reply_markup=kb
     )
 
-def show_rf(chat_id: int, user_id: int, add_to_history: bool = True) -> None:
+def show_rf(chat_id: int, user_id: int, add_to_history: bool = True):
     search_mode[user_id] = False
+    selection_mode.pop(user_id, None)
     if add_to_history:
         push_screen(user_id, "rf")
 
@@ -515,14 +375,14 @@ def show_rf(chat_id: int, user_id: int, add_to_history: bool = True) -> None:
     bot.send_message(
         chat_id,
         "🇷🇺 eSIM для России\n\n"
-        "Решение для интернета в России без VPN.\n"
-        "Подходит, если нужен стабильный доступ к интернету без лишних настроек.\n\n"
+        "Решение для интернета в России без VPN.\n\n"
         "👇 Выберите подходящий тариф",
         reply_markup=kb
     )
 
-def show_how_it_works(chat_id: int, user_id: int, add_to_history: bool = True) -> None:
+def show_how_it_works(chat_id: int, user_id: int, add_to_history: bool = True):
     search_mode[user_id] = False
+    selection_mode.pop(user_id, None)
     if add_to_history:
         push_screen(user_id, "how")
 
@@ -539,8 +399,9 @@ def show_how_it_works(chat_id: int, user_id: int, add_to_history: bool = True) -
         reply_markup=nav_keyboard()
     )
 
-def show_help(chat_id: int, user_id: int, add_to_history: bool = True) -> None:
+def show_help(chat_id: int, user_id: int, add_to_history: bool = True):
     search_mode[user_id] = False
+    selection_mode.pop(user_id, None)
     if add_to_history:
         push_screen(user_id, "help")
 
@@ -552,8 +413,9 @@ def show_help(chat_id: int, user_id: int, add_to_history: bool = True) -> None:
         reply_markup=nav_keyboard()
     )
 
-def show_cabinet(chat_id: int, user_id: int, add_to_history: bool = True) -> None:
+def show_cabinet(chat_id: int, user_id: int, add_to_history: bool = True):
     search_mode[user_id] = False
+    selection_mode.pop(user_id, None)
     if add_to_history:
         push_screen(user_id, "cabinet")
 
@@ -586,28 +448,20 @@ def show_admin_stats(chat_id: int, user_id: int):
 
     cursor.execute("SELECT COUNT(*) FROM users")
     total_users = cursor.fetchone()[0]
-
     cursor.execute("SELECT COUNT(*) FROM orders")
     total_orders = cursor.fetchone()[0]
-
     cursor.execute("SELECT COUNT(*) FROM orders WHERE status='paid'")
     paid_orders = cursor.fetchone()[0]
-
     cursor.execute("SELECT COUNT(*) FROM orders WHERE status='awaiting_receipt'")
     awaiting_orders = cursor.fetchone()[0]
-
     cursor.execute("SELECT COUNT(*) FROM orders WHERE status='pending_review'")
     pending_orders = cursor.fetchone()[0]
-
     cursor.execute("SELECT COUNT(*) FROM orders WHERE status='cancel'")
     cancelled_orders = cursor.fetchone()[0]
-
     cursor.execute("SELECT COALESCE(SUM(pay_amount), 0) FROM orders WHERE status='paid'")
     revenue = cursor.fetchone()[0]
-
     cursor.execute("SELECT COALESCE(SUM(discount_used), 0) FROM orders WHERE status='paid'")
     discounts = cursor.fetchone()[0]
-
     cursor.execute("""
         SELECT ref, COUNT(*) as cnt
         FROM users
@@ -625,7 +479,8 @@ def show_admin_stats(chat_id: int, user_id: int):
     else:
         top_text = "Пока нет рефералов\n"
 
-    text = (
+    bot.send_message(
+        chat_id,
         "📊 Админ-статистика\n\n"
         f"Пользователей всего: {total_users}\n\n"
         f"Заказов всего: {total_orders}\n"
@@ -635,13 +490,13 @@ def show_admin_stats(chat_id: int, user_id: int):
         f"Отменено: {cancelled_orders}\n\n"
         f"Выручка: {revenue}₽\n"
         f"Списано бонусами: {discounts}₽\n\n"
-        f"Топ рефералов:\n{top_text}"
+        f"Топ рефералов:\n{top_text}",
+        reply_markup=nav_keyboard()
     )
 
-    bot.send_message(chat_id, text, reply_markup=nav_keyboard())
-
-def show_instructions_menu(chat_id: int, user_id: int, add_to_history: bool = True) -> None:
+def show_instructions_menu(chat_id: int, user_id: int, add_to_history: bool = True):
     search_mode[user_id] = False
+    selection_mode.pop(user_id, None)
     if add_to_history:
         push_screen(user_id, "instructions")
 
@@ -652,63 +507,46 @@ def show_instructions_menu(chat_id: int, user_id: int, add_to_history: bool = Tr
 
     bot.send_message(chat_id, "📘 Инструкции\n\nВыберите нужную инструкцию:", reply_markup=kb)
 
-def show_rf_instruction(chat_id: int, user_id: int, add_to_history: bool = True) -> None:
+def show_rf_instruction(chat_id: int, user_id: int, add_to_history: bool = True):
     search_mode[user_id] = False
     if add_to_history:
         push_screen(user_id, "rf_instruction")
 
-    text = (
+    bot.send_message(
+        chat_id,
         "📱 Инструкция по установке eSIM\n\n"
         "Проверьте совместимость телефона.\n"
         "Наберите на телефоне команду: *#06#\n"
-        "На экране появятся серийные номера (IMEI и др.).\n"
-        "Если в списке есть строка EID — смартфон оснащён модулем eSIM.\n\n"
-        "Выберите и оплатите тариф.\n\n"
-        "Получите письмо с eSIM.\n\n"
-        "Установите eSIM.\n"
-        "Откройте камеру, просканируйте QR-код — профиль активируется автоматически.\n\n"
-        "Если через камеру не активировалось, попробуйте отсканировать камерой с экрана другого устройства.\n\n"
-        "Активация и включение интернета:\n"
-        "• Включите роуминг в настройках телефона на eSIM.\n"
-        "• Вам придет сообщение от оператора со ссылкой на активацию.\n"
-        "• Переключите передачу данных на eSIM.\n"
-        "• Активация может занять до 24 часов, но обычно происходит мгновенно.\n\n"
-        "Все, вы великолепны. Хорошего пользования.\n"
-        "Если трафик закончился, напишите мне и подключим еще.\n\n"
-        "Важно: во время тестов «белых списков» связь также может не работать, "
-        "так как блокируется именно поток данных.\n\n"
-        "📌 После установки:\n"
-        "1. Включите роуминг в настройках eSIM\n"
-        "2. По прилёту установите eSIM для передачи данных\n\n"
-        "⚠️ QR-код одноразовый — не удаляйте eSIM с устройства, восстановить доступ не получится."
+        "Если в списке есть строка EID — смартфон поддерживает eSIM.\n\n"
+        "Установите eSIM через QR-код.\n"
+        "Включите роуминг на eSIM.\n"
+        "Переключите передачу данных на eSIM.\n\n"
+        "⚠️ QR-код одноразовый — не удаляйте eSIM с устройства.",
+        reply_markup=nav_keyboard()
     )
-    bot.send_message(chat_id, text, reply_markup=nav_keyboard())
 
-def show_travel_instruction(chat_id: int, user_id: int, add_to_history: bool = True) -> None:
+def show_travel_instruction(chat_id: int, user_id: int, add_to_history: bool = True):
     search_mode[user_id] = False
     if add_to_history:
         push_screen(user_id, "travel_instruction")
 
-    text = (
+    bot.send_message(
+        chat_id,
         "✈️ Инструкция для путешествий\n\n"
         "1. Выберите страну и тариф.\n"
         "2. Проверьте, что телефон поддерживает eSIM.\n"
         "3. После оплаты отправьте чек.\n"
-        "4. Дождитесь подтверждения заказа.\n"
-        "5. Получите QR-код и инструкцию.\n"
-        "6. Установите eSIM до поездки или по прилёту.\n"
-        "7. Включите роуминг на eSIM.\n"
-        "8. Переключите передачу данных на eSIM.\n\n"
-        "📌 После установки:\n"
-        "• включите роуминг на eSIM\n"
-        "• используйте eSIM для передачи данных\n\n"
-        "⚠️ QR-код одноразовый — не удаляйте eSIM с устройства, восстановить доступ не получится.\n\n"
-        "Если нужна помощь — @F_Evdokimov"
+        "4. Получите QR-код и инструкцию.\n"
+        "5. Установите eSIM до поездки или по прилёту.\n"
+        "6. Включите роуминг на eSIM.\n"
+        "7. Переключите передачу данных на eSIM.\n\n"
+        "⚠️ QR-код одноразовый — не удаляйте eSIM с устройства.",
+        reply_markup=nav_keyboard()
     )
-    bot.send_message(chat_id, text, reply_markup=nav_keyboard())
 
-def show_search(chat_id: int, user_id: int, add_to_history: bool = True) -> None:
+def show_search(chat_id: int, user_id: int, add_to_history: bool = True):
     search_mode[user_id] = True
+    selection_mode.pop(user_id, None)
     if add_to_history:
         push_screen(user_id, "search")
 
@@ -716,15 +554,77 @@ def show_search(chat_id: int, user_id: int, add_to_history: bool = True) -> None
         chat_id,
         "🔎 Напишите страну.\n\n"
         "Можно на русском:\n"
-        "Турция, Таиланд, ОАЭ, Италия, США\n\n"
+        "Турция, Египет, ОАЭ, Таиланд, Вьетнам, Китай\n\n"
         "Можно на английском:\n"
-        "Turkey, Thailand, United States, Italy",
+        "Turkey, Egypt, UAE, Thailand, Vietnam, China",
         reply_markup=nav_keyboard()
     )
 
-def render_from_state(chat_id: int, user_id: int, state: Tuple[str, Optional[str]]) -> None:
-    screen, payload = state
+def start_selection(chat_id: int, user_id: int):
+    search_mode[user_id] = False
+    selection_mode[user_id] = {"step": "country"}
+    push_screen(user_id, "select")
 
+    bot.send_message(
+        chat_id,
+        "⚡ Подберём тариф с запасом\n\n"
+        "Куда вы едете?\n\n"
+        "Например: Турция, Египет, ОАЭ, Таиланд, Вьетнам, Китай",
+        reply_markup=nav_keyboard()
+    )
+
+def ask_days(chat_id: int, user_id: int, country: str):
+    selection_mode[user_id] = {"step": "days", "country": country}
+    bot.send_message(
+        chat_id,
+        f"{country_label(country)}\n\nНа сколько дней поездка?\n\nНапишите число, например: 7, 10, 14",
+        reply_markup=nav_keyboard()
+    )
+
+def ask_usage(chat_id: int, user_id: int, country: str, days: int):
+    selection_mode[user_id] = {"step": "usage", "country": country, "days": str(days)}
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add("🟢 Только карты и мессенджеры")
+    kb.add("🟡 Карты, соцсети, фото")
+    kb.add("🔴 Активно: видео и раздача")
+    kb.add("🔙 Назад", "🏠 В начало")
+
+    bot.send_message(
+        chat_id,
+        "Как будете пользоваться интернетом?",
+        reply_markup=kb
+    )
+
+def finish_selection(chat_id: int, user_id: int, country: str, days: int, usage: str):
+    desired_gb = recommend_gb(days, usage)
+    plan = available_plan_by_gb(country, desired_gb)
+
+    zone = COUNTRY_TO_ZONE.get(country)
+    price = ZONE_PRICES.get(zone, {}).get(plan)
+
+    text = (
+        f"🔥 Рекомендация\n\n"
+        f"Страна: {country_label(country)}\n"
+        f"Срок: {days} дней\n"
+        f"Использование: {usage_label(usage)}\n\n"
+        f"Рекомендую: {plan}\n"
+    )
+
+    if price:
+        text += f"Цена: {price}₽\n\n"
+
+    text += (
+        "Почему с запасом:\n"
+        "в поездке интернет уходит быстрее из-за карт, такси, мессенджеров, фото и нестабильного Wi-Fi.\n\n"
+        "Ниже открою все тарифы по этой стране 👇"
+    )
+
+    bot.send_message(chat_id, text)
+    selection_mode.pop(user_id, None)
+    show_country(chat_id, user_id, country, add_to_history=True)
+
+def render_from_state(chat_id: int, user_id: int, state: Tuple[str, Optional[str]]):
+    screen, payload = state
     if screen == "main":
         show_main(chat_id, user_id, add_to_history=False)
     elif screen == "travel":
@@ -741,24 +641,14 @@ def render_from_state(chat_id: int, user_id: int, state: Tuple[str, Optional[str
         show_cabinet(chat_id, user_id, add_to_history=False)
     elif screen == "instructions":
         show_instructions_menu(chat_id, user_id, add_to_history=False)
-    elif screen == "rf_instruction":
-        show_rf_instruction(chat_id, user_id, add_to_history=False)
-    elif screen == "travel_instruction":
-        show_travel_instruction(chat_id, user_id, add_to_history=False)
     elif screen == "search":
         show_search(chat_id, user_id, add_to_history=False)
-    elif screen == "how":
-        show_how_it_works(chat_id, user_id, add_to_history=False)
     else:
         show_main(chat_id, user_id, add_to_history=False)
 
-# =========================
-# START
-# =========================
 @bot.message_handler(commands=["start"])
 def start_handler(message):
     user_id = message.from_user.id
-
     ref = None
     parts = message.text.split()
     if len(parts) > 1:
@@ -766,17 +656,12 @@ def start_handler(message):
             ref = int(parts[1])
         except ValueError:
             ref = None
-
     ensure_user(user_id, ref)
     show_main(message.chat.id, user_id, add_to_history=True)
 
-# =========================
-# ADMIN SEND QR
-# =========================
 @bot.message_handler(commands=["sendqr"])
 def sendqr_handler(message):
     global admin_send_qr_target
-
     if message.from_user.id != ADMIN_ID:
         return
 
@@ -791,14 +676,8 @@ def sendqr_handler(message):
         bot.send_message(message.chat.id, "USER_ID должен быть числом.")
         return
 
-    bot.send_message(
-        message.chat.id,
-        f"Теперь отправь ОДНО фото QR-кода. Я перешлю его пользователю {admin_send_qr_target}."
-    )
+    bot.send_message(message.chat.id, f"Теперь отправь ОДНО фото QR-кода. Я перешлю его пользователю {admin_send_qr_target}.")
 
-# =========================
-# TEXT HANDLER
-# =========================
 @bot.message_handler(content_types=["text"])
 def text_handler(message):
     user_id = message.from_user.id
@@ -812,16 +691,55 @@ def text_handler(message):
         return
 
     if text == "🔙 Назад":
+        selection_mode.pop(user_id, None)
         state = go_back(user_id)
         render_from_state(chat_id, user_id, state)
         return
 
-    if text == "🇷🇺 eSIM для России":
-        show_rf(chat_id, user_id, add_to_history=True)
-        return
+    if user_id in selection_mode:
+        state = selection_mode[user_id]
+        step = state.get("step")
+
+        if step == "country":
+            country = normalize_country_text(text)
+            if not country:
+                bot.send_message(chat_id, "Не нашёл страну. Попробуйте написать иначе: Турция, Египет, ОАЭ, Китай.")
+                return
+            ask_days(chat_id, user_id, country)
+            return
+
+        if step == "days":
+            try:
+                days = int(text)
+            except ValueError:
+                bot.send_message(chat_id, "Напишите только число дней, например: 7")
+                return
+            ask_usage(chat_id, user_id, state["country"], days)
+            return
+
+        if step == "usage":
+            if text.startswith("🟢"):
+                usage = "light"
+            elif text.startswith("🟡"):
+                usage = "medium"
+            elif text.startswith("🔴"):
+                usage = "heavy"
+            else:
+                bot.send_message(chat_id, "Выберите вариант кнопкой ниже.")
+                return
+            finish_selection(chat_id, user_id, state["country"], int(state["days"]), usage)
+            return
 
     if text == "✈️ eSIM для путешествий":
         show_travel_home(chat_id, user_id, add_to_history=True)
+        return
+
+    if text == "⚡ Подобрать eSIM":
+        start_selection(chat_id, user_id)
+        return
+
+    if text == "🇷🇺 eSIM для России":
+        show_rf(chat_id, user_id, add_to_history=True)
         return
 
     if text == "📘 Инструкции":
@@ -869,7 +787,6 @@ def text_handler(message):
         return
 
     selected_country = normalize_country_text(text)
-
     if selected_country:
         search_mode[user_id] = False
         show_country(chat_id, user_id, selected_country, add_to_history=True)
@@ -877,25 +794,15 @@ def text_handler(message):
 
     if search_mode.get(user_id):
         q = text.lower()
-
-        matches = []
-        for country in COUNTRY_TO_ZONE.keys():
-            if q in country.lower():
-                matches.append(country)
-
+        matches = [country for country in COUNTRY_TO_ZONE.keys() if q in country.lower()]
         if not matches:
-            bot.send_message(
-                chat_id,
-                "Ничего не найдено. Попробуйте другое название страны.",
-                reply_markup=nav_keyboard()
-            )
+            bot.send_message(chat_id, "Ничего не найдено. Попробуйте другое название страны.", reply_markup=nav_keyboard())
             return
 
         kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
         for country in matches[:20]:
             kb.add(country_label(country))
         kb.add("🔙 Назад", "🏠 В начало")
-
         bot.send_message(chat_id, "Результаты поиска:", reply_markup=kb)
         return
 
@@ -927,7 +834,6 @@ def text_handler(message):
             (user_id, text, price, pay_amount, discount_used, status)
         )
         conn.commit()
-
         order_id = cursor.lastrowid
 
         if pay_amount == 0:
@@ -984,13 +890,9 @@ def text_handler(message):
 
     bot.send_message(chat_id, "Не понял команду. Нажмите нужную кнопку 👇", reply_markup=main_keyboard(user_id))
 
-# =========================
-# PHOTO HANDLER
-# =========================
 @bot.message_handler(content_types=["photo"])
 def photo_handler(message):
     global admin_send_qr_target
-
     user_id = message.from_user.id
 
     if user_id == ADMIN_ID and admin_send_qr_target:
@@ -999,7 +901,7 @@ def photo_handler(message):
             "📌 После установки:\n"
             "1. Включите роуминг в настройках eSIM\n"
             "2. Используйте eSIM для передачи данных\n\n"
-            "⚠️ QR-код одноразовый — не удаляйте eSIM с устройства, восстановить доступ не получится.\n\n"
+            "⚠️ QR-код одноразовый — не удаляйте eSIM с устройства.\n\n"
             "Если нужна помощь — @F_Evdokimov"
         )
         bot.send_photo(admin_send_qr_target, message.photo[-1].file_id, caption=instruction)
@@ -1017,25 +919,16 @@ def photo_handler(message):
     row = cursor.fetchone()
 
     if not row:
-        bot.send_message(
-            message.chat.id,
-            "Не нашел заказ, который ждет чек. Сначала выберите тариф.",
-            reply_markup=main_keyboard(user_id)
-        )
+        bot.send_message(message.chat.id, "Не нашел заказ, который ждет чек. Сначала выберите тариф.", reply_markup=main_keyboard(user_id))
         return
 
     order_id, order_text, price, pay_amount, discount_used = row
-
     cursor.execute("UPDATE orders SET status='pending_review' WHERE id=?", (order_id,))
     conn.commit()
 
     username = message.from_user.username
     first_name = message.from_user.first_name or "Без имени"
-
-    if username:
-        user_text = f"@{username}"
-    else:
-        user_text = f"{first_name} (ID: {user_id})"
+    user_text = f"@{username}" if username else f"{first_name} (ID: {user_id})"
 
     kb = types.InlineKeyboardMarkup()
     kb.add(
@@ -1058,15 +951,8 @@ def photo_handler(message):
         reply_markup=kb
     )
 
-    bot.send_message(
-        message.chat.id,
-        "Чек отправлен. Заказ принят в обработку.",
-        reply_markup=main_keyboard(user_id)
-    )
+    bot.send_message(message.chat.id, "Чек отправлен. Заказ принят в обработку.", reply_markup=main_keyboard(user_id))
 
-# =========================
-# CALLBACKS
-# =========================
 @bot.callback_query_handler(func=lambda c: True)
 def callback_handler(call):
     data = call.data
@@ -1079,7 +965,6 @@ def callback_handler(call):
         already_had_paid_orders = has_paid_orders(user_id, exclude_order_id=order_id)
 
         cursor.execute("UPDATE orders SET status='paid' WHERE id=?", (order_id,))
-
         cursor.execute("SELECT ref FROM users WHERE user_id=?", (user_id,))
         row = cursor.fetchone()
         ref = row[0] if row else None
@@ -1139,7 +1024,4 @@ def callback_handler(call):
         bot.answer_callback_query(call.id, "Заказ отклонен")
         return
 
-# =========================
-# RUN
-# =========================
 bot.polling(none_stop=True)
