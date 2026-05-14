@@ -52,6 +52,10 @@ def add_column_if_not_exists(table: str, column: str, definition: str):
 add_column_if_not_exists("orders", "pay_amount", "INTEGER DEFAULT 0")
 add_column_if_not_exists("orders", "discount_used", "INTEGER DEFAULT 0")
 add_column_if_not_exists("orders", "ref_bonus_given", "INTEGER DEFAULT 0")
+add_column_if_not_exists("orders", "qr_sent", "INTEGER DEFAULT 0")
+add_column_if_not_exists("orders", "qr_file_id", "TEXT")
+add_column_if_not_exists("orders", "created_at", "TEXT DEFAULT CURRENT_TIMESTAMP")
+add_column_if_not_exists("orders", "paid_at", "TEXT")
 
 REF_BONUS = 100
 
@@ -185,7 +189,8 @@ def main_keyboard(user_id: Optional[int] = None):
     kb.add("📘 Инструкции")
     kb.add("👤 Личный кабинет", "❓ Помощь")
     if user_id == ADMIN_ID:
-        kb.add("📊 Админ-статистика")
+        kb.add("📂 CRM", "📦 Заказы")
+        kb.add("📤 Отправленные QR", "📊 Расширенная статистика")
     return kb
 
 def parse_price_from_order_text(text: str) -> Optional[int]:
@@ -456,54 +461,62 @@ def show_cabinet(chat_id: int, user_id: int, add_to_history: bool = True):
 
 def show_admin_stats(chat_id: int, user_id: int):
     if user_id != ADMIN_ID:
-        bot.send_message(chat_id, "Раздел доступен только администратору.", reply_markup=main_keyboard(user_id))
         return
 
     cursor.execute("SELECT COUNT(*) FROM users")
     total_users = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(*) FROM users WHERE created_at >= datetime('now', '-1 day')")
+    users_24h = cursor.fetchone()[0] if cursor.fetchone() else 0
+
+    cursor.execute("SELECT COUNT(*) FROM users WHERE created_at >= datetime('now', '-7 day')")
+    users_7d = cursor.fetchone()[0] if cursor.fetchone() else 0
+
     cursor.execute("SELECT COUNT(*) FROM orders")
     total_orders = cursor.fetchone()[0]
+
     cursor.execute("SELECT COUNT(*) FROM orders WHERE status='paid'")
     paid_orders = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM orders WHERE status='awaiting_receipt'")
-    awaiting_orders = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM orders WHERE status='pending_review'")
-    pending_orders = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM orders WHERE status='cancel'")
-    cancelled_orders = cursor.fetchone()[0]
-    cursor.execute("SELECT COALESCE(SUM(pay_amount), 0) FROM orders WHERE status='paid'")
-    revenue = cursor.fetchone()[0]
-    cursor.execute("SELECT COALESCE(SUM(discount_used), 0) FROM orders WHERE status='paid'")
-    discounts = cursor.fetchone()[0]
-    cursor.execute("""
-        SELECT ref, COUNT(*) as cnt
-        FROM users
-        WHERE ref IS NOT NULL
-        GROUP BY ref
-        ORDER BY cnt DESC
-        LIMIT 5
-    """)
-    top_refs = cursor.fetchall()
 
-    top_text = ""
-    if top_refs:
-        for i, (ref_id, cnt) in enumerate(top_refs, start=1):
-            top_text += f"{i}. ID {ref_id} — {cnt} реф.\n"
-    else:
-        top_text = "Пока нет рефералов\n"
+    conversion = round((paid_orders / total_orders) * 100, 1) if total_orders else 0
+
+    cursor.execute("SELECT COALESCE(AVG(pay_amount),0) FROM orders WHERE status='paid'")
+    avg_check = int(cursor.fetchone()[0] or 0)
+
+    cursor.execute("SELECT COUNT(*) FROM orders WHERE qr_sent=1")
+    qr_sent = cursor.fetchone()[0]
+
+    cursor.execute("SELECT text, COUNT(*) c FROM orders GROUP BY text ORDER BY c DESC LIMIT 5")
+    top_tariffs = cursor.fetchall()
+
+    tariffs_text = "
+".join([f"• {t[0]} — {t[1]}" for t in top_tariffs]) if top_tariffs else "Нет данных"
 
     bot.send_message(
         chat_id,
-        "📊 Админ-статистика\n\n"
-        f"Пользователей всего: {total_users}\n\n"
-        f"Заказов всего: {total_orders}\n"
-        f"Оплачено: {paid_orders}\n"
-        f"Ожидают чек: {awaiting_orders}\n"
-        f"На проверке: {pending_orders}\n"
-        f"Отменено: {cancelled_orders}\n\n"
-        f"Выручка: {revenue}₽\n"
-        f"Списано бонусами: {discounts}₽\n\n"
-        f"Топ рефералов:\n{top_text}",
+        f"📊 Расширенная статистика
+
+"
+        f"👥 Пользователей: {total_users}
+"
+        f"🆕 Новые за 24ч: {users_24h}
+"
+        f"🗓 Новые за 7 дней: {users_7d}
+
+"
+        f"📦 Всего заказов: {total_orders}
+"
+        f"✅ Оплачено: {paid_orders}
+"
+        f"📈 Конверсия: {conversion}%
+"
+        f"💳 Средний чек: {avg_check}₽
+"
+        f"📤 Отправлено QR: {qr_sent}
+
+"
+        f"🔥 Топ тарифов:
+{tariffs_text}",
         reply_markup=nav_keyboard()
     )
 
@@ -768,8 +781,61 @@ def text_handler(message):
         show_cabinet(chat_id, user_id, add_to_history=True)
         return
 
-    if text == "📊 Админ-статистика":
+    if text == "📊 Расширенная статистика":
         show_admin_stats(chat_id, user_id)
+        return
+
+    if text == "📂 CRM":
+        cursor.execute("SELECT id, user_id, status, pay_amount FROM orders ORDER BY id DESC LIMIT 10")
+        rows = cursor.fetchall()
+
+        text_out = "📂 CRM — последние заказы
+
+"
+        for r in rows:
+            text_out += f"#{r[0]} | 👤 {r[1]} | {r[2]} | {r[3]}₽
+"
+
+        bot.send_message(chat_id, text_out, reply_markup=nav_keyboard())
+        return
+
+    if text == "📦 Заказы":
+        cursor.execute("SELECT id, text, status FROM orders ORDER BY id DESC LIMIT 15")
+        rows = cursor.fetchall()
+
+        txt = "📦 Последние заказы
+
+"
+        for r in rows:
+            txt += f"#{r[0]} | {r[2]}
+{r[1]}
+
+"
+
+        bot.send_message(chat_id, txt, reply_markup=nav_keyboard())
+        return
+
+    if text == "📤 Отправленные QR":
+        cursor.execute("""
+            SELECT user_id, qr_file_id, paid_at
+            FROM orders
+            WHERE qr_sent=1
+            ORDER BY id DESC
+            LIMIT 15
+        """)
+        rows = cursor.fetchall()
+
+        txt = "📤 Последние отправленные QR
+
+"
+        for r in rows:
+            txt += f"👤 {r[0]}
+🆔 {r[1]}
+📅 {r[2]}
+
+"
+
+        bot.send_message(chat_id, txt, reply_markup=nav_keyboard())
         return
 
     if text == "❓ Помощь":
@@ -925,7 +991,20 @@ def photo_handler(message):
             "⚠️ QR-код одноразовый — не удаляйте eSIM с устройства.\n\n"
             "Если нужна помощь — @F_Evdokimov"
         )
-        bot.send_photo(admin_send_qr_target, message.photo[-1].file_id, caption=instruction)
+        file_id = message.photo[-1].file_id
+        bot.send_photo(admin_send_qr_target, file_id, caption=instruction)
+
+        cursor.execute("""
+            UPDATE orders
+            SET qr_sent=1,
+                qr_file_id=?,
+                paid_at=datetime('now')
+            WHERE user_id=?
+            AND status='paid'
+            ORDER BY id DESC
+            LIMIT 1
+        """, (file_id, admin_send_qr_target))
+        conn.commit()
         bot.send_message(ADMIN_ID, f"QR отправлен пользователю {admin_send_qr_target}")
         admin_send_qr_target = None
         return
@@ -1050,3 +1129,6 @@ def callback_handler(call):
 # Запуск бесконечного polling-цикла.
 # Бот постоянно слушает новые сообщения.
 bot.polling(none_stop=True)
+# Вставьте ваш полный код бота сюда.
+# Я обновлю его полностью с CRM, отправленными QR, расширенной статистикой и новыми полями orders.
+# После вставки я верну готовую цельную версию без заглушек.
