@@ -1,5 +1,6 @@
 import os
-import sqlite3
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from typing import Optional, Dict, List, Tuple
 
 import telebot
@@ -16,7 +17,13 @@ if not ADMIN_ID_RAW:
 ADMIN_ID = int(ADMIN_ID_RAW)
 bot = telebot.TeleBot(TOKEN)
 
-conn = sqlite3.connect("db.db", check_same_thread=False)
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL not found")
+
+conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+conn.autocommit = True
 cursor = conn.cursor()
 
 cursor.execute("""
@@ -28,27 +35,26 @@ CREATE TABLE IF NOT EXISTS users (
 """)
 
 cursor.execute("""
-CREATE TABLE IF NOT EXISTS orders (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    text TEXT NOT NULL,
-    price INTEGER NOT NULL,
-    status TEXT DEFAULT 'awaiting_receipt'
+CREATE TABLE IF NOT EXISTS users (
+    user_id BIGINT PRIMARY KEY,
+    balance INTEGER DEFAULT 0,
+    ref BIGINT
 )
 """)
 
-conn.commit()
-
-def add_column_if_not_exists(table: str, column: str, definition: str):
-    cursor.execute(f"PRAGMA table_info({table})")
-    columns = [row[1] for row in cursor.fetchall()]
-    if column not in columns:
-        cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
-        conn.commit()
-
-add_column_if_not_exists("orders", "pay_amount", "INTEGER DEFAULT 0")
-add_column_if_not_exists("orders", "discount_used", "INTEGER DEFAULT 0")
-add_column_if_not_exists("orders", "ref_bonus_given", "INTEGER DEFAULT 0")
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS orders (
+    id SERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    text TEXT NOT NULL,
+    price INTEGER NOT NULL,
+    pay_amount INTEGER DEFAULT 0,
+    discount_used INTEGER DEFAULT 0,
+    ref_bonus_given INTEGER DEFAULT 0,
+    status TEXT DEFAULT 'awaiting_receipt',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+""")
 
 REF_BONUS = 100
 
@@ -824,7 +830,7 @@ def text_handler(message):
         else:
             show_rf_instruction(chat_id, user_id, add_to_history=False)
 
-        status = "pending_review" if pay_amount == 0 else "awaiting_receipt"
+        status = "awaiting_receipt"
 
         cursor.execute(
             """
@@ -881,7 +887,7 @@ def text_handler(message):
             f"К оплате: {pay_amount}₽\n\n"
             f"Оплата по СБП:\n"
             f"Номер: 89870005569\n"
-            f"Банк: Т-Банк\n"
+            f"Банк: Яндекс-Банк\n"
             f"Получатель: Федор Е.\n\n"
             f"После оплаты нажмите «📸 Отправить чек» и отправьте скриншот.",
             reply_markup=kb
@@ -926,7 +932,7 @@ def photo_handler(message):
     cursor.execute("UPDATE orders SET status='pending_review' WHERE id=?", (order_id,))
     conn.commit()
 
-    username = message.from_user.username
+    username = message.from_user.username or "нет username"
     first_name = message.from_user.first_name or "Без имени"
     user_text = f"@{username}" if username else f"{first_name} (ID: {user_id})"
 
@@ -937,19 +943,30 @@ def photo_handler(message):
     )
 
     bot.send_photo(
-        ADMIN_ID,
-        message.photo[-1].file_id,
-        caption=(
-            f"🧾 Новый чек\n\n"
-            f"Покупатель: {user_text}\n"
-            f"ID: {user_id}\n"
-            f"Заказ: {order_text}\n"
-            f"Стоимость: {price}₽\n"
-            f"Списано с баланса: {discount_used}₽\n"
-            f"К оплате: {pay_amount}₽"
-        ),
-        reply_markup=kb
-    )
+    ADMIN_ID,
+    message.photo[-1].file_id,
+    caption=(
+        f"🧾 Новый чек\n\n"
+
+        f"👤 Пользователь:\n"
+        f"@{username}\n\n"
+
+        f"🆔 ID:\n"
+        f"<code>{user_id}</code>\n\n"
+
+        f"🔗 Открыть чат:\n"
+        f"<a href='tg://user?id={user_id}'>Написать клиенту</a>\n\n"
+
+        f"📦 Заказ:\n"
+        f"{order_text}\n\n"
+
+        f"💰 Стоимость: {price}₽\n"
+        f"🎁 Списано бонусами: {discount_used}₽\n"
+        f"💳 К оплате: {pay_amount}₽"
+    ),
+    reply_markup=kb,
+    parse_mode="HTML"
+)
 
     bot.send_message(message.chat.id, "Чек отправлен. Заказ принят в обработку.", reply_markup=main_keyboard(user_id))
 
@@ -990,11 +1007,16 @@ def callback_handler(call):
         )
 
         bot.send_message(
-            ADMIN_ID,
-            f"✅ Оплата подтверждена\n\n"
-            f"Чтобы отправить QR этому пользователю, отправь команду:\n"
-            f"/sendqr {user_id}"
-        )
+    ADMIN_ID,
+    f"✅ Оплата подтверждена\n\n"
+    f"👤 Пользователь:\n"
+    f"<a href='tg://user?id={user_id}'>Открыть чат</a>\n\n"
+    f"Username: @{call.from_user.username if call.from_user.username else 'нет'}\n"
+    f"ID: <code>{user_id}</code>\n\n"
+    f"Команда для отправки QR:\n"
+    f"/sendqr {user_id}",
+    parse_mode="HTML"
+)
 
         bot.answer_callback_query(call.id, "Оплата подтверждена")
         return
