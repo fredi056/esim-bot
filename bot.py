@@ -26,13 +26,6 @@ conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 conn.autocommit = True
 cursor = conn.cursor()
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS users (
-    user_id INTEGER PRIMARY KEY,
-    balance INTEGER DEFAULT 0,
-    ref INTEGER
-)
-""")
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS users (
@@ -144,12 +137,15 @@ selection_mode: Dict[int, Dict[str, str]] = {}
 admin_send_qr_target: Optional[int] = None
 
 def ensure_user(user_id: int, ref: Optional[int] = None) -> None:
-    cursor.execute("SELECT user_id FROM users WHERE user_id=?", (user_id,))
+    cursor.execute("SELECT user_id FROM users WHERE user_id=%s", (user_id,))
     if cursor.fetchone():
         return
     if ref == user_id:
         ref = None
-    cursor.execute("INSERT INTO users (user_id, balance, ref) VALUES (?, ?, ?)", (user_id, 0, ref))
+    cursor.execute(
+    "INSERT INTO users (user_id, balance, ref) VALUES (%s, %s, %s)",
+    (user_id, 0, ref)
+)
     conn.commit()
 
 def country_label(country: str) -> str:
@@ -203,23 +199,23 @@ def normalize_country_text(text: str) -> Optional[str]:
     return None
 
 def get_user_balance(user_id: int) -> int:
-    cursor.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
+    cursor.execute("SELECT balance FROM users WHERE user_id=%s", (user_id,))
     row = cursor.fetchone()
     return row[0] if row else 0
 
 def add_balance(user_id: int, amount: int):
-    cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (amount, user_id))
+    cursor.execute("UPDATE users SET balance = balance + %s WHERE user_id=%s", (amount, user_id))
     conn.commit()
 
 def subtract_balance(user_id: int, amount: int):
-    cursor.execute("UPDATE users SET balance = MAX(balance - ?, 0) WHERE user_id=?", (amount, user_id))
+    cursor.execute("UPDATE users SET balance = MAX(balance - %s, 0) WHERE user_id=%s", (amount, user_id))
     conn.commit()
 
 def has_paid_orders(user_id: int, exclude_order_id: Optional[int] = None) -> bool:
     if exclude_order_id:
-        cursor.execute("SELECT COUNT(*) FROM orders WHERE user_id=? AND status='paid' AND id!=?", (user_id, exclude_order_id))
+        cursor.execute("SELECT COUNT(*) FROM orders WHERE user_id=%s AND status='paid' AND id!=%s", (user_id, exclude_order_id))
     else:
-        cursor.execute("SELECT COUNT(*) FROM orders WHERE user_id=? AND status='paid'", (user_id,))
+        cursor.execute("SELECT COUNT(*) FROM orders WHERE user_id=%s AND status='paid'", (user_id,))
     return cursor.fetchone()[0] > 0
 
 def available_plan_by_gb(country: str, desired_gb: int) -> str:
@@ -427,10 +423,10 @@ def show_cabinet(chat_id: int, user_id: int, add_to_history: bool = True):
 
     balance = get_user_balance(user_id)
 
-    cursor.execute("SELECT COUNT(*) FROM orders WHERE user_id=? AND status='paid'", (user_id,))
+    cursor.execute("SELECT COUNT(*) FROM orders WHERE user_id=%s AND status='paid'", (user_id,))
     orders_count = cursor.fetchone()[0]
 
-    cursor.execute("SELECT COUNT(*) FROM users WHERE ref=?", (user_id,))
+    cursor.execute("SELECT COUNT(*) FROM users WHERE ref=%s", (user_id,))
     ref_count = cursor.fetchone()[0]
 
     ref_link = f"https://t.me/esimlimebot?start={user_id}"
@@ -833,14 +829,16 @@ def text_handler(message):
         status = "awaiting_receipt"
 
         cursor.execute(
-            """
-            INSERT INTO orders (user_id, text, price, pay_amount, discount_used, status)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (user_id, text, price, pay_amount, discount_used, status)
-        )
-        conn.commit()
-        order_id = cursor.lastrowid
+    """
+    INSERT INTO orders (user_id, text, price, pay_amount, discount_used, status)
+    VALUES (%s, %s, %s, %s, %s, %s)
+    RETURNING id
+    """,
+    (user_id, text, price, pay_amount, discount_used, status)
+)
+
+order_id = cursor.fetchone()[0]
+conn.commit()
 
         if pay_amount == 0:
             kb = types.InlineKeyboardMarkup()
@@ -918,7 +916,7 @@ def photo_handler(message):
     cursor.execute("""
         SELECT id, text, price, pay_amount, discount_used
         FROM orders
-        WHERE user_id=? AND status='awaiting_receipt'
+        WHERE user_id=%s AND status='awaiting_receipt'
         ORDER BY id DESC
         LIMIT 1
     """, (user_id,))
@@ -929,7 +927,7 @@ def photo_handler(message):
         return
 
     order_id, order_text, price, pay_amount, discount_used = row
-    cursor.execute("UPDATE orders SET status='pending_review' WHERE id=?", (order_id,))
+    cursor.execute("UPDATE orders SET status='pending_review' WHERE id=%s", (order_id,))
     conn.commit()
 
     username = message.from_user.username or "нет username"
@@ -981,14 +979,14 @@ def callback_handler(call):
 
         already_had_paid_orders = has_paid_orders(user_id, exclude_order_id=order_id)
 
-        cursor.execute("UPDATE orders SET status='paid' WHERE id=?", (order_id,))
-        cursor.execute("SELECT ref FROM users WHERE user_id=?", (user_id,))
+        cursor.execute("UPDATE orders SET status='paid' WHERE id=%s", (order_id,))
+        cursor.execute("SELECT ref FROM users WHERE user_id=%s", (user_id,))
         row = cursor.fetchone()
         ref = row[0] if row else None
 
         if ref and not already_had_paid_orders:
             add_balance(ref, REF_BONUS)
-            cursor.execute("UPDATE orders SET ref_bonus_given=1 WHERE id=?", (order_id,))
+            cursor.execute("UPDATE orders SET ref_bonus_given=1 WHERE id=%s", (order_id,))
             bot.send_message(
                 ref,
                 f"🎉 Вам начислено {REF_BONUS}₽ за реферала.\n"
@@ -1026,14 +1024,14 @@ def callback_handler(call):
         order_id = int(order_id)
         user_id = int(user_id)
 
-        cursor.execute("SELECT discount_used FROM orders WHERE id=?", (order_id,))
+        cursor.execute("SELECT discount_used FROM orders WHERE id=%s", (order_id,))
         row = cursor.fetchone()
         discount_used = row[0] if row else 0
 
         if discount_used > 0:
             add_balance(user_id, discount_used)
 
-        cursor.execute("UPDATE orders SET status='cancel' WHERE id=?", (order_id,))
+        cursor.execute("UPDATE orders SET status='cancel' WHERE id=%s", (order_id,))
         conn.commit()
 
         bot.send_message(
