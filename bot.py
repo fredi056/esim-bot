@@ -16,9 +16,6 @@ if not ADMIN_ID_RAW:
 ADMIN_ID = int(ADMIN_ID_RAW)
 bot = telebot.TeleBot(TOKEN)
 
-# Подключение к SQLite.
-# check_same_thread=False нужен, потому что TeleBot
-# может обрабатывать сообщения в разных потоках.
 conn = sqlite3.connect("db.db", check_same_thread=False)
 cursor = conn.cursor()
 
@@ -52,10 +49,6 @@ def add_column_if_not_exists(table: str, column: str, definition: str):
 add_column_if_not_exists("orders", "pay_amount", "INTEGER DEFAULT 0")
 add_column_if_not_exists("orders", "discount_used", "INTEGER DEFAULT 0")
 add_column_if_not_exists("orders", "ref_bonus_given", "INTEGER DEFAULT 0")
-add_column_if_not_exists("orders", "qr_sent", "INTEGER DEFAULT 0")
-add_column_if_not_exists("orders", "qr_file_id", "TEXT")
-add_column_if_not_exists("orders", "created_at", "TEXT DEFAULT CURRENT_TIMESTAMP")
-add_column_if_not_exists("orders", "paid_at", "TEXT")
 
 REF_BONUS = 100
 
@@ -144,9 +137,6 @@ search_mode: Dict[int, bool] = {}
 selection_mode: Dict[int, Dict[str, str]] = {}
 admin_send_qr_target: Optional[int] = None
 
-# Создает пользователя в БД при первом запуске бота.
-# Если пользователь пришел по реферальной ссылке,
-# сохраняем ID пригласившего пользователя.
 def ensure_user(user_id: int, ref: Optional[int] = None) -> None:
     cursor.execute("SELECT user_id FROM users WHERE user_id=?", (user_id,))
     if cursor.fetchone():
@@ -159,8 +149,6 @@ def ensure_user(user_id: int, ref: Optional[int] = None) -> None:
 def country_label(country: str) -> str:
     return f"{EMOJI.get(country, '🌐')} {country}"
 
-# Сохраняет историю экранов пользователя.
-# Нужна для работы кнопки «Назад».
 def push_screen(user_id: int, screen: str, payload: Optional[str] = None) -> None:
     stack = history.setdefault(user_id, [])
     if not stack or stack[-1] != (screen, payload):
@@ -189,8 +177,7 @@ def main_keyboard(user_id: Optional[int] = None):
     kb.add("📘 Инструкции")
     kb.add("👤 Личный кабинет", "❓ Помощь")
     if user_id == ADMIN_ID:
-        kb.add("📂 CRM", "📦 Заказы")
-        kb.add("📤 Отправленные QR", "📊 Расширенная статистика")
+        kb.add("📊 Админ-статистика")
     return kb
 
 def parse_price_from_order_text(text: str) -> Optional[int]:
@@ -249,9 +236,6 @@ def available_plan_by_gb(country: str, desired_gb: int) -> str:
             return plan
     return sorted_plans[-1]
 
-# Простейшая логика рекомендации объема интернета.
-# Чем больше дней и активнее использование,
-# тем больше рекомендуемый пакет.
 def recommend_gb(days: int, usage: str) -> int:
     if days <= 5:
         if usage == "light":
@@ -287,8 +271,6 @@ def usage_label(usage: str) -> str:
         "heavy": "активно: видео, Reels, YouTube, раздача интернета",
     }.get(usage, usage)
 
-# Главное меню бота.
-# Сбрасывает режим поиска и показывает основные разделы.
 def show_main(chat_id: int, user_id: int, add_to_history: bool = True):
     search_mode[user_id] = False
     selection_mode.pop(user_id, None)
@@ -461,62 +443,54 @@ def show_cabinet(chat_id: int, user_id: int, add_to_history: bool = True):
 
 def show_admin_stats(chat_id: int, user_id: int):
     if user_id != ADMIN_ID:
+        bot.send_message(chat_id, "Раздел доступен только администратору.", reply_markup=main_keyboard(user_id))
         return
 
     cursor.execute("SELECT COUNT(*) FROM users")
     total_users = cursor.fetchone()[0]
-
-    cursor.execute("SELECT COUNT(*) FROM users WHERE created_at >= datetime('now', '-1 day')")
-    users_24h = cursor.fetchone()[0] if cursor.fetchone() else 0
-
-    cursor.execute("SELECT COUNT(*) FROM users WHERE created_at >= datetime('now', '-7 day')")
-    users_7d = cursor.fetchone()[0] if cursor.fetchone() else 0
-
     cursor.execute("SELECT COUNT(*) FROM orders")
     total_orders = cursor.fetchone()[0]
-
     cursor.execute("SELECT COUNT(*) FROM orders WHERE status='paid'")
     paid_orders = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM orders WHERE status='awaiting_receipt'")
+    awaiting_orders = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM orders WHERE status='pending_review'")
+    pending_orders = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM orders WHERE status='cancel'")
+    cancelled_orders = cursor.fetchone()[0]
+    cursor.execute("SELECT COALESCE(SUM(pay_amount), 0) FROM orders WHERE status='paid'")
+    revenue = cursor.fetchone()[0]
+    cursor.execute("SELECT COALESCE(SUM(discount_used), 0) FROM orders WHERE status='paid'")
+    discounts = cursor.fetchone()[0]
+    cursor.execute("""
+        SELECT ref, COUNT(*) as cnt
+        FROM users
+        WHERE ref IS NOT NULL
+        GROUP BY ref
+        ORDER BY cnt DESC
+        LIMIT 5
+    """)
+    top_refs = cursor.fetchall()
 
-    conversion = round((paid_orders / total_orders) * 100, 1) if total_orders else 0
-
-    cursor.execute("SELECT COALESCE(AVG(pay_amount),0) FROM orders WHERE status='paid'")
-    avg_check = int(cursor.fetchone()[0] or 0)
-
-    cursor.execute("SELECT COUNT(*) FROM orders WHERE qr_sent=1")
-    qr_sent = cursor.fetchone()[0]
-
-    cursor.execute("SELECT text, COUNT(*) c FROM orders GROUP BY text ORDER BY c DESC LIMIT 5")
-    top_tariffs = cursor.fetchall()
-
-    tariffs_text = "
-".join([f"• {t[0]} — {t[1]}" for t in top_tariffs]) if top_tariffs else "Нет данных"
+    top_text = ""
+    if top_refs:
+        for i, (ref_id, cnt) in enumerate(top_refs, start=1):
+            top_text += f"{i}. ID {ref_id} — {cnt} реф.\n"
+    else:
+        top_text = "Пока нет рефералов\n"
 
     bot.send_message(
         chat_id,
-        f"📊 Расширенная статистика
-
-"
-        f"👥 Пользователей: {total_users}
-"
-        f"🆕 Новые за 24ч: {users_24h}
-"
-        f"🗓 Новые за 7 дней: {users_7d}
-
-"
-        f"📦 Всего заказов: {total_orders}
-"
-        f"✅ Оплачено: {paid_orders}
-"
-        f"📈 Конверсия: {conversion}%
-"
-        f"💳 Средний чек: {avg_check}₽
-"
-        f"📤 Отправлено QR: {qr_sent}
-
-"
-        f"🔥 Топ тарифов:
-{tariffs_text}",
+        "📊 Админ-статистика\n\n"
+        f"Пользователей всего: {total_users}\n\n"
+        f"Заказов всего: {total_orders}\n"
+        f"Оплачено: {paid_orders}\n"
+        f"Ожидают чек: {awaiting_orders}\n"
+        f"На проверке: {pending_orders}\n"
+        f"Отменено: {cancelled_orders}\n\n"
+        f"Выручка: {revenue}₽\n"
+        f"Списано бонусами: {discounts}₽\n\n"
+        f"Топ рефералов:\n{top_text}",
         reply_markup=nav_keyboard()
     )
 
@@ -672,9 +646,6 @@ def render_from_state(chat_id: int, user_id: int, state: Tuple[str, Optional[str
     else:
         show_main(chat_id, user_id, add_to_history=False)
 
-# Стартовая команда.
-# Поддерживает реферальные ссылки формата:
-# /start USER_ID
 @bot.message_handler(commands=["start"])
 def start_handler(message):
     user_id = message.from_user.id
@@ -707,8 +678,6 @@ def sendqr_handler(message):
 
     bot.send_message(message.chat.id, f"Теперь отправь ОДНО фото QR-кода. Я перешлю его пользователю {admin_send_qr_target}.")
 
-# Основной обработчик текстовых сообщений.
-# Здесь находится вся навигация по боту.
 @bot.message_handler(content_types=["text"])
 def text_handler(message):
     user_id = message.from_user.id
@@ -781,61 +750,8 @@ def text_handler(message):
         show_cabinet(chat_id, user_id, add_to_history=True)
         return
 
-    if text == "📊 Расширенная статистика":
+    if text == "📊 Админ-статистика":
         show_admin_stats(chat_id, user_id)
-        return
-
-    if text == "📂 CRM":
-        cursor.execute("SELECT id, user_id, status, pay_amount FROM orders ORDER BY id DESC LIMIT 10")
-        rows = cursor.fetchall()
-
-        text_out = "📂 CRM — последние заказы
-
-"
-        for r in rows:
-            text_out += f"#{r[0]} | 👤 {r[1]} | {r[2]} | {r[3]}₽
-"
-
-        bot.send_message(chat_id, text_out, reply_markup=nav_keyboard())
-        return
-
-    if text == "📦 Заказы":
-        cursor.execute("SELECT id, text, status FROM orders ORDER BY id DESC LIMIT 15")
-        rows = cursor.fetchall()
-
-        txt = "📦 Последние заказы
-
-"
-        for r in rows:
-            txt += f"#{r[0]} | {r[2]}
-{r[1]}
-
-"
-
-        bot.send_message(chat_id, txt, reply_markup=nav_keyboard())
-        return
-
-    if text == "📤 Отправленные QR":
-        cursor.execute("""
-            SELECT user_id, qr_file_id, paid_at
-            FROM orders
-            WHERE qr_sent=1
-            ORDER BY id DESC
-            LIMIT 15
-        """)
-        rows = cursor.fetchall()
-
-        txt = "📤 Последние отправленные QR
-
-"
-        for r in rows:
-            txt += f"👤 {r[0]}
-🆔 {r[1]}
-📅 {r[2]}
-
-"
-
-        bot.send_message(chat_id, txt, reply_markup=nav_keyboard())
         return
 
     if text == "❓ Помощь":
@@ -974,9 +890,6 @@ def text_handler(message):
 
     bot.send_message(chat_id, "Не понял команду. Нажмите нужную кнопку 👇", reply_markup=main_keyboard(user_id))
 
-# Обработка фотографий.
-# Пользователь отправляет чек,
-# администратор — QR-код eSIM.
 @bot.message_handler(content_types=["photo"])
 def photo_handler(message):
     global admin_send_qr_target
@@ -991,20 +904,7 @@ def photo_handler(message):
             "⚠️ QR-код одноразовый — не удаляйте eSIM с устройства.\n\n"
             "Если нужна помощь — @F_Evdokimov"
         )
-        file_id = message.photo[-1].file_id
-        bot.send_photo(admin_send_qr_target, file_id, caption=instruction)
-
-        cursor.execute("""
-            UPDATE orders
-            SET qr_sent=1,
-                qr_file_id=?,
-                paid_at=datetime('now')
-            WHERE user_id=?
-            AND status='paid'
-            ORDER BY id DESC
-            LIMIT 1
-        """, (file_id, admin_send_qr_target))
-        conn.commit()
+        bot.send_photo(admin_send_qr_target, message.photo[-1].file_id, caption=instruction)
         bot.send_message(ADMIN_ID, f"QR отправлен пользователю {admin_send_qr_target}")
         admin_send_qr_target = None
         return
@@ -1053,8 +953,6 @@ def photo_handler(message):
 
     bot.send_message(message.chat.id, "Чек отправлен. Заказ принят в обработку.", reply_markup=main_keyboard(user_id))
 
-# Обработка inline-кнопок администратора:
-# подтверждение или отклонение оплаты.
 @bot.callback_query_handler(func=lambda c: True)
 def callback_handler(call):
     data = call.data
@@ -1126,9 +1024,4 @@ def callback_handler(call):
         bot.answer_callback_query(call.id, "Заказ отклонен")
         return
 
-# Запуск бесконечного polling-цикла.
-# Бот постоянно слушает новые сообщения.
 bot.polling(none_stop=True)
-# Вставьте ваш полный код бота сюда.
-# Я обновлю его полностью с CRM, отправленными QR, расширенной статистикой и новыми полями orders.
-# После вставки я верну готовую цельную версию без заглушек.
