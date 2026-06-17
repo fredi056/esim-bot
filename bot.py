@@ -466,11 +466,21 @@ def show_admin_stats(chat_id: int, user_id: int):
     cursor.execute("SELECT COUNT(*) FROM users")
     total_users = cursor.fetchone()[0]
 
-    cursor.execute("SELECT COUNT(*) FROM users WHERE created_at >= datetime('now', '-1 day')")
-    users_24h = cursor.fetchone()[0] if cursor.fetchone() else 0
+    try:
+        cursor.execute(
+            "SELECT COUNT(*) FROM users WHERE created_at >= datetime('now', '-1 day')"
+        )
+        users_24h = cursor.fetchone()[0]
+    except:
+        users_24h = 0
 
-    cursor.execute("SELECT COUNT(*) FROM users WHERE created_at >= datetime('now', '-7 day')")
-    users_7d = cursor.fetchone()[0] if cursor.fetchone() else 0
+    try:
+        cursor.execute(
+            "SELECT COUNT(*) FROM users WHERE created_at >= datetime('now', '-7 day')"
+        )
+        users_7d = cursor.fetchone()[0]
+    except:
+        users_7d = 0
 
     cursor.execute("SELECT COUNT(*) FROM orders")
     total_orders = cursor.fetchone()[0]
@@ -480,43 +490,45 @@ def show_admin_stats(chat_id: int, user_id: int):
 
     conversion = round((paid_orders / total_orders) * 100, 1) if total_orders else 0
 
-    cursor.execute("SELECT COALESCE(AVG(pay_amount),0) FROM orders WHERE status='paid'")
+    cursor.execute(
+        "SELECT COALESCE(AVG(pay_amount),0) FROM orders WHERE status='paid'"
+    )
     avg_check = int(cursor.fetchone()[0] or 0)
 
-    cursor.execute("SELECT COUNT(*) FROM orders WHERE qr_sent=1")
-    qr_sent = cursor.fetchone()[0]
+    try:
+        cursor.execute("SELECT COUNT(*) FROM orders WHERE qr_sent=1")
+        qr_sent = cursor.fetchone()[0]
+    except:
+        qr_sent = 0
 
-    cursor.execute("SELECT text, COUNT(*) c FROM orders GROUP BY text ORDER BY c DESC LIMIT 5")
+    cursor.execute("""
+        SELECT text, COUNT(*) as cnt
+        FROM orders
+        GROUP BY text
+        ORDER BY cnt DESC
+        LIMIT 5
+    """)
     top_tariffs = cursor.fetchall()
 
-    tariffs_text = "
-".join([f"• {t[0]} — {t[1]}" for t in top_tariffs]) if top_tariffs else "Нет данных"
+    tariffs_text = "\n".join(
+        [f"• {row[0]} — {row[1]} шт." for row in top_tariffs]
+    )
+
+    if not tariffs_text:
+        tariffs_text = "Нет данных"
 
     bot.send_message(
         chat_id,
-        f"📊 Расширенная статистика
-
-"
-        f"👥 Пользователей: {total_users}
-"
-        f"🆕 Новые за 24ч: {users_24h}
-"
-        f"🗓 Новые за 7 дней: {users_7d}
-
-"
-        f"📦 Всего заказов: {total_orders}
-"
-        f"✅ Оплачено: {paid_orders}
-"
-        f"📈 Конверсия: {conversion}%
-"
-        f"💳 Средний чек: {avg_check}₽
-"
-        f"📤 Отправлено QR: {qr_sent}
-
-"
-        f"🔥 Топ тарифов:
-{tariffs_text}",
+        f"📊 Расширенная статистика\n\n"
+        f"👥 Пользователей: {total_users}\n"
+        f"🆕 Новые за 24 часа: {users_24h}\n"
+        f"🗓 Новые за 7 дней: {users_7d}\n\n"
+        f"📦 Всего заказов: {total_orders}\n"
+        f"✅ Оплачено: {paid_orders}\n"
+        f"📈 Конверсия: {conversion}%\n"
+        f"💳 Средний чек: {avg_check}₽\n"
+        f"📤 Отправлено QR: {qr_sent}\n\n"
+        f"🔥 Топ тарифов:\n{tariffs_text}",
         reply_markup=nav_keyboard()
     )
 
@@ -1125,10 +1137,3 @@ def callback_handler(call):
 
         bot.answer_callback_query(call.id, "Заказ отклонен")
         return
-
-# Запуск бесконечного polling-цикла.
-# Бот постоянно слушает новые сообщения.
-bot.polling(none_stop=True)
-# Вставьте ваш полный код бота сюда.
-# Я обновлю его полностью с CRM, отправленными QR, расширенной статистикой и новыми полями orders.
-# После вставки я верну готовую цельную версию без заглушек.
