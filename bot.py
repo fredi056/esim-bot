@@ -49,6 +49,10 @@ def add_column_if_not_exists(table: str, column: str, definition: str):
 add_column_if_not_exists("orders", "pay_amount", "INTEGER DEFAULT 0")
 add_column_if_not_exists("orders", "discount_used", "INTEGER DEFAULT 0")
 add_column_if_not_exists("orders", "ref_bonus_given", "INTEGER DEFAULT 0")
+add_column_if_not_exists("orders", "country", "TEXT DEFAULT ''")
+add_column_if_not_exists("orders", "tariff", "TEXT DEFAULT ''")
+add_column_if_not_exists("users", "username", "TEXT DEFAULT ''")
+add_column_if_not_exists("users", "first_name", "TEXT DEFAULT ''")
 
 REF_BONUS = 100
 
@@ -130,6 +134,8 @@ RU_COUNTRIES = {
     "аргентина": "Argentina", "чили": "Chile", "корея": "South Korea",
     "южная корея": "South Korea", "сингапур": "Singapore", "малайзия": "Malaysia",
     "катар": "Qatar", "тунис": "Tunisia", "мексика": "Mexico", "канада": "Canada",
+    "филиппины": "Philippines", "мальдивы": "Maldives",
+    "uae": "United Arab Emirates", "usa": "United States",
 }
 
 history: Dict[int, List[Tuple[str, Optional[str]]]] = {}
@@ -137,14 +143,32 @@ search_mode: Dict[int, bool] = {}
 selection_mode: Dict[int, Dict[str, str]] = {}
 admin_send_qr_target: Optional[int] = None
 
-def ensure_user(user_id: int, ref: Optional[int] = None) -> None:
+def ensure_user(user_id: int, ref: Optional[int] = None, username: Optional[str] = None, first_name: Optional[str] = None) -> None:
+    username = username or ""
+    first_name = first_name or ""
     cursor.execute("SELECT user_id FROM users WHERE user_id=?", (user_id,))
     if cursor.fetchone():
+        cursor.execute(
+            "UPDATE users SET username=?, first_name=? WHERE user_id=?",
+            (username, first_name, user_id)
+        )
+        conn.commit()
         return
     if ref == user_id:
         ref = None
-    cursor.execute("INSERT INTO users (user_id, balance, ref) VALUES (?, ?, ?)", (user_id, 0, ref))
+    cursor.execute(
+        "INSERT INTO users (user_id, balance, ref, username, first_name) VALUES (?, ?, ?, ?, ?)",
+        (user_id, 0, ref, username, first_name)
+    )
     conn.commit()
+
+def remember_user_from_message(message, ref: Optional[int] = None) -> None:
+    ensure_user(
+        message.from_user.id,
+        ref=ref,
+        username=message.from_user.username,
+        first_name=message.from_user.first_name
+    )
 
 def country_label(country: str) -> str:
     return f"{EMOJI.get(country, '🌐')} {country}"
@@ -186,6 +210,45 @@ def parse_price_from_order_text(text: str) -> Optional[int]:
     except Exception:
         return None
 
+def parse_order_details(text: str) -> Tuple[str, str]:
+    clean = text.strip()
+    if " | " in clean:
+        country_part, tariff_part = clean.split(" | ", 1)
+        country = normalize_country_text(country_part)
+        if not country and " " in country_part:
+            country = country_part.split(" ", 1)[1].strip()
+        tariff = tariff_part.split("—", 1)[0].strip()
+        return country or country_part.strip(), tariff
+
+    tariff = clean.split("—", 1)[0].strip()
+    return "Russia", tariff
+
+def format_user_for_admin(user_id: int) -> str:
+    cursor.execute("SELECT username, first_name FROM users WHERE user_id=?", (user_id,))
+    row = cursor.fetchone()
+    if not row:
+        return f"ID: {user_id}"
+    username, first_name = row
+    parts = [f"ID: {user_id}"]
+    if username:
+        parts.append(f"@{username}")
+    if first_name:
+        parts.append(first_name)
+    return " | ".join(parts)
+
+def status_label(status: str) -> str:
+    return {
+        "awaiting_receipt": "ожидает чек",
+        "pending_review": "на проверке",
+        "paid": "оплачено",
+        "cancel": "отменено",
+    }.get(status, status)
+
+def format_top_rows(rows: List[Tuple[str, int]], empty_text: str) -> str:
+    if not rows:
+        return empty_text
+    return "\n".join(f"{i}. {name or 'Не указано'} — {cnt}" for i, (name, cnt) in enumerate(rows, start=1))
+
 def normalize_country_text(text: str) -> Optional[str]:
     clean = text.strip()
     lowered = clean.lower()
@@ -195,6 +258,20 @@ def normalize_country_text(text: str) -> Optional[str]:
         if clean == country or clean == country_label(country):
             return country
     return None
+
+def backfill_order_details() -> None:
+    cursor.execute("SELECT id, text FROM orders WHERE country='' OR tariff='' OR country IS NULL OR tariff IS NULL")
+    rows = cursor.fetchall()
+    for order_id, order_text in rows:
+        country, tariff = parse_order_details(order_text)
+        cursor.execute(
+            "UPDATE orders SET country=?, tariff=? WHERE id=?",
+            (country, tariff, order_id)
+        )
+    if rows:
+        conn.commit()
+
+backfill_order_details()
 
 def get_user_balance(user_id: int) -> int:
     cursor.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
@@ -462,35 +539,62 @@ def show_admin_stats(chat_id: int, user_id: int):
     revenue = cursor.fetchone()[0]
     cursor.execute("SELECT COALESCE(SUM(discount_used), 0) FROM orders WHERE status='paid'")
     discounts = cursor.fetchone()[0]
+
     cursor.execute("""
-        SELECT ref, COUNT(*) as cnt
-        FROM users
-        WHERE ref IS NOT NULL
-        GROUP BY ref
+        SELECT COALESCE(NULLIF(country, ''), 'Не указано') AS name, COUNT(*) AS cnt
+        FROM orders
+        GROUP BY name
         ORDER BY cnt DESC
         LIMIT 5
     """)
-    top_refs = cursor.fetchall()
+    top_countries = format_top_rows(cursor.fetchall(), "Пока нет заказов")
 
-    top_text = ""
-    if top_refs:
-        for i, (ref_id, cnt) in enumerate(top_refs, start=1):
-            top_text += f"{i}. ID {ref_id} — {cnt} реф.\n"
+    cursor.execute("""
+        SELECT COALESCE(NULLIF(tariff, ''), 'Не указано') AS name, COUNT(*) AS cnt
+        FROM orders
+        GROUP BY name
+        ORDER BY cnt DESC
+        LIMIT 5
+    """)
+    top_tariffs = format_top_rows(cursor.fetchall(), "Пока нет заказов")
+
+    cursor.execute("""
+        SELECT o.id, o.user_id, u.username, u.first_name, o.country, o.tariff, o.pay_amount, o.status
+        FROM orders o
+        LEFT JOIN users u ON u.user_id = o.user_id
+        ORDER BY o.id DESC
+        LIMIT 10
+    """)
+    recent_orders = cursor.fetchall()
+    crm_text = ""
+    if recent_orders:
+        for order_id, order_user_id, username, first_name, country, tariff, amount, status in recent_orders:
+            user_line = f"ID {order_user_id}"
+            if username:
+                user_line += f" | @{username}"
+            if first_name:
+                user_line += f" | {first_name}"
+            crm_text += (
+                f"#{order_id} | {user_line}\n"
+                f"{country or 'Не указано'} | {tariff or 'Не указано'} | {amount}₽ | {status_label(status)}\n\n"
+            )
     else:
-        top_text = "Пока нет рефералов\n"
+        crm_text = "Пока нет заказов"
 
     bot.send_message(
         chat_id,
         "📊 Админ-статистика\n\n"
-        f"Пользователей всего: {total_users}\n\n"
-        f"Заказов всего: {total_orders}\n"
+        f"Всего пользователей: {total_users}\n\n"
+        f"Всего заказов: {total_orders}\n"
         f"Оплачено: {paid_orders}\n"
         f"Ожидают чек: {awaiting_orders}\n"
         f"На проверке: {pending_orders}\n"
         f"Отменено: {cancelled_orders}\n\n"
         f"Выручка: {revenue}₽\n"
         f"Списано бонусами: {discounts}₽\n\n"
-        f"Топ рефералов:\n{top_text}",
+        f"Топ стран:\n{top_countries}\n\n"
+        f"Топ тарифов:\n{top_tariffs}\n\n"
+        f"Последние заказы:\n{crm_text}",
         reply_markup=nav_keyboard()
     )
 
@@ -656,18 +760,23 @@ def start_handler(message):
             ref = int(parts[1])
         except ValueError:
             ref = None
-    ensure_user(user_id, ref)
+    remember_user_from_message(message, ref)
     show_main(message.chat.id, user_id, add_to_history=True)
 
 @bot.message_handler(commands=["sendqr"])
 def sendqr_handler(message):
     global admin_send_qr_target
+
     if message.from_user.id != ADMIN_ID:
         return
 
     parts = message.text.split()
+
     if len(parts) != 2:
-        bot.send_message(message.chat.id, "Используй так: /sendqr USER_ID")
+        bot.send_message(
+            message.chat.id,
+            "Используй так:\n/sendqr USER_ID\n\nНапример:\n/sendqr 888804373"
+        )
         return
 
     try:
@@ -676,7 +785,73 @@ def sendqr_handler(message):
         bot.send_message(message.chat.id, "USER_ID должен быть числом.")
         return
 
-    bot.send_message(message.chat.id, f"Теперь отправь ОДНО фото QR-кода. Я перешлю его пользователю {admin_send_qr_target}.")
+    bot.send_message(
+        message.chat.id,
+        f"✅ Режим отправки eSIM включен.\n\n"
+        f"Клиент: {admin_send_qr_target}\n\n"
+        f"Теперь отправь сюда ОДНО сообщение от поставщика:\n"
+        f"— текст с QR-ссылкой\n"
+        f"— фото QR\n"
+        f"— фото с подписью\n"
+        f"— инструкцию со ссылками\n"
+        f"— документ или картинку\n\n"
+        f"Я скопирую это сообщение клиенту полностью.\n\n"
+        f"Чтобы отменить: /cancelqr"
+    )
+
+
+@bot.message_handler(commands=["cancelqr"])
+def cancelqr_handler(message):
+    global admin_send_qr_target
+
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    admin_send_qr_target = None
+    bot.send_message(message.chat.id, "❌ Отправка eSIM отменена.")
+
+
+def is_admin_esim_message(message) -> bool:
+    if message.from_user.id != ADMIN_ID:
+        return False
+    if admin_send_qr_target is None:
+        return False
+    if message.content_type == "text" and message.text and message.text.startswith("/"):
+        return False
+    return True
+
+
+@bot.message_handler(
+    func=is_admin_esim_message,
+    content_types=["text", "photo", "document", "video", "animation", "audio", "voice"]
+)
+def admin_send_esim_message(message):
+    global admin_send_qr_target
+
+    target_user_id = admin_send_qr_target
+
+    try:
+        bot.copy_message(
+            chat_id=target_user_id,
+            from_chat_id=message.chat.id,
+            message_id=message.message_id
+        )
+
+        bot.send_message(
+            ADMIN_ID,
+            f"✅ eSIM отправлена пользователю {target_user_id}"
+        )
+
+        admin_send_qr_target = None
+
+    except Exception as e:
+        bot.send_message(
+            ADMIN_ID,
+            f"❌ Не удалось отправить eSIM пользователю {target_user_id}.\n\n"
+            f"Ошибка:\n{e}\n\n"
+            f"Режим отправки не сброшен. Можно отправить сообщение ещё раз или отменить командой /cancelqr."
+        )
+
 
 @bot.message_handler(content_types=["text"])
 def text_handler(message):
@@ -684,7 +859,7 @@ def text_handler(message):
     chat_id = message.chat.id
     text = message.text.strip()
 
-    ensure_user(user_id)
+    remember_user_from_message(message)
 
     if text == "🏠 В начало":
         show_main(chat_id, user_id, add_to_history=True)
@@ -819,6 +994,8 @@ def text_handler(message):
         if discount_used > 0:
             subtract_balance(user_id, discount_used)
 
+        country, tariff = parse_order_details(text)
+
         if "|" in text:
             show_travel_instruction(chat_id, user_id, add_to_history=False)
         else:
@@ -828,15 +1005,24 @@ def text_handler(message):
 
         cursor.execute(
             """
-            INSERT INTO orders (user_id, text, price, pay_amount, discount_used, status)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO orders (user_id, text, price, pay_amount, discount_used, status, country, tariff)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (user_id, text, price, pay_amount, discount_used, status)
+            (user_id, text, price, pay_amount, discount_used, status, country, tariff)
         )
         conn.commit()
         order_id = cursor.lastrowid
 
         if pay_amount == 0:
+            bot.send_message(
+                ADMIN_ID,
+                f"Детали заказа #{order_id}\n"
+                f"Покупатель: {format_user_for_admin(user_id)}\n"
+                f"Страна: {country}\n"
+                f"Тариф: {tariff}\n"
+                f"Сумма: {price}₽\n"
+                f"К оплате: 0₽"
+            )
             kb = types.InlineKeyboardMarkup()
             kb.add(
                 types.InlineKeyboardButton("✅ Подтвердить", callback_data=f"ok_{order_id}_{user_id}_{pay_amount}"),
@@ -894,23 +1080,28 @@ def text_handler(message):
 def photo_handler(message):
     global admin_send_qr_target
     user_id = message.from_user.id
+    remember_user_from_message(message)
 
     if user_id == ADMIN_ID and admin_send_qr_target:
-        instruction = (
-            "✅ Ваш QR-код eSIM\n\n"
-            "📌 После установки:\n"
-            "1. Включите роуминг в настройках eSIM\n"
-            "2. Используйте eSIM для передачи данных\n\n"
-            "⚠️ QR-код одноразовый — не удаляйте eSIM с устройства.\n\n"
-            "Если нужна помощь — @F_Evdokimov"
-        )
-        bot.send_photo(admin_send_qr_target, message.photo[-1].file_id, caption=instruction)
-        bot.send_message(ADMIN_ID, f"QR отправлен пользователю {admin_send_qr_target}")
-        admin_send_qr_target = None
-        return
+        target_user_id = admin_send_qr_target
+        try:
+            bot.copy_message(
+                chat_id=target_user_id,
+                from_chat_id=message.chat.id,
+                message_id=message.message_id
+            )
+            bot.send_message(ADMIN_ID, f"✅ eSIM отправлена пользователю {target_user_id}")
+            admin_send_qr_target = None
+            return
+        except Exception as e:
+            bot.send_message(
+                ADMIN_ID,
+                f"❌ Не удалось отправить eSIM пользователю {target_user_id}.\n\nОшибка:\n{e}"
+            )
+            return
 
     cursor.execute("""
-        SELECT id, text, price, pay_amount, discount_used
+        SELECT id, text, price, pay_amount, discount_used, country, tariff
         FROM orders
         WHERE user_id=? AND status='awaiting_receipt'
         ORDER BY id DESC
@@ -922,7 +1113,7 @@ def photo_handler(message):
         bot.send_message(message.chat.id, "Не нашел заказ, который ждет чек. Сначала выберите тариф.", reply_markup=main_keyboard(user_id))
         return
 
-    order_id, order_text, price, pay_amount, discount_used = row
+    order_id, order_text, price, pay_amount, discount_used, country, tariff = row
     cursor.execute("UPDATE orders SET status='pending_review' WHERE id=?", (order_id,))
     conn.commit()
 
@@ -934,6 +1125,16 @@ def photo_handler(message):
     kb.add(
         types.InlineKeyboardButton("✅ Подтвердить", callback_data=f"ok_{order_id}_{user_id}_{pay_amount}"),
         types.InlineKeyboardButton("❌ Отклонить", callback_data=f"no_{order_id}_{user_id}")
+    )
+
+    bot.send_message(
+        ADMIN_ID,
+        f"Детали чека по заказу #{order_id}\n"
+        f"Покупатель: {format_user_for_admin(user_id)}\n"
+        f"Страна: {country}\n"
+        f"Тариф: {tariff}\n"
+        f"Сумма: {price}₽\n"
+        f"К оплате: {pay_amount}₽"
     )
 
     bot.send_photo(
@@ -965,6 +1166,12 @@ def callback_handler(call):
         already_had_paid_orders = has_paid_orders(user_id, exclude_order_id=order_id)
 
         cursor.execute("UPDATE orders SET status='paid' WHERE id=?", (order_id,))
+        cursor.execute("SELECT country, tariff, price, pay_amount FROM orders WHERE id=?", (order_id,))
+        order_row = cursor.fetchone()
+        country = order_row[0] if order_row else "Не указано"
+        tariff = order_row[1] if order_row else "Не указано"
+        price = order_row[2] if order_row else 0
+        pay_amount = order_row[3] if order_row else 0
         cursor.execute("SELECT ref FROM users WHERE user_id=?", (user_id,))
         row = cursor.fetchone()
         ref = row[0] if row else None
@@ -992,7 +1199,13 @@ def callback_handler(call):
         bot.send_message(
             ADMIN_ID,
             f"✅ Оплата подтверждена\n\n"
-            f"Чтобы отправить QR этому пользователю, отправь команду:\n"
+            f"Заказ #{order_id}\n"
+            f"Покупатель: {format_user_for_admin(user_id)}\n"
+            f"Страна: {country}\n"
+            f"Тариф: {tariff}\n"
+            f"Сумма: {price}₽\n"
+            f"К оплате: {pay_amount}₽\n\n"
+            f"Чтобы отправить eSIM этому пользователю, отправь команду:\n"
             f"/sendqr {user_id}"
         )
 
