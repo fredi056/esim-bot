@@ -1,5 +1,7 @@
 import os
 import sqlite3
+import threading
+import time
 from typing import Optional, Dict, List, Tuple
 
 import telebot
@@ -18,6 +20,8 @@ bot = telebot.TeleBot(TOKEN)
 
 DB_PATH = os.getenv("DB_PATH", "db.db")
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+conn.execute("PRAGMA busy_timeout = 5000")
+conn.execute("PRAGMA journal_mode = WAL")
 cursor = conn.cursor()
 
 cursor.execute("""
@@ -52,8 +56,30 @@ add_column_if_not_exists("orders", "discount_used", "INTEGER DEFAULT 0")
 add_column_if_not_exists("orders", "ref_bonus_given", "INTEGER DEFAULT 0")
 add_column_if_not_exists("orders", "country", "TEXT DEFAULT ''")
 add_column_if_not_exists("orders", "tariff", "TEXT DEFAULT ''")
+add_column_if_not_exists("orders", "created_at", "INTEGER DEFAULT 0")
+add_column_if_not_exists("orders", "receipt_received_at", "INTEGER DEFAULT 0")
+add_column_if_not_exists("orders", "paid_at", "INTEGER DEFAULT 0")
+add_column_if_not_exists("orders", "esim_sent_at", "INTEGER DEFAULT 0")
+add_column_if_not_exists("orders", "install_confirmed", "INTEGER DEFAULT 0")
 add_column_if_not_exists("users", "username", "TEXT DEFAULT ''")
 add_column_if_not_exists("users", "first_name", "TEXT DEFAULT ''")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS reminder_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    order_id INTEGER NOT NULL,
+    reminder_type TEXT NOT NULL,
+    scheduled_at INTEGER NOT NULL,
+    status TEXT DEFAULT 'pending',
+    attempts INTEGER DEFAULT 0,
+    last_error TEXT DEFAULT '',
+    created_at INTEGER NOT NULL,
+    sent_at INTEGER DEFAULT 0,
+    UNIQUE(order_id, reminder_type)
+)
+""")
+conn.commit()
 
 REF_BONUS = 100
 
@@ -234,6 +260,7 @@ history: Dict[int, List[Tuple[str, Optional[str]]]] = {}
 search_mode: Dict[int, bool] = {}
 selection_mode: Dict[int, Dict[str, str]] = {}
 admin_send_qr_target: Optional[int] = None
+admin_send_qr_order_id: Optional[int] = None
 
 def ensure_user(user_id: int, ref: Optional[int] = None, username: Optional[str] = None, first_name: Optional[str] = None) -> None:
     username = username or ""
@@ -393,6 +420,206 @@ def format_top_rows(rows: List[Tuple[str, int]], empty_text: str) -> str:
     if not rows:
         return empty_text
     return "\n".join(f"{i}. {name or 'Не указано'} — {cnt}" for i, (name, cnt) in enumerate(rows, start=1))
+
+def install_instruction_text() -> str:
+    return (
+        "📲 Как установить eSIM\n\n"
+        "Если в полученном сообщении есть ссылка установки, откройте её на том телефоне, куда устанавливаете eSIM, "
+        "и следуйте подсказкам.\n\n"
+        "На iPhone ссылка поддерживается начиная с iOS 17.4.\n"
+        "На Android возможность зависит от модели телефона и поставщика eSIM.\n\n"
+        "Если ссылка не открывается или её нет, используйте QR-код.\n\n"
+        "⚠️ Не удаляйте установленную eSIM: повторная установка может быть недоступна."
+    )
+
+def schedule_reminder(user_id: int, order_id: int, reminder_type: str, scheduled_at: int, db_cursor=None, db_conn=None) -> None:
+    db_cursor = db_cursor or cursor
+    db_conn = db_conn or conn
+    now = int(time.time())
+    db_cursor.execute(
+        """
+        INSERT OR IGNORE INTO reminder_jobs
+            (user_id, order_id, reminder_type, scheduled_at, status, attempts, last_error, created_at, sent_at)
+        VALUES (?, ?, ?, ?, 'pending', 0, '', ?, 0)
+        """,
+        (user_id, order_id, reminder_type, scheduled_at, now)
+    )
+    db_conn.commit()
+
+def cancel_order_reminders(order_id: int, db_cursor=None, db_conn=None) -> None:
+    db_cursor = db_cursor or cursor
+    db_conn = db_conn or conn
+    db_cursor.execute(
+        "UPDATE reminder_jobs SET status='cancelled' WHERE order_id=? AND status IN ('pending', 'processing')",
+        (order_id,)
+    )
+    db_conn.commit()
+
+def cancel_reminders_by_type(order_id: int, reminder_types, db_cursor=None, db_conn=None) -> None:
+    db_cursor = db_cursor or cursor
+    db_conn = db_conn or conn
+    if isinstance(reminder_types, str):
+        reminder_types = [reminder_types]
+    for reminder_type in reminder_types:
+        db_cursor.execute(
+            "UPDATE reminder_jobs SET status='cancelled' WHERE order_id=? AND reminder_type=? AND status IN ('pending', 'processing')",
+            (order_id, reminder_type)
+        )
+    db_conn.commit()
+
+def reminder_stop_keyboard(order_id: int):
+    kb = types.InlineKeyboardMarkup()
+    kb.add(
+        types.InlineKeyboardButton("📸 Как отправить чек", callback_data=f"receipt_help_{order_id}"),
+        types.InlineKeyboardButton("🔕 Не напоминать", callback_data=f"reminder_stop_{order_id}")
+    )
+    return kb
+
+def install_check_keyboard(order_id: int):
+    kb = types.InlineKeyboardMarkup()
+    kb.add(
+        types.InlineKeyboardButton("✅ Всё установлено", callback_data=f"install_ok_{order_id}"),
+        types.InlineKeyboardButton("🆘 Нужна помощь", callback_data=f"install_help_{order_id}")
+    )
+    return kb
+
+def mark_due_reminder(db_cursor, job_id: int) -> bool:
+    db_cursor.execute(
+        "UPDATE reminder_jobs SET status='processing' WHERE id=? AND status='pending'",
+        (job_id,)
+    )
+    return db_cursor.rowcount == 1
+
+def send_reminder_job(db_cursor, job) -> bool:
+    job_id, user_id, order_id, reminder_type, attempts = job
+    db_cursor.execute(
+        """
+        SELECT status, country, tariff, pay_amount, created_at, receipt_received_at, esim_sent_at, install_confirmed
+        FROM orders
+        WHERE id=? AND user_id=?
+        """,
+        (order_id, user_id)
+    )
+    order = db_cursor.fetchone()
+    if not order:
+        return False
+
+    status, country, tariff, pay_amount, created_at, receipt_received_at, esim_sent_at, install_confirmed = order
+    country = country or "Не указано"
+    tariff = tariff or "Не указано"
+
+    if reminder_type in ("payment_30m", "payment_24h"):
+        if status != "awaiting_receipt" or created_at <= 0:
+            return False
+        if reminder_type == "payment_30m":
+            text = (
+                "🧾 Вы выбрали тариф, но чек пока не получен\n\n"
+                f"Ваш заказ:\n{country} | {tariff}\n\n"
+                f"К оплате: {pay_amount} ₽\n\n"
+                "Если вы уже оплатили, отправьте скриншот чека одним сообщением.\n"
+                "Если нужна помощь — напишите @F_Evdokimov."
+            )
+        else:
+            text = (
+                "⏰ Напоминание о заказе\n\n"
+                f"Вы выбирали:\n{country} | {tariff}\n\n"
+                f"К оплате: {pay_amount} ₽\n\n"
+                "Заказ пока не оплачен. Если он больше не нужен, напоминания можно отключить."
+            )
+        bot.send_message(user_id, text, reply_markup=reminder_stop_keyboard(order_id))
+        return True
+
+    if reminder_type == "review_15m":
+        if status != "pending_review" or receipt_received_at <= 0:
+            return False
+        bot.send_message(
+            user_id,
+            "⏳ Чек получен и находится на проверке\n\n"
+            "Повторно отправлять его не нужно.\n\n"
+            "После подтверждения оплаты мы подготовим данные для установки eSIM.\n"
+            "Если нужна помощь — напишите @F_Evdokimov."
+        )
+        return True
+
+    if reminder_type == "install_2h":
+        if status != "paid" or esim_sent_at <= 0 or install_confirmed:
+            return False
+        bot.send_message(
+            user_id,
+            "📲 Получилось установить eSIM?\n\n"
+            "Если всё работает — подтвердите установку.\n\n"
+            "Если возникла ошибка, напишите нам — поможем разобраться.",
+            reply_markup=install_check_keyboard(order_id)
+        )
+        return True
+
+    return False
+
+def reminder_worker():
+    worker_conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    worker_conn.execute("PRAGMA busy_timeout = 5000")
+    worker_conn.execute("PRAGMA journal_mode = WAL")
+    worker_cursor = worker_conn.cursor()
+
+    while True:
+        try:
+            now = int(time.time())
+            worker_cursor.execute(
+                """
+                SELECT id, user_id, order_id, reminder_type, attempts
+                FROM reminder_jobs
+                WHERE status='pending' AND scheduled_at<=?
+                ORDER BY scheduled_at ASC
+                LIMIT 10
+                """,
+                (now,)
+            )
+            jobs = worker_cursor.fetchall()
+
+            for job in jobs:
+                job_id = job[0]
+                if not mark_due_reminder(worker_cursor, job_id):
+                    worker_conn.commit()
+                    continue
+                worker_conn.commit()
+
+                try:
+                    sent = send_reminder_job(worker_cursor, job)
+                    if sent:
+                        worker_cursor.execute(
+                            "UPDATE reminder_jobs SET status='sent', sent_at=? WHERE id=?",
+                            (int(time.time()), job_id)
+                        )
+                    else:
+                        worker_cursor.execute(
+                            "UPDATE reminder_jobs SET status='cancelled' WHERE id=?",
+                            (job_id,)
+                        )
+                    worker_conn.commit()
+                except Exception as exc:
+                    attempts = job[4] + 1
+                    if attempts >= 3:
+                        worker_cursor.execute(
+                            "UPDATE reminder_jobs SET status='failed', attempts=?, last_error=? WHERE id=?",
+                            (attempts, str(exc)[:500], job_id)
+                        )
+                    else:
+                        worker_cursor.execute(
+                            """
+                            UPDATE reminder_jobs
+                            SET status='pending', attempts=?, last_error=?, scheduled_at=?
+                            WHERE id=?
+                            """,
+                            (attempts, str(exc)[:500], int(time.time()) + 5 * 60, job_id)
+                        )
+                    worker_conn.commit()
+        except Exception:
+            try:
+                worker_conn.rollback()
+            except Exception:
+                pass
+
+        time.sleep(60)
 
 def normalize_country_text(text: str) -> Optional[str]:
     clean = text.strip()
@@ -622,9 +849,10 @@ def show_how_it_works(chat_id: int, user_id: int, add_to_history: bool = True):
         "1. Вы выбираете страну или тариф\n"
         "2. Оплачиваете заказ\n"
         "3. Отправляете чек\n"
-        "4. Получаете QR-код\n"
-        "5. Сканируете QR-код камерой телефона\n"
-        "6. Включаете eSIM для передачи данных\n\n"
+        "4. Получаете ссылку установки и/или QR-код\n"
+        "5. Открываете ссылку на телефоне и следуете подсказкам\n"
+        "6. Если ссылка не поддерживается, устанавливаете eSIM через QR-код\n"
+        "7. Включаете eSIM для передачи данных\n\n"
         "Без салонов связи, без физической SIM-карты и без сложных настроек.",
         reply_markup=nav_keyboard()
     )
@@ -832,10 +1060,13 @@ def show_rf_instruction(chat_id: int, user_id: int, add_to_history: bool = True)
         "Проверьте совместимость телефона.\n"
         "Наберите на телефоне команду: *#06#\n"
         "Если в списке есть строка EID — смартфон поддерживает eSIM.\n\n"
-        "Установите eSIM через QR-код.\n"
+        "Если вместе с eSIM пришла ссылка установки, откройте её на телефоне и следуйте подсказкам.\n\n"
+        "На iPhone ссылка поддерживается начиная с iOS 17.4.\n"
+        "На Android возможность зависит от модели и поставщика.\n\n"
+        "Если ссылка не открывается или её нет, используйте QR-код.\n\n"
         "Включите роуминг на eSIM.\n"
         "Переключите передачу данных на eSIM.\n\n"
-        "⚠️ QR-код одноразовый — не удаляйте eSIM с устройства.",
+        "⚠️ QR-код может быть одноразовым — не удаляйте установленную eSIM с устройства.",
         reply_markup=nav_keyboard()
     )
 
@@ -850,11 +1081,13 @@ def show_travel_instruction(chat_id: int, user_id: int, add_to_history: bool = T
         "1. Выберите страну и тариф.\n"
         "2. Проверьте, что телефон поддерживает eSIM.\n"
         "3. После оплаты отправьте чек.\n"
-        "4. Получите QR-код и инструкцию.\n"
-        "5. Установите eSIM до поездки или по прилёту.\n"
-        "6. Включите роуминг на eSIM.\n"
-        "7. Переключите передачу данных на eSIM.\n\n"
-        "⚠️ QR-код одноразовый — не удаляйте eSIM с устройства.",
+        "4. Получите ссылку установки и/или QR-код.\n"
+        "5. Если пришла ссылка и телефон её поддерживает, откройте её на нужном устройстве.\n"
+        "6. Если ссылка не работает или её нет, используйте QR-код.\n"
+        "7. Установите eSIM до поездки.\n"
+        "8. По прилёте включите роуминг на туристической eSIM.\n"
+        "9. Переключите передачу данных на туристическую eSIM.\n\n"
+        "⚠️ Не удаляйте установленную eSIM: повторная установка может быть недоступна.",
         reply_markup=nav_keyboard()
     )
 
@@ -975,30 +1208,68 @@ def start_handler(message):
 
 @bot.message_handler(commands=["sendqr"])
 def sendqr_handler(message):
-    global admin_send_qr_target
+    global admin_send_qr_target, admin_send_qr_order_id
 
     if message.from_user.id != ADMIN_ID:
         return
 
     parts = message.text.split()
 
-    if len(parts) != 2:
+    if len(parts) not in (2, 3):
         bot.send_message(
             message.chat.id,
-            "Используй так:\n/sendqr USER_ID\n\nНапример:\n/sendqr 888804373"
+            "Используй так:\n/sendqr USER_ID ORDER_ID\n\n"
+            "Например:\n/sendqr 888804373 125\n\n"
+            "Старый формат тоже работает:\n/sendqr USER_ID"
         )
         return
 
     try:
-        admin_send_qr_target = int(parts[1])
+        target_user_id = int(parts[1])
     except ValueError:
         bot.send_message(message.chat.id, "USER_ID должен быть числом.")
         return
 
+    if len(parts) == 3:
+        try:
+            order_id = int(parts[2])
+        except ValueError:
+            bot.send_message(message.chat.id, "ORDER_ID должен быть числом.")
+            return
+
+        cursor.execute("SELECT id, status FROM orders WHERE id=? AND user_id=?", (order_id, target_user_id))
+        row = cursor.fetchone()
+        if not row:
+            bot.send_message(message.chat.id, "Не нашёл такой заказ у указанного пользователя.")
+            return
+        if row[1] != "paid":
+            bot.send_message(message.chat.id, "eSIM можно отправить только по оплаченному заказу.")
+            return
+    else:
+        cursor.execute(
+            """
+            SELECT id
+            FROM orders
+            WHERE user_id=? AND status='paid' AND COALESCE(esim_sent_at, 0)=0
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (target_user_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            bot.send_message(message.chat.id, "Не нашёл оплаченный заказ без отправленной eSIM для этого пользователя.")
+            return
+        order_id = row[0]
+
+    admin_send_qr_target = target_user_id
+    admin_send_qr_order_id = order_id
+
     bot.send_message(
         message.chat.id,
         f"✅ Режим отправки eSIM включен.\n\n"
-        f"Клиент: {admin_send_qr_target}\n\n"
+        f"Клиент: {admin_send_qr_target}\n"
+        f"Заказ: #{admin_send_qr_order_id}\n\n"
         f"Теперь отправь сюда ОДНО сообщение от поставщика:\n"
         f"— текст с QR-ссылкой\n"
         f"— фото QR\n"
@@ -1012,19 +1283,20 @@ def sendqr_handler(message):
 
 @bot.message_handler(commands=["cancelqr"])
 def cancelqr_handler(message):
-    global admin_send_qr_target
+    global admin_send_qr_target, admin_send_qr_order_id
 
     if message.from_user.id != ADMIN_ID:
         return
 
     admin_send_qr_target = None
+    admin_send_qr_order_id = None
     bot.send_message(message.chat.id, "❌ Отправка eSIM отменена.")
 
 
 def is_admin_esim_message(message) -> bool:
     if message.from_user.id != ADMIN_ID:
         return False
-    if admin_send_qr_target is None:
+    if admin_send_qr_target is None or admin_send_qr_order_id is None:
         return False
     if message.content_type == "text" and message.text and message.text.startswith("/"):
         return False
@@ -1036,9 +1308,10 @@ def is_admin_esim_message(message) -> bool:
     content_types=["text", "photo", "document", "video", "animation", "audio", "voice"]
 )
 def admin_send_esim_message(message):
-    global admin_send_qr_target
+    global admin_send_qr_target, admin_send_qr_order_id
 
     target_user_id = admin_send_qr_target
+    order_id = admin_send_qr_order_id
 
     try:
         bot.copy_message(
@@ -1046,13 +1319,25 @@ def admin_send_esim_message(message):
             from_chat_id=message.chat.id,
             message_id=message.message_id
         )
+        bot.send_message(target_user_id, install_instruction_text())
+
+        now = int(time.time())
+        cursor.execute("SELECT COALESCE(esim_sent_at, 0) FROM orders WHERE id=? AND user_id=?", (order_id, target_user_id))
+        row = cursor.fetchone()
+        already_sent = bool(row and row[0])
+        cursor.execute("UPDATE orders SET esim_sent_at=? WHERE id=? AND user_id=?", (now, order_id, target_user_id))
+        conn.commit()
+        if not already_sent:
+            schedule_reminder(target_user_id, order_id, "install_2h", now + 2 * 60 * 60)
 
         bot.send_message(
             ADMIN_ID,
-            f"✅ eSIM отправлена пользователю {target_user_id}"
+            f"✅ eSIM отправлена пользователю {target_user_id}\n"
+            f"Заказ #{order_id}"
         )
 
         admin_send_qr_target = None
+        admin_send_qr_order_id = None
 
     except Exception as e:
         bot.send_message(
@@ -1220,16 +1505,20 @@ def text_handler(message):
             show_rf_instruction(chat_id, user_id, add_to_history=False)
 
         status = "pending_review" if pay_amount == 0 else "awaiting_receipt"
+        created_at = int(time.time())
 
         cursor.execute(
             """
-            INSERT INTO orders (user_id, text, price, pay_amount, discount_used, status, country, tariff)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO orders (user_id, text, price, pay_amount, discount_used, status, country, tariff, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (user_id, text, price, pay_amount, discount_used, status, country, tariff)
+            (user_id, text, price, pay_amount, discount_used, status, country, tariff, created_at)
         )
         conn.commit()
         order_id = cursor.lastrowid
+        if status == "awaiting_receipt":
+            schedule_reminder(user_id, order_id, "payment_30m", created_at + 30 * 60)
+            schedule_reminder(user_id, order_id, "payment_24h", created_at + 24 * 60 * 60)
 
         if pay_amount == 0:
             bot.send_message(
@@ -1253,7 +1542,7 @@ def text_handler(message):
                 f"Стоимость: {price}₽\n"
                 f"Списано с баланса: {discount_used}₽\n"
                 f"К оплате: 0₽\n\n"
-                f"Заказ отправлен на подтверждение. Ожидайте QR с инструкцией.",
+                f"Заказ отправлен на подтверждение. Ожидайте данные для установки eSIM: ссылку и/или QR-код с инструкцией.",
                 reply_markup=main_keyboard(user_id)
             )
 
@@ -1296,20 +1585,31 @@ def text_handler(message):
 
 @bot.message_handler(content_types=["photo"])
 def photo_handler(message):
-    global admin_send_qr_target
+    global admin_send_qr_target, admin_send_qr_order_id
     user_id = message.from_user.id
     remember_user_from_message(message)
 
-    if user_id == ADMIN_ID and admin_send_qr_target:
+    if user_id == ADMIN_ID and admin_send_qr_target and admin_send_qr_order_id:
         target_user_id = admin_send_qr_target
+        order_id = admin_send_qr_order_id
         try:
             bot.copy_message(
                 chat_id=target_user_id,
                 from_chat_id=message.chat.id,
                 message_id=message.message_id
             )
-            bot.send_message(ADMIN_ID, f"✅ eSIM отправлена пользователю {target_user_id}")
+            bot.send_message(target_user_id, install_instruction_text())
+            now = int(time.time())
+            cursor.execute("SELECT COALESCE(esim_sent_at, 0) FROM orders WHERE id=? AND user_id=?", (order_id, target_user_id))
+            row = cursor.fetchone()
+            already_sent = bool(row and row[0])
+            cursor.execute("UPDATE orders SET esim_sent_at=? WHERE id=? AND user_id=?", (now, order_id, target_user_id))
+            conn.commit()
+            if not already_sent:
+                schedule_reminder(target_user_id, order_id, "install_2h", now + 2 * 60 * 60)
+            bot.send_message(ADMIN_ID, f"✅ eSIM отправлена пользователю {target_user_id}\nЗаказ #{order_id}")
             admin_send_qr_target = None
+            admin_send_qr_order_id = None
             return
         except Exception as e:
             bot.send_message(
@@ -1332,8 +1632,14 @@ def photo_handler(message):
         return
 
     order_id, order_text, price, pay_amount, discount_used, country, tariff = row
-    cursor.execute("UPDATE orders SET status='pending_review' WHERE id=?", (order_id,))
+    receipt_received_at = int(time.time())
+    cursor.execute(
+        "UPDATE orders SET status='pending_review', receipt_received_at=? WHERE id=?",
+        (receipt_received_at, order_id)
+    )
     conn.commit()
+    cancel_reminders_by_type(order_id, ["payment_30m", "payment_24h"])
+    schedule_reminder(user_id, order_id, "review_15m", receipt_received_at + 15 * 60)
 
     username = message.from_user.username
     first_name = message.from_user.first_name or "Без имени"
@@ -1376,6 +1682,84 @@ def photo_handler(message):
 def callback_handler(call):
     data = call.data
 
+    if data.startswith("reminder_stop_"):
+        order_id = int(data.replace("reminder_stop_", "", 1))
+        user_id = call.from_user.id
+        cursor.execute("SELECT id FROM orders WHERE id=? AND user_id=?", (order_id, user_id))
+        if not cursor.fetchone():
+            bot.answer_callback_query(call.id, "Это не ваш заказ.")
+            return
+        cursor.execute(
+            "UPDATE reminder_jobs SET status='cancelled' WHERE order_id=? AND status='pending'",
+            (order_id,)
+        )
+        conn.commit()
+        bot.answer_callback_query(call.id, "Напоминания отключены")
+        bot.send_message(user_id, "Напоминания по этому заказу отключены.")
+        return
+
+    if data.startswith("receipt_help_"):
+        bot.answer_callback_query(call.id)
+        bot.send_message(
+            call.from_user.id,
+            "Отправьте скриншот чека сюда одним сообщением как фотографию.\n\n"
+            "Бот автоматически привяжет его к вашему последнему заказу, ожидающему оплату."
+        )
+        return
+
+    if data.startswith("install_ok_"):
+        order_id = int(data.replace("install_ok_", "", 1))
+        user_id = call.from_user.id
+        cursor.execute("SELECT id FROM orders WHERE id=? AND user_id=?", (order_id, user_id))
+        if not cursor.fetchone():
+            bot.answer_callback_query(call.id, "Это не ваш заказ.")
+            return
+        cursor.execute("UPDATE orders SET install_confirmed=1 WHERE id=? AND user_id=?", (order_id, user_id))
+        cancel_reminders_by_type(order_id, "install_2h")
+        conn.commit()
+        bot.answer_callback_query(call.id, "Готово")
+        bot.send_message(
+            user_id,
+            "Отлично! eSIM готова к использованию.\n\n"
+            "Перед поездкой не удаляйте её. По прилёте включите роуминг на eSIM и выберите её для мобильного интернета."
+        )
+        return
+
+    if data.startswith("install_help_"):
+        order_id = int(data.replace("install_help_", "", 1))
+        user_id = call.from_user.id
+        cursor.execute(
+            """
+            SELECT o.country, o.tariff, u.username, u.first_name
+            FROM orders o
+            LEFT JOIN users u ON u.user_id=o.user_id
+            WHERE o.id=? AND o.user_id=?
+            """,
+            (order_id, user_id)
+        )
+        row = cursor.fetchone()
+        if not row:
+            bot.answer_callback_query(call.id, "Это не ваш заказ.")
+            return
+        country, tariff, username, first_name = row
+        cancel_reminders_by_type(order_id, "install_2h")
+        bot.answer_callback_query(call.id, "Поддержка уведомлена")
+        bot.send_message(user_id, "Напишите нам — поможем разобраться: @F_Evdokimov")
+        user_line = f"ID {user_id}"
+        if username:
+            user_line += f" | @{username}"
+        if first_name:
+            user_line += f" | {first_name}"
+        bot.send_message(
+            ADMIN_ID,
+            f"🆘 Клиенту нужна помощь с установкой\n\n"
+            f"Заказ #{order_id}\n"
+            f"Пользователь: {user_line}\n"
+            f"Страна: {country or 'Не указано'}\n"
+            f"Тариф: {tariff or 'Не указано'}"
+        )
+        return
+
     if data.startswith("ok_"):
         _, order_id, user_id, pay_amount = data.split("_")
         order_id = int(order_id)
@@ -1383,7 +1767,9 @@ def callback_handler(call):
 
         already_had_paid_orders = has_paid_orders(user_id, exclude_order_id=order_id)
 
-        cursor.execute("UPDATE orders SET status='paid' WHERE id=?", (order_id,))
+        paid_at = int(time.time())
+        cursor.execute("UPDATE orders SET status='paid', paid_at=? WHERE id=?", (paid_at, order_id))
+        cancel_reminders_by_type(order_id, ["payment_30m", "payment_24h", "review_15m"])
         cursor.execute("SELECT country, tariff, price, pay_amount FROM orders WHERE id=?", (order_id,))
         order_row = cursor.fetchone()
         country = order_row[0] if order_row else "Не указано"
@@ -1408,7 +1794,7 @@ def callback_handler(call):
         bot.send_message(
             user_id,
             "✅ Заказ принят\n\n"
-            "Мы проверили оплату и подготовим QR-код с инструкцией.\n\n"
+            "Мы проверили оплату и подготовим данные для установки eSIM: ссылку и/или QR-код с инструкцией.\n\n"
             "Обычно это занимает 5–15 минут.\n\n"
             "Если есть вопросы — напишите @F_Evdokimov",
             reply_markup=main_keyboard(user_id)
@@ -1424,7 +1810,7 @@ def callback_handler(call):
             f"Сумма: {price}₽\n"
             f"К оплате: {pay_amount}₽\n\n"
             f"Чтобы отправить eSIM этому пользователю, отправь команду:\n"
-            f"/sendqr {user_id}"
+            f"/sendqr {user_id} {order_id}"
         )
 
         bot.answer_callback_query(call.id, "Оплата подтверждена")
@@ -1443,6 +1829,7 @@ def callback_handler(call):
             add_balance(user_id, discount_used)
 
         cursor.execute("UPDATE orders SET status='cancel' WHERE id=?", (order_id,))
+        cancel_order_reminders(order_id)
         conn.commit()
 
         bot.send_message(
@@ -1455,4 +1842,5 @@ def callback_handler(call):
         bot.answer_callback_query(call.id, "Заказ отклонен")
         return
 
+threading.Thread(target=reminder_worker, daemon=True).start()
 bot.polling(none_stop=True)
