@@ -57,6 +57,13 @@ add_column_if_not_exists("users", "first_name", "TEXT DEFAULT ''")
 
 REF_BONUS = 100
 
+ROAMING_COMPARISON = {
+    "operator": "МТС",
+    "plan": "10 ГБ / 14 дней",
+    "price": 3900,
+    "checked_at": "10.07.2026",
+}
+
 RF_PLANS = {
     "1GB / 7 дней": 499,
     "3GB / 30 дней": 990,
@@ -139,6 +146,90 @@ RU_COUNTRIES = {
     "uae": "United Arab Emirates", "usa": "United States",
 }
 
+COUNTRY_GUIDES = {
+    "Turkey": {
+        "apps": [
+            ("🚕 BiTaksi", "вызов официального такси"),
+            ("🚌 Obilet", "покупка билетов на автобусы между городами"),
+            ("🗺 Google Maps", "маршруты и офлайн-карты"),
+        ],
+        "tip": "Скачайте карту нужного города заранее.",
+    },
+    "Egypt": {
+        "apps": [
+            ("🚕 Uber или Careem", "заказ такси с ценой в приложении"),
+            ("🗺 Google Maps", "маршруты и офлайн-карты"),
+            ("🗣 Google Translate", "перевод вывесок, меню и фраз"),
+        ],
+        "tip": "Офлайн-карту и арабский язык для переводчика лучше скачать до поездки.",
+    },
+    "United Arab Emirates": {
+        "apps": [
+            ("🚕 Careem", "такси, доставка еды и другие городские услуги"),
+            ("🗺 Google Maps", "маршруты и поиск нужных мест"),
+            ("💬 WhatsApp", "сообщения и связь с отелями"),
+        ],
+        "warning": "Голосовые и видеозвонки через WhatsApp могут быть ограничены.",
+    },
+    "Thailand": {
+        "apps": [
+            ("🚕 Grab или Bolt", "заказ такси и мототакси"),
+            ("💬 LINE", "связь с местными компаниями и сервисами"),
+            ("🗺 Google Maps", "маршруты и офлайн-карты"),
+        ],
+        "tip": "Установите приложения такси до прилёта.",
+    },
+    "Vietnam": {
+        "apps": [
+            ("🚕 Grab", "заказ такси, мототакси и доставки"),
+            ("💬 Zalo", "популярный местный мессенджер"),
+            ("🗺 Google Maps", "маршруты и поиск нужных мест"),
+        ],
+        "tip": "Grab пригодится уже при поездке из аэропорта.",
+    },
+    "China": {
+        "apps": [
+            ("💳 Alipay", "оплата покупок и повседневных услуг"),
+            ("💬 WeChat", "сообщения, связь с местными и оплата"),
+            ("🚕 DiDi", "заказ такси"),
+        ],
+        "warning": "Google, WhatsApp, Instagram и некоторые другие зарубежные сервисы могут быть недоступны.",
+        "tip": "Установите приложения и зарегистрируйтесь в них до поездки.",
+    },
+    "Kazakhstan": {
+        "apps": [
+            ("🚕 Yandex Go", "заказ такси"),
+            ("🗺 2GIS", "подробные карты, организации и офлайн-навигация"),
+            ("🗺 Google Maps", "построение маршрутов"),
+        ],
+        "tip": "Скачайте карту нужного города в 2GIS заранее.",
+    },
+    "Georgia": {
+        "apps": [
+            ("🚕 Bolt", "заказ такси с ценой до начала поездки"),
+            ("🗺 Google Maps", "маршруты и поиск нужных мест"),
+            ("🗣 Google Translate", "перевод фраз и меню"),
+        ],
+        "tip": "В аэропорту удобнее заказывать машину через приложение.",
+    },
+    "Armenia": {
+        "apps": [
+            ("🚕 Yandex Go или GG", "заказ такси"),
+            ("🗺 Maps.me", "офлайн-навигация за пределами Еревана"),
+            ("💱 Rate.am", "курсы валют и поиск обменных пунктов"),
+        ],
+        "tip": "Офлайн-карты особенно пригодятся при поездках по стране.",
+    },
+    "Indonesia": {
+        "apps": [
+            ("🚕 Grab или Gojek", "такси, мототакси и доставка"),
+            ("💬 WhatsApp", "связь с отелями, водителями и гидами"),
+            ("🗺 Google Maps", "маршруты и поиск нужных мест"),
+        ],
+        "tip": "Grab и Gojek лучше установить до прилёта.",
+    },
+}
+
 history: Dict[int, List[Tuple[str, Optional[str]]]] = {}
 search_mode: Dict[int, bool] = {}
 selection_mode: Dict[int, Dict[str, str]] = {}
@@ -173,6 +264,58 @@ def remember_user_from_message(message, ref: Optional[int] = None) -> None:
 
 def country_label(country: str) -> str:
     return f"{EMOJI.get(country, '🌐')} {country}"
+
+def format_price(value: int) -> str:
+    return f"{value:,}".replace(",", " ")
+
+def build_country_guide(country: str) -> str:
+    guide = COUNTRY_GUIDES.get(country)
+    zone = COUNTRY_TO_ZONE.get(country)
+    if not guide or zone is None:
+        return ""
+
+    plan_name = "10GB / 30 дней"
+    esim_price = ZONE_PRICES.get(zone, {}).get(plan_name)
+    if esim_price is None:
+        return ""
+
+    apps = guide.get("apps", [])[:3]
+    app_lines = [f"{name} — {purpose}" for name, purpose in apps]
+    savings = ROAMING_COMPARISON["price"] - esim_price
+
+    parts = [
+        f"{country_label(country)}",
+        "",
+    ]
+
+    if app_lines:
+        parts.extend([
+            "📲 Полезные приложения:",
+            "",
+            "\n".join(app_lines),
+        ])
+
+    warning = guide.get("warning")
+    if warning:
+        parts.extend(["", f"⚠️ {warning}"])
+
+    tip = guide.get("tip")
+    if tip:
+        parts.extend(["", f"💡 {tip}"])
+
+    parts.extend([
+        "",
+        "💰 Сравнение 10 ГБ:",
+        "",
+        f"eSIMLime: 10 ГБ / 30 дней — {format_price(esim_price)} ₽",
+        f"{ROAMING_COMPARISON['operator']}: {ROAMING_COMPARISON['plan']} — {format_price(ROAMING_COMPARISON['price'])} ₽",
+        f"Экономия с eSIMLime — {format_price(savings)} ₽",
+        "",
+        f"Цена роуминга проверена {ROAMING_COMPARISON['checked_at']}.",
+        "Стоимость роуминга может зависеть от оператора и условий тарифа.",
+    ])
+
+    return "\n".join(parts)
 
 def push_screen(user_id: int, screen: str, payload: Optional[str] = None) -> None:
     stack = history.setdefault(user_id, [])
@@ -427,14 +570,22 @@ def show_country(chat_id: int, user_id: int, country: str, add_to_history: bool 
     kb.add("✈️ Инструкция для путешествий")
     kb.add("🔙 Назад", "🏠 В начало")
 
+    guide_text = build_country_guide(country)
+    if guide_text:
+        message_text = f"{guide_text}\n\n👇 Выберите подходящий тариф"
+    else:
+        message_text = (
+            f"{country_label(country)}\n\n"
+            "Интернет для поездки без роуминга и поиска местной SIM-карты.\n\n"
+            "✔ Подходит для карт, такси, мессенджеров и соцсетей\n"
+            "✔ Не нужно менять основную SIM-карту\n"
+            "✔ Можно установить заранее\n\n"
+            "👇 Выберите тариф"
+        )
+
     bot.send_message(
         chat_id,
-        f"{country_label(country)}\n\n"
-        "Интернет для поездки без роуминга и поиска местной SIM-карты.\n\n"
-        "✔ Подходит для карт, такси, мессенджеров и соцсетей\n"
-        "✔ Не нужно менять основную SIM-карту\n"
-        "✔ Можно установить заранее\n\n"
-        "👇 Выберите тариф",
+        message_text,
         reply_markup=kb
     )
 
