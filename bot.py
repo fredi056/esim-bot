@@ -395,6 +395,144 @@ def parse_order_details(text: str) -> Tuple[str, str]:
     tariff = clean.split("—", 1)[0].strip()
     return "Russia", tariff
 
+
+def get_valid_plan_price(country: str, tariff: str) -> Optional[int]:
+    if country == "Russia":
+        return RF_PLANS.get(tariff)
+
+    zone = COUNTRY_TO_ZONE.get(country)
+    if zone is None:
+        return None
+
+    return ZONE_PRICES.get(zone, {}).get(tariff)
+
+def refresh_tariff_selection(chat_id: int, user_id: int, country: Optional[str]) -> None:
+    if country == "Russia":
+        show_rf(chat_id, user_id, add_to_history=False)
+    elif country and country in COUNTRY_TO_ZONE:
+        show_country(chat_id, user_id, country, add_to_history=False)
+    else:
+        show_main(chat_id, user_id, add_to_history=False)
+
+def process_order_selection(
+    chat_id: int,
+    user_id: int,
+    country: str,
+    tariff: str,
+    displayed_price: Optional[int] = None
+) -> None:
+    server_price = get_valid_plan_price(country, tariff)
+    if server_price is None:
+        bot.send_message(
+            chat_id,
+            "Не удалось проверить выбранный тариф. Пожалуйста, выберите его заново."
+        )
+        refresh_tariff_selection(chat_id, user_id, country)
+        return
+
+    if displayed_price is not None and displayed_price != server_price:
+        bot.send_message(
+            chat_id,
+            "Цена тарифа обновилась. Пожалуйста, выберите тариф заново."
+        )
+        refresh_tariff_selection(chat_id, user_id, country)
+        return
+
+    price = server_price
+    if country == "Russia":
+        text = f"{tariff} — {server_price}₽"
+    else:
+        text = f"{country_label(country)} | {tariff} — {server_price}₽"
+
+    balance = get_user_balance(user_id)
+    discount_used = min(balance, price)
+    pay_amount = price - discount_used
+
+    if discount_used > 0:
+        subtract_balance(user_id, discount_used)
+
+    if country == "Russia":
+        show_rf_instruction(chat_id, user_id, add_to_history=False)
+    else:
+        show_travel_instruction(chat_id, user_id, add_to_history=False)
+
+    status = "pending_review" if pay_amount == 0 else "awaiting_receipt"
+    created_at = int(time.time())
+
+    cursor.execute(
+        """
+        INSERT INTO orders (user_id, text, price, pay_amount, discount_used, status, country, tariff, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (user_id, text, price, pay_amount, discount_used, status, country, tariff, created_at)
+    )
+    conn.commit()
+    order_id = cursor.lastrowid
+    if status == "awaiting_receipt":
+        schedule_reminder(user_id, order_id, "payment_30m", created_at + 30 * 60)
+        schedule_reminder(user_id, order_id, "payment_24h", created_at + 24 * 60 * 60)
+
+    if pay_amount == 0:
+        bot.send_message(
+            ADMIN_ID,
+            f"Детали заказа #{order_id}\n"
+            f"Покупатель: {format_user_for_admin(user_id)}\n"
+            f"Страна: {country}\n"
+            f"Тариф: {tariff}\n"
+            f"Сумма: {price}₽\n"
+            f"К оплате: 0₽"
+        )
+        kb = types.InlineKeyboardMarkup()
+        kb.add(
+            types.InlineKeyboardButton("✅ Подтвердить", callback_data=f"ok_{order_id}_{user_id}_{pay_amount}"),
+            types.InlineKeyboardButton("❌ Отклонить", callback_data=f"no_{order_id}_{user_id}")
+        )
+
+        bot.send_message(
+            chat_id,
+            f"🧾 Ваш заказ:\n{text}\n\n"
+            f"Стоимость: {price}₽\n"
+            f"Списано с баланса: {discount_used}₽\n"
+            f"К оплате: 0₽\n\n"
+            f"Заказ отправлен на подтверждение. Ожидайте данные для установки eSIM: ссылку и/или QR-код с инструкцией.",
+            reply_markup=main_keyboard(user_id)
+        )
+
+        bot.send_message(
+            ADMIN_ID,
+            f"🧾 Новый заказ за баланс\n\n"
+            f"Пользователь ID: {user_id}\n"
+            f"Заказ: {text}\n"
+            f"Стоимость: {price}₽\n"
+            f"Списано с баланса: {discount_used}₽\n"
+            f"К оплате: 0₽",
+            reply_markup=kb
+        )
+        return
+
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add("📸 Отправить чек")
+    kb.add("🔙 Назад", "🏠 В начало")
+
+    bot.send_message(
+        chat_id,
+        "Перед оплатой:\n\n"
+        "✔ Убедитесь, что телефон поддерживает eSIM\n"
+        "✔ Установка занимает несколько минут\n"
+        "✔ QR-код одноразовый — не удаляйте eSIM после установки\n\n"
+        f"🧾 Ваш заказ:\n{text}\n\n"
+        f"Стоимость: {price}₽\n"
+        f"Списано с баланса: {discount_used}₽\n"
+        f"К оплате: {pay_amount}₽\n\n"
+        f"Оплата по СБП:\n"
+        f"Номер: 89870005569\n"
+        f"Банк: Т-Банк\n"
+        f"Получатель: Федор Е.\n\n"
+        f"После оплаты нажмите «📸 Отправить чек» и отправьте скриншот.",
+        reply_markup=kb
+    )
+
+
 def format_user_for_admin(user_id: int) -> str:
     cursor.execute("SELECT username, first_name FROM users WHERE user_id=?", (user_id,))
     row = cursor.fetchone()
@@ -1485,100 +1623,13 @@ def text_handler(message):
         return
 
     if "—" in text and "₽" in text:
-        price = parse_price_from_order_text(text)
-        if price is None:
+        displayed_price = parse_price_from_order_text(text)
+        if displayed_price is None:
             bot.send_message(chat_id, "Не удалось определить цену.", reply_markup=main_keyboard(user_id))
             return
 
-        balance = get_user_balance(user_id)
-        discount_used = min(balance, price)
-        pay_amount = price - discount_used
-
-        if discount_used > 0:
-            subtract_balance(user_id, discount_used)
-
         country, tariff = parse_order_details(text)
-
-        if "|" in text:
-            show_travel_instruction(chat_id, user_id, add_to_history=False)
-        else:
-            show_rf_instruction(chat_id, user_id, add_to_history=False)
-
-        status = "pending_review" if pay_amount == 0 else "awaiting_receipt"
-        created_at = int(time.time())
-
-        cursor.execute(
-            """
-            INSERT INTO orders (user_id, text, price, pay_amount, discount_used, status, country, tariff, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (user_id, text, price, pay_amount, discount_used, status, country, tariff, created_at)
-        )
-        conn.commit()
-        order_id = cursor.lastrowid
-        if status == "awaiting_receipt":
-            schedule_reminder(user_id, order_id, "payment_30m", created_at + 30 * 60)
-            schedule_reminder(user_id, order_id, "payment_24h", created_at + 24 * 60 * 60)
-
-        if pay_amount == 0:
-            bot.send_message(
-                ADMIN_ID,
-                f"Детали заказа #{order_id}\n"
-                f"Покупатель: {format_user_for_admin(user_id)}\n"
-                f"Страна: {country}\n"
-                f"Тариф: {tariff}\n"
-                f"Сумма: {price}₽\n"
-                f"К оплате: 0₽"
-            )
-            kb = types.InlineKeyboardMarkup()
-            kb.add(
-                types.InlineKeyboardButton("✅ Подтвердить", callback_data=f"ok_{order_id}_{user_id}_{pay_amount}"),
-                types.InlineKeyboardButton("❌ Отклонить", callback_data=f"no_{order_id}_{user_id}")
-            )
-
-            bot.send_message(
-                chat_id,
-                f"🧾 Ваш заказ:\n{text}\n\n"
-                f"Стоимость: {price}₽\n"
-                f"Списано с баланса: {discount_used}₽\n"
-                f"К оплате: 0₽\n\n"
-                f"Заказ отправлен на подтверждение. Ожидайте данные для установки eSIM: ссылку и/или QR-код с инструкцией.",
-                reply_markup=main_keyboard(user_id)
-            )
-
-            bot.send_message(
-                ADMIN_ID,
-                f"🧾 Новый заказ за баланс\n\n"
-                f"Пользователь ID: {user_id}\n"
-                f"Заказ: {text}\n"
-                f"Стоимость: {price}₽\n"
-                f"Списано с баланса: {discount_used}₽\n"
-                f"К оплате: 0₽",
-                reply_markup=kb
-            )
-            return
-
-        kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-        kb.add("📸 Отправить чек")
-        kb.add("🔙 Назад", "🏠 В начало")
-
-        bot.send_message(
-            chat_id,
-            "Перед оплатой:\n\n"
-            "✔ Убедитесь, что телефон поддерживает eSIM\n"
-            "✔ Установка занимает несколько минут\n"
-            "✔ QR-код одноразовый — не удаляйте eSIM после установки\n\n"
-            f"🧾 Ваш заказ:\n{text}\n\n"
-            f"Стоимость: {price}₽\n"
-            f"Списано с баланса: {discount_used}₽\n"
-            f"К оплате: {pay_amount}₽\n\n"
-            f"Оплата по СБП:\n"
-            f"Номер: 89870005569\n"
-            f"Банк: Т-Банк\n"
-            f"Получатель: Федор Е.\n\n"
-            f"После оплаты нажмите «📸 Отправить чек» и отправьте скриншот.",
-            reply_markup=kb
-        )
+        process_order_selection(chat_id, user_id, country, tariff, displayed_price)
         return
 
     bot.send_message(chat_id, "Не понял команду. Нажмите нужную кнопку 👇", reply_markup=main_keyboard(user_id))
