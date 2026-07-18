@@ -1,6 +1,9 @@
+import json
 import os
+import re
 import sqlite3
 import threading
+from pathlib import Path
 import time
 from typing import Optional, Dict, List, Tuple
 
@@ -61,8 +64,16 @@ add_column_if_not_exists("orders", "receipt_received_at", "INTEGER DEFAULT 0")
 add_column_if_not_exists("orders", "paid_at", "INTEGER DEFAULT 0")
 add_column_if_not_exists("orders", "esim_sent_at", "INTEGER DEFAULT 0")
 add_column_if_not_exists("orders", "install_confirmed", "INTEGER DEFAULT 0")
+add_column_if_not_exists("orders", "source_code", "TEXT DEFAULT ''")
+add_column_if_not_exists("orders", "partner_code", "TEXT DEFAULT ''")
+add_column_if_not_exists("orders", "partner_rate", "INTEGER DEFAULT 0")
+add_column_if_not_exists("orders", "partner_commission", "INTEGER DEFAULT 0")
 add_column_if_not_exists("users", "username", "TEXT DEFAULT ''")
 add_column_if_not_exists("users", "first_name", "TEXT DEFAULT ''")
+add_column_if_not_exists("users", "first_source", "TEXT DEFAULT ''")
+add_column_if_not_exists("users", "first_source_at", "INTEGER DEFAULT 0")
+add_column_if_not_exists("users", "active_partner_code", "TEXT DEFAULT ''")
+add_column_if_not_exists("users", "active_partner_until", "INTEGER DEFAULT 0")
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS reminder_jobs (
@@ -81,7 +92,59 @@ CREATE TABLE IF NOT EXISTS reminder_jobs (
 """)
 conn.commit()
 
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS ad_sources (
+    code TEXT PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    is_active INTEGER DEFAULT 1
+)
+""")
+conn.commit()
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS partners (
+    code TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    telegram_user_id INTEGER UNIQUE,
+    commission_rate INTEGER NOT NULL DEFAULT 20,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL
+)
+""")
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS partner_commissions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id INTEGER NOT NULL UNIQUE,
+    partner_code TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    sale_amount INTEGER NOT NULL,
+    commission_rate INTEGER NOT NULL,
+    commission_amount INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'available',
+    payout_id INTEGER,
+    created_at INTEGER NOT NULL,
+    paid_at INTEGER DEFAULT 0
+)
+""")
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS partner_payouts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    partner_code TEXT NOT NULL,
+    amount INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    confirmed_by INTEGER NOT NULL
+)
+""")
+cursor.execute("CREATE INDEX IF NOT EXISTS idx_partner_commissions_code_status ON partner_commissions(partner_code, status)")
+cursor.execute("CREATE INDEX IF NOT EXISTS idx_partner_commissions_user ON partner_commissions(user_id)")
+cursor.execute("CREATE INDEX IF NOT EXISTS idx_partner_payouts_code ON partner_payouts(partner_code)")
+conn.commit()
+
 REF_BONUS = 100
+DEFAULT_PARTNER_RATE = 20
+PARTNER_WINDOW_HOURS = 72
+PARTNER_WINDOW_SECONDS = PARTNER_WINDOW_HOURS * 60 * 60
 
 ROAMING_COMPARISON = {
     "operator": "МТС",
@@ -90,98 +153,39 @@ ROAMING_COMPARISON = {
     "checked_at": "10.07.2026",
 }
 
-RF_PLANS = {
-    "1GB / 7 дней": 499,
-    "3GB / 30 дней": 990,
-    "5GB / 30 дней": 1290,
-    "10GB / 30 дней": 2190,
-    "20GB / 30 дней": 3590,
-    "50GB / 90 дней": 7990,
-    "100GB / 180 дней": 15990,
-}
+TRAVEL_PLAN_ORDER = ['1GB / 7 дней', '3GB / 30 дней', '5GB / 30 дней', '10GB / 30 дней', '20GB / 30 дней', '50GB / 90 дней', '100GB / 180 дней']
 
-ZONE_PRICES = {
-    0: {
-        "1GB / 7 дней": 200,
-        "3GB / 30 дней": 450,
-        "5GB / 30 дней": 550,
-        "10GB / 30 дней": 990,
-        "20GB / 30 дней": 1490,
-        "50GB / 90 дней": 3900,
-    },
-    1: {
-        "1GB / 7 дней": 350,
-        "3GB / 30 дней": 650,
-        "5GB / 30 дней": 990,
-        "10GB / 30 дней": 1590,
-        "20GB / 30 дней": 2900,
-        "50GB / 90 дней": 6500,
-    },
-    2: {
-        "1GB / 7 дней": 400,
-        "3GB / 30 дней": 900,
-        "5GB / 30 дней": 1300,
-        "10GB / 30 дней": 2000,
-        "20GB / 30 дней": 3500,
-        "50GB / 90 дней": 7500,
-    },
-    3: {
-        "1GB / 7 дней": 650,
-        "3GB / 30 дней": 1100,
-        "5GB / 30 дней": 1500,
-        "10GB / 30 дней": 2900,
-        "20GB / 30 дней": 6500,
-        "50GB / 90 дней": 15000,
-    },
-    4: {
-        "1GB / 7 дней": 700,
-        "3GB / 30 дней": 2000,
-        "5GB / 30 дней": 3000,
-        "10GB / 30 дней": 6000,
-        "20GB / 30 дней": 12000,
-        "50GB / 90 дней": 28000,
-    },
-    5: {
-        "1GB / 7 дней": 1100,
-        "3GB / 30 дней": 2700,
-        "5GB / 30 дней": 4000,
-        "10GB / 30 дней": 7000,
-        "20GB / 30 дней": 13000,
-        "50GB / 90 дней": 30000,
-    },
-    6: {
-        "1GB / 7 дней": 1300,
-        "3GB / 30 дней": 3400,
-        "5GB / 30 дней": 5000,
-        "10GB / 30 дней": 8600,
-        "20GB / 30 дней": 14800,
-        "50GB / 90 дней": 35000,
-    },
-    7: {
-        "1GB / 7 дней": 2600,
-        "3GB / 30 дней": 6600,
-        "5GB / 30 дней": 9600,
-        "10GB / 30 дней": 18200,
-        "20GB / 30 дней": 35200,
-        "50GB / 90 дней": 84000,
-    },
-}
+PRICE_FILE = Path(__file__).resolve().parent / "country_prices.json"
 
-ZONE_COUNTRIES = {
-    0: ["Austria", "Belgium", "Bulgaria", "Croatia", "Cyprus", "Czech Republic", "Denmark", "Estonia", "Finland", "France", "Germany", "Greece", "Hungary", "Ireland", "Italy", "Kazakhstan", "Kyrgyzstan", "Latvia", "Liechtenstein", "Lithuania", "Luxembourg", "Malta", "Netherlands", "Norway", "Pakistan", "Poland", "Portugal", "Romania", "Slovakia", "Slovenia", "Sweden", "Turkey", "Ukraine", "United Kingdom", "Uzbekistan"],
-    1: ["Albania", "Israel", "Malaysia", "Moldova", "Montenegro", "New Zealand", "Serbia", "Spain", "Switzerland", "USA Carib"],
-    2: ["Armenia", "Bangladesh", "Egypt", "Iceland", "Indonesia", "Kuwait", "Reunion", "Tajikistan", "Thailand", "Tunisia", "United States"],
-    3: ["Algeria", "Andorra", "Australia", "Azerbaijan", "Bahrain", "Belarus", "Bosnia & Herzegovina", "Brazil", "Cambodia", "Chile", "China", "Ecuador", "Faroe Islands", "Fiji", "Georgia", "Ghana", "Guernsey", "Hong Kong", "India", "Japan", "Kosovo", "Macao", "Morocco", "North Macedonia", "Oman", "Philippines", "Qatar", "Saudi Arabia", "Singapore", "South Africa", "South Korea", "Sri Lanka", "Taiwan", "United Arab Emirates", "Uruguay", "Vietnam"],
-    4: ["Afghanistan", "Argentina", "Canada", "Costa Rica", "Costa Rica carib", "Democratic Republic of Congo", "El Salvador", "French Guiana", "Gibraltar", "Iraq", "Laos", "Mexico", "Nigeria", "Peru", "Puerto Rico & US Virgin Islands carib", "Samoa", "Uganda", "Uruguay"],
-    5: ["Anguilla", "ANGUILLA carib", "Antigua and Barbuda", "ANTIGUA AND BARBUDA carib", "BAHAMAS carib", "Barbados", "BARBADOS carib", "Benin", "Bolivia", "BR VIRGIN ISLANDS carib", "British Virgin Islands", "CAYMAN ISLAND carib", "Cayman Islands", "Colombia", "Dominica", "DOMINICA carib", "Grenada", "GRENADA carib", "Jamaica", "JAMAICA carib", "Jersey", "Kenya", "Madagascar", "Montserrat", "MONTSERRAT carib", "Netherlands and French Antilles carib", "Panama", "PANAMA carib", "Paraguay", "Puerto Rico Carib", "Saint Kitts and Nevis", "SAINT KITTS AND NEVIS carib", "Saint Lucia", "SAINT LUCIA carib", "SAINT VINCENT AND THE GRENADINES carib", "Tanzania", "TURKS AND CAICOS ISLANDS carib", "Uganda", "Zambia"],
-    6: ["Dominican Republic", "Gabon", "Guadeloupe", "Guam", "Honduras", "Jordan", "Malawi", "Mauritius", "Mongolia", "Puerto Rico"],
-    7: ["Benin", "Côte d'Ivoire", "Curacao", "Dominican Republic", "Guatemala", "Guinea", "Guinea-Bissau", "Haiti", "Honduras", "Kiribati", "Liberia", "Maldives", "Martinique", "Monaco", "Nicaragua", "Papua New Guinea", "Rwanda", "Saint Vincent and the Grenadines", "Seychelles", "Sudan", "Tonga"],
-}
+def load_country_prices() -> Dict[str, Dict[str, int]]:
+    try:
+        raw = PRICE_FILE.read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"country_prices.json not found: {PRICE_FILE}") from exc
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"country_prices.json is not valid JSON: {exc}") from exc
 
-COUNTRY_TO_ZONE = {}
-for zone, countries in ZONE_COUNTRIES.items():
-    for c in countries:
-        COUNTRY_TO_ZONE[c] = zone
+    if not isinstance(data, dict) or not data:
+        raise RuntimeError("country_prices.json must contain a non-empty country price object")
+
+    normalized: Dict[str, Dict[str, int]] = {}
+    for country, plans in data.items():
+        if not isinstance(country, str) or not country.strip():
+            raise RuntimeError("country_prices.json contains an invalid country name")
+        if not isinstance(plans, dict) or not plans:
+            raise RuntimeError(f"country_prices.json contains no plans for {country}")
+        normalized[country] = {}
+        for plan, price in plans.items():
+            if not isinstance(plan, str) or plan not in TRAVEL_PLAN_ORDER:
+                raise RuntimeError(f"country_prices.json contains an invalid plan for {country}: {plan}")
+            if not isinstance(price, int):
+                raise RuntimeError(f"country_prices.json contains a non-integer price for {country} / {plan}")
+            normalized[country][plan] = price
+    return normalized
+
+COUNTRY_PRICES = load_country_prices()
+
 
 REGIONS = {
     "🔥 Популярные страны": [
@@ -345,6 +349,158 @@ def remember_user_from_message(message, ref: Optional[int] = None) -> None:
         first_name=message.from_user.first_name
     )
 
+def normalize_source_code(raw_code: str) -> Optional[str]:
+    code = (raw_code or "").strip().lower()
+    if code.startswith("ad_"):
+        code = code[3:]
+    if not re.fullmatch(r"[a-z0-9_]{2,48}", code):
+        return None
+    return code
+
+def source_link(code: str) -> str:
+    return f"https://t.me/esimlimebot?start=ad_{code}"
+
+def ensure_ad_source(code: str, name: Optional[str] = None) -> None:
+    clean_name = (name or code).strip() or code
+    now = int(time.time())
+    cursor.execute("SELECT code FROM ad_sources WHERE code=?", (code,))
+    if cursor.fetchone():
+        if name:
+            cursor.execute("UPDATE ad_sources SET name=? WHERE code=?", (clean_name, code))
+    else:
+        cursor.execute(
+            "INSERT INTO ad_sources (code, name, created_at, is_active) VALUES (?, ?, ?, 1)",
+            (code, clean_name, now)
+        )
+    conn.commit()
+
+def remember_ad_source_for_user(user_id: int, code: str) -> bool:
+    cursor.execute("SELECT COALESCE(ref, 0), COALESCE(first_source, '') FROM users WHERE user_id=?", (user_id,))
+    row = cursor.fetchone()
+    if not row:
+        return False
+    ref, first_source = row
+    if ref or first_source:
+        return False
+    cursor.execute(
+        "UPDATE users SET first_source=?, first_source_at=? WHERE user_id=?",
+        (code, int(time.time()), user_id)
+    )
+    conn.commit()
+    return True
+
+def get_user_first_source(user_id: int) -> str:
+    cursor.execute("SELECT COALESCE(first_source, '') FROM users WHERE user_id=?", (user_id,))
+    row = cursor.fetchone()
+    return row[0] if row else ""
+
+def normalize_partner_code(raw_code: str) -> Optional[str]:
+    code = (raw_code or "").strip().lower()
+    if code.startswith("partner_"):
+        code = code[8:]
+    if not re.fullmatch(r"[a-z0-9_]{2,48}", code):
+        return None
+    return code
+
+def partner_link(code: str) -> str:
+    return f"https://t.me/esimlimebot?start=partner_{code}"
+
+def get_partner_by_code(code: str):
+    cursor.execute(
+        "SELECT code, name, telegram_user_id, commission_rate, is_active FROM partners WHERE code=?",
+        (code,)
+    )
+    return cursor.fetchone()
+
+def get_partner_by_user(user_id: int):
+    cursor.execute(
+        "SELECT code, name, telegram_user_id, commission_rate, is_active FROM partners WHERE telegram_user_id=? AND is_active=1",
+        (user_id,)
+    )
+    return cursor.fetchone()
+
+def activate_partner_window(user_id: int, code: str) -> bool:
+    partner = get_partner_by_code(code)
+    if not partner or not partner[4]:
+        return False
+    until = int(time.time()) + PARTNER_WINDOW_SECONDS
+    cursor.execute(
+        "UPDATE users SET active_partner_code=?, active_partner_until=? WHERE user_id=?",
+        (code, until, user_id)
+    )
+    conn.commit()
+    return True
+
+def get_active_partner_for_user(user_id: int) -> Tuple[str, int]:
+    cursor.execute(
+        "SELECT COALESCE(active_partner_code, ''), COALESCE(active_partner_until, 0) FROM users WHERE user_id=?",
+        (user_id,)
+    )
+    row = cursor.fetchone()
+    if not row:
+        return "", 0
+    code, until = row
+    now = int(time.time())
+    if not code or until <= now:
+        if code or until:
+            cursor.execute("UPDATE users SET active_partner_code='', active_partner_until=0 WHERE user_id=?", (user_id,))
+            conn.commit()
+        return "", 0
+    partner = get_partner_by_code(code)
+    if not partner or not partner[4]:
+        cursor.execute("UPDATE users SET active_partner_code='', active_partner_until=0 WHERE user_id=?", (user_id,))
+        conn.commit()
+        return "", 0
+    return code, int(partner[3] or DEFAULT_PARTNER_RATE)
+
+def get_partner_amounts(code: str) -> Dict[str, int]:
+    cursor.execute(
+        "SELECT COUNT(DISTINCT user_id) FROM partner_commissions WHERE partner_code=? AND status IN ('available', 'paid')",
+        (code,)
+    )
+    clients = cursor.fetchone()[0]
+    cursor.execute(
+        "SELECT COUNT(*) FROM partner_commissions WHERE partner_code=? AND status IN ('available', 'paid')",
+        (code,)
+    )
+    paid_orders = cursor.fetchone()[0]
+    cursor.execute(
+        "SELECT COALESCE(SUM(sale_amount), 0) FROM partner_commissions WHERE partner_code=? AND status IN ('available', 'paid')",
+        (code,)
+    )
+    sales = cursor.fetchone()[0]
+    cursor.execute("SELECT COALESCE(SUM(commission_amount), 0) FROM partner_commissions WHERE partner_code=? AND status='available'", (code,))
+    available = cursor.fetchone()[0]
+    cursor.execute("SELECT COALESCE(SUM(commission_amount), 0) FROM partner_commissions WHERE partner_code=? AND status='paid'", (code,))
+    paid = cursor.fetchone()[0]
+    return {
+        "clients": clients,
+        "paid_orders": paid_orders,
+        "sales": sales,
+        "available": available,
+        "paid": paid,
+    }
+
+def partner_commission_status_label(status: str) -> str:
+    if status == "available":
+        return "к выплате"
+    if status == "paid":
+        return "выплачено"
+    return status
+
+def format_partner_commission_rows(rows) -> str:
+    if not rows:
+        return "Начислений пока нет"
+    lines = []
+    for country, tariff, sale_amount, commission_amount, status in rows:
+        lines.append(
+            f"{country or 'Не указано'} | {tariff or 'Не указано'}\n"
+            f"Продажа: {format_price(sale_amount)} ₽\n"
+            f"Вознаграждение: {format_price(commission_amount)} ₽\n"
+            f"Статус: {partner_commission_status_label(status)}"
+        )
+    return "\n\n".join(lines)
+
 def country_label(country: str) -> str:
     return f"{EMOJI.get(country, '🌐')} {country}"
 
@@ -353,12 +509,11 @@ def format_price(value: int) -> str:
 
 def build_country_guide(country: str) -> str:
     guide = COUNTRY_GUIDES.get(country)
-    zone = COUNTRY_TO_ZONE.get(country)
-    if not guide or zone is None:
+    if not guide:
         return ""
 
     plan_name = "10GB / 30 дней"
-    esim_price = ZONE_PRICES.get(zone, {}).get(plan_name)
+    esim_price = COUNTRY_PRICES.get(country, {}).get(plan_name)
     if esim_price is None:
         return ""
 
@@ -424,13 +579,36 @@ def nav_keyboard():
 def main_keyboard(user_id: Optional[int] = None):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add("✈️ eSIM для путешествий")
-    kb.add("⚡ Подобрать eSIM", "🇷🇺 eSIM для России")
+    kb.add("⚡ Подобрать eSIM")
     kb.add("📘 Инструкции")
     kb.add("👤 Личный кабинет", "❓ Помощь")
     if user_id == ADMIN_ID:
         kb.add("📊 Статистика", "📦 Заказы")
         kb.add("👥 Пользователи")
+        kb.add("📣 Реклама")
+        kb.add("🤝 Партнёры")
+    elif user_id and get_partner_by_user(user_id):
+        kb.add("🤝 Кабинет партнёра")
     return kb
+
+def is_legacy_russia_text(text: str) -> bool:
+    old_tariffs = {
+        "1GB / 7 дней — 499₽",
+        "3GB / 30 дней — 990₽",
+        "5GB / 30 дней — 1290₽",
+        "10GB / 30 дней — 2190₽",
+        "20GB / 30 дней — 3590₽",
+        "50GB / 90 дней — 7990₽",
+        "100GB / 180 дней — 15990₽",
+    }
+    return "Россия" in text or text in old_tariffs
+
+def show_russia_discontinued(chat_id: int, user_id: int) -> None:
+    bot.send_message(
+        chat_id,
+        "Продажа eSIM для России прекращена. Выберите eSIM для путешествий.",
+        reply_markup=main_keyboard(user_id)
+    )
 
 def parse_price_from_order_text(text: str) -> Optional[int]:
     try:
@@ -453,19 +631,10 @@ def parse_order_details(text: str) -> Tuple[str, str]:
 
 
 def get_valid_plan_price(country: str, tariff: str) -> Optional[int]:
-    if country == "Russia":
-        return RF_PLANS.get(tariff)
-
-    zone = COUNTRY_TO_ZONE.get(country)
-    if zone is None:
-        return None
-
-    return ZONE_PRICES.get(zone, {}).get(tariff)
+    return COUNTRY_PRICES.get(country, {}).get(tariff)
 
 def refresh_tariff_selection(chat_id: int, user_id: int, country: Optional[str]) -> None:
-    if country == "Russia":
-        show_rf(chat_id, user_id, add_to_history=False)
-    elif country and country in COUNTRY_TO_ZONE:
+    if country and country in COUNTRY_PRICES:
         show_country(chat_id, user_id, country, add_to_history=False)
     else:
         show_main(chat_id, user_id, add_to_history=False)
@@ -477,6 +646,10 @@ def process_order_selection(
     tariff: str,
     displayed_price: Optional[int] = None
 ) -> None:
+    if country == "Russia":
+        show_russia_discontinued(chat_id, user_id)
+        return
+
     server_price = get_valid_plan_price(country, tariff)
     if server_price is None:
         bot.send_message(
@@ -495,10 +668,7 @@ def process_order_selection(
         return
 
     price = server_price
-    if country == "Russia":
-        text = f"{tariff} — {server_price}₽"
-    else:
-        text = f"{country_label(country)} | {tariff} — {server_price}₽"
+    text = f"{country_label(country)} | {tariff} — {server_price}₽"
 
     balance = get_user_balance(user_id)
     discount_used = min(balance, price)
@@ -507,20 +677,25 @@ def process_order_selection(
     if discount_used > 0:
         subtract_balance(user_id, discount_used)
 
-    if country == "Russia":
-        show_rf_instruction(chat_id, user_id, add_to_history=False)
-    else:
-        show_travel_instruction(chat_id, user_id, add_to_history=False)
+    show_travel_instruction(chat_id, user_id, add_to_history=False)
 
+    partner_code, partner_rate = get_active_partner_for_user(user_id)
+    if partner_code:
+        source_code = ""
+        partner_commission = int(round(pay_amount * partner_rate / 100))
+    else:
+        source_code = get_user_first_source(user_id)
+        partner_rate = 0
+        partner_commission = 0
     status = "pending_review" if pay_amount == 0 else "awaiting_receipt"
     created_at = int(time.time())
 
     cursor.execute(
         """
-        INSERT INTO orders (user_id, text, price, pay_amount, discount_used, status, country, tariff, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO orders (user_id, text, price, pay_amount, discount_used, status, country, tariff, created_at, source_code, partner_code, partner_rate, partner_commission)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (user_id, text, price, pay_amount, discount_used, status, country, tariff, created_at)
+        (user_id, text, price, pay_amount, discount_used, status, country, tariff, created_at, source_code, partner_code, partner_rate, partner_commission)
     )
     conn.commit()
     order_id = cursor.lastrowid
@@ -820,7 +995,7 @@ def normalize_country_text(text: str) -> Optional[str]:
     lowered = clean.lower()
     if lowered in RU_COUNTRIES:
         return RU_COUNTRIES[lowered]
-    for country in COUNTRY_TO_ZONE.keys():
+    for country in COUNTRY_PRICES.keys():
         if clean == country or clean == country_label(country):
             return country
     return None
@@ -860,12 +1035,11 @@ def has_paid_orders(user_id: int, exclude_order_id: Optional[int] = None) -> boo
     return cursor.fetchone()[0] > 0
 
 def available_plan_by_gb(country: str, desired_gb: int) -> str:
-    zone = COUNTRY_TO_ZONE.get(country)
-    if zone is None:
+    prices = COUNTRY_PRICES.get(country)
+    if not prices:
         return "10GB / 30 дней"
 
-    prices = ZONE_PRICES[zone]
-    available = list(prices.keys())
+    available = [plan for plan in TRAVEL_PLAN_ORDER if plan in prices]
 
     def gb_value(plan: str) -> int:
         try:
@@ -968,7 +1142,8 @@ def show_region(chat_id: int, user_id: int, region: str, add_to_history: bool = 
 
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     for country in REGIONS.get(region, []):
-        kb.add(country_label(country))
+        if country in COUNTRY_PRICES:
+            kb.add(country_label(country))
     kb.add("🔙 Назад", "🏠 В начало")
 
     bot.send_message(chat_id, f"{region}\n\nВыберите страну:", reply_markup=kb)
@@ -979,14 +1154,16 @@ def show_country(chat_id: int, user_id: int, country: str, add_to_history: bool 
     if add_to_history:
         push_screen(user_id, "country", country)
 
-    zone = COUNTRY_TO_ZONE.get(country)
-    if zone is None:
+    prices = COUNTRY_PRICES.get(country)
+    if not prices:
         bot.send_message(chat_id, "Страна пока недоступна.", reply_markup=nav_keyboard())
         return
 
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    for plan_name, price in ZONE_PRICES[zone].items():
-        kb.add(f"{country_label(country)} | {plan_name} — {price}₽")
+    for plan_name in TRAVEL_PLAN_ORDER:
+        price = prices.get(plan_name)
+        if price is not None:
+            kb.add(f"{country_label(country)} | {plan_name} — {price}₽")
     kb.add("❓ Как это работает")
     kb.add("✈️ Инструкция для путешествий")
     kb.add("🔙 Назад", "🏠 В начало")
@@ -1007,27 +1184,6 @@ def show_country(chat_id: int, user_id: int, country: str, add_to_history: bool 
     bot.send_message(
         chat_id,
         message_text,
-        reply_markup=kb
-    )
-
-def show_rf(chat_id: int, user_id: int, add_to_history: bool = True):
-    search_mode[user_id] = False
-    selection_mode.pop(user_id, None)
-    if add_to_history:
-        push_screen(user_id, "rf")
-
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    for plan_name, price in RF_PLANS.items():
-        kb.add(f"{plan_name} — {price}₽")
-    kb.add("❓ Как это работает")
-    kb.add("📱 Инструкция для России")
-    kb.add("🔙 Назад", "🏠 В начало")
-
-    bot.send_message(
-        chat_id,
-        "🇷🇺 eSIM для России\n\n"
-        "Решение для интернета в России без VPN.\n\n"
-        "👇 Выберите подходящий тариф",
         reply_markup=kb
     )
 
@@ -1230,6 +1386,319 @@ def show_admin_users(chat_id: int, user_id: int):
         reply_markup=nav_keyboard()
     )
 
+def percent(part: int, total: int) -> float:
+    if total <= 0:
+        return 0.0
+    return round(part / total * 100, 1)
+
+def get_source_stats(code: str) -> Dict[str, int]:
+    cursor.execute("SELECT COUNT(*) FROM users WHERE first_source=?", (code,))
+    attracted = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(DISTINCT user_id) FROM orders WHERE source_code=?", (code,))
+    ordered_users = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM orders WHERE source_code=?", (code,))
+    total_orders = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(DISTINCT user_id) FROM orders WHERE source_code=? AND status='paid'", (code,))
+    paid_users = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM orders WHERE source_code=? AND status='paid'", (code,))
+    paid_orders = cursor.fetchone()[0]
+    cursor.execute("SELECT COALESCE(SUM(pay_amount), 0) FROM orders WHERE source_code=? AND status='paid'", (code,))
+    revenue = cursor.fetchone()[0]
+    return {
+        "attracted": attracted,
+        "ordered_users": ordered_users,
+        "total_orders": total_orders,
+        "paid_users": paid_users,
+        "paid_orders": paid_orders,
+        "revenue": revenue,
+    }
+
+def show_source_stats(chat_id: int, user_id: int, raw_code: str) -> None:
+    if user_id != ADMIN_ID:
+        return
+
+    code = normalize_source_code(raw_code)
+    if not code:
+        bot.send_message(chat_id, "Неверный код источника. Используйте латиницу, цифры и _, от 2 до 48 символов.")
+        return
+
+    cursor.execute("SELECT name FROM ad_sources WHERE code=?", (code,))
+    row = cursor.fetchone()
+    name = row[0] if row else code
+    stats = get_source_stats(code)
+    order_conversion = percent(stats["ordered_users"], stats["attracted"])
+    paid_conversion = percent(stats["paid_users"], stats["attracted"])
+
+    bot.send_message(
+        chat_id,
+        f"📣 Источник\n\n"
+        f"Название: {name}\n"
+        f"Код: {code}\n"
+        f"Ссылка:\n{source_link(code)}\n\n"
+        f"Пришли: {stats['attracted']}\n"
+        f"Создали заказ: {stats['ordered_users']}\n"
+        f"Всего заказов: {stats['total_orders']}\n"
+        f"Оплатили: {stats['paid_users']}\n"
+        f"Оплаченных заказов: {stats['paid_orders']}\n"
+        f"Выручка: {format_price(stats['revenue'])} ₽\n\n"
+        f"Конверсия в заказ: {order_conversion:.1f}%\n"
+        f"Конверсия в оплату: {paid_conversion:.1f}%",
+        reply_markup=nav_keyboard()
+    )
+
+def show_ad_stats(chat_id: int, user_id: int):
+    if user_id != ADMIN_ID:
+        bot.send_message(chat_id, "Раздел доступен только администратору.", reply_markup=main_keyboard(user_id))
+        return
+
+    cursor.execute("SELECT COUNT(*) FROM ad_sources")
+    source_count = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM users WHERE first_source!=''")
+    attracted = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(DISTINCT user_id) FROM orders WHERE source_code!=''")
+    ordered_users = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM orders WHERE source_code!=''")
+    total_orders = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(DISTINCT user_id) FROM orders WHERE source_code!='' AND status='paid'")
+    paid_users = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM orders WHERE source_code!='' AND status='paid'")
+    paid_orders = cursor.fetchone()[0]
+    cursor.execute("SELECT COALESCE(SUM(pay_amount), 0) FROM orders WHERE source_code!='' AND status='paid'")
+    revenue = cursor.fetchone()[0]
+
+    order_conversion = percent(ordered_users, attracted)
+    paid_conversion = percent(paid_users, attracted)
+
+    cursor.execute("""
+        SELECT
+            s.code,
+            s.name,
+            COALESCE(u.attracted, 0) AS attracted,
+            COALESCE(o.ordered_users, 0) AS ordered_users,
+            COALESCE(o.paid_users, 0) AS paid_users,
+            COALESCE(o.paid_orders, 0) AS paid_orders,
+            COALESCE(o.revenue, 0) AS revenue
+        FROM ad_sources s
+        LEFT JOIN (
+            SELECT first_source, COUNT(*) AS attracted
+            FROM users
+            WHERE first_source!=''
+            GROUP BY first_source
+        ) u ON u.first_source = s.code
+        LEFT JOIN (
+            SELECT
+                source_code,
+                COUNT(DISTINCT user_id) AS ordered_users,
+                COUNT(DISTINCT CASE WHEN status='paid' THEN user_id END) AS paid_users,
+                COUNT(CASE WHEN status='paid' THEN id END) AS paid_orders,
+                COALESCE(SUM(CASE WHEN status='paid' THEN pay_amount ELSE 0 END), 0) AS revenue
+            FROM orders
+            WHERE source_code!=''
+            GROUP BY source_code
+        ) o ON o.source_code = s.code
+        WHERE COALESCE(u.attracted, 0) > 0
+        ORDER BY revenue DESC, paid_orders DESC, attracted DESC
+        LIMIT 20
+    """)
+    rows = cursor.fetchall()
+    if rows:
+        top_lines = []
+        for idx, (code, name, src_attracted, src_ordered, src_paid_users, src_paid_orders, src_revenue) in enumerate(rows, start=1):
+            top_lines.append(
+                f"{idx}. {name or code}\n"
+                f"Код: {code}\n"
+                f"Пришли: {src_attracted} | Заказали: {src_ordered} | Оплатили: {src_paid_users}\n"
+                f"Выручка: {format_price(src_revenue)} ₽"
+            )
+        top_text = "\n\n".join(top_lines)
+    else:
+        top_text = "Пока нет источников с пользователями"
+
+    bot.send_message(
+        chat_id,
+        f"📣 Реклама\n\n"
+        f"Источников: {source_count}\n"
+        f"Пришли по рекламе: {attracted}\n"
+        f"Создали заказ: {ordered_users}\n"
+        f"Рекламных заказов: {total_orders}\n"
+        f"Оплатили: {paid_users}\n"
+        f"Оплаченных заказов: {paid_orders}\n"
+        f"Выручка: {format_price(revenue)} ₽\n"
+        f"Конверсия в заказ: {order_conversion:.1f}%\n"
+        f"Конверсия в оплату: {paid_conversion:.1f}%\n\n"
+        f"Топ-20 источников:\n\n{top_text}\n\n"
+        f"Для подробной статистики:\n/source_stats КОД\n\n"
+        f"Для создания новой ссылки:\n/source КОД НАЗВАНИЕ",
+        reply_markup=nav_keyboard()
+    )
+
+def show_partner_cabinet(chat_id: int, user_id: int):
+    partner = get_partner_by_user(user_id)
+    if not partner:
+        bot.send_message(chat_id, "Партнёрский кабинет доступен только подключённому партнёру.", reply_markup=main_keyboard(user_id))
+        return
+
+    code, name, telegram_user_id, rate, is_active = partner
+    amounts = get_partner_amounts(code)
+    cursor.execute("""
+        SELECT o.country, o.tariff, pc.sale_amount, pc.commission_amount, pc.status
+        FROM partner_commissions pc
+        LEFT JOIN orders o ON o.id=pc.order_id
+        WHERE pc.partner_code=?
+        ORDER BY pc.id DESC
+        LIMIT 10
+    """, (code,))
+    history_text = format_partner_commission_rows(cursor.fetchall())
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("💸 Запросить выплату", callback_data=f"pp_req_{code}"))
+    bot.send_message(
+        chat_id,
+        f"🤝 Кабинет партнёра\n\n"
+        f"{name}\n"
+        f"Код: {code}\n"
+        f"Ставка: {rate}%\n"
+        f"Ссылка:\n{partner_link(code)}\n\n"
+        f"Клиентов: {amounts['clients']}\n"
+        f"Оплаченных eSIM: {amounts['paid_orders']}\n"
+        f"Продажи: {format_price(amounts['sales'])} ₽\n"
+        f"К выплате: {format_price(amounts['available'])} ₽\n"
+        f"Выплачено: {format_price(amounts['paid'])} ₽\n\n"
+        f"Последние начисления:\n{history_text}",
+        reply_markup=kb
+    )
+
+def show_admin_partners(chat_id: int, user_id: int):
+    if user_id != ADMIN_ID:
+        bot.send_message(chat_id, "Раздел доступен только администратору.", reply_markup=main_keyboard(user_id))
+        return
+
+    cursor.execute("SELECT COUNT(*) FROM partners WHERE is_active=1")
+    active_partners = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(DISTINCT user_id) FROM partner_commissions WHERE status IN ('available', 'paid')")
+    partner_clients = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM partner_commissions WHERE status IN ('available', 'paid')")
+    paid_esims = cursor.fetchone()[0]
+    cursor.execute("SELECT COALESCE(SUM(sale_amount), 0) FROM partner_commissions WHERE status IN ('available', 'paid')")
+    sales = cursor.fetchone()[0]
+    cursor.execute("SELECT COALESCE(SUM(commission_amount), 0) FROM partner_commissions WHERE status='available'")
+    available = cursor.fetchone()[0]
+    cursor.execute("SELECT COALESCE(SUM(commission_amount), 0) FROM partner_commissions WHERE status='paid'")
+    paid = cursor.fetchone()[0]
+
+    cursor.execute("""
+        SELECT
+            p.code,
+            p.name,
+            COALESCE(pc.clients, 0) AS clients,
+            COALESCE(pc.paid_orders, 0) AS paid_orders,
+            COALESCE(pc.sales, 0) AS sales,
+            COALESCE((SELECT SUM(commission_amount) FROM partner_commissions pc WHERE pc.partner_code=p.code AND pc.status='available'), 0) AS available,
+            COALESCE((SELECT SUM(commission_amount) FROM partner_commissions pc WHERE pc.partner_code=p.code AND pc.status='paid'), 0) AS paid
+        FROM partners p
+        LEFT JOIN (
+            SELECT
+                partner_code,
+                COUNT(DISTINCT user_id) AS clients,
+                COUNT(*) AS paid_orders,
+                COALESCE(SUM(sale_amount), 0) AS sales
+            FROM partner_commissions
+            WHERE status IN ('available', 'paid')
+            GROUP BY partner_code
+        ) pc ON pc.partner_code=p.code
+        GROUP BY p.code, p.name
+        ORDER BY sales DESC, available DESC, paid_orders DESC
+        LIMIT 20
+    """)
+    rows = cursor.fetchall()
+    if rows:
+        top = []
+        for idx, (code, name, clients, paid_orders, src_sales, src_available, src_paid) in enumerate(rows, start=1):
+            top.append(
+                f"{idx}. {name}\n"
+                f"Код: {code}\n"
+                f"Клиентов: {clients} | eSIM: {paid_orders}\n"
+                f"Продажи: {format_price(src_sales)} ₽\n"
+                f"К выплате: {format_price(src_available)} ₽\n"
+                f"Выплачено: {format_price(src_paid)} ₽"
+            )
+        top_text = "\n\n".join(top)
+    else:
+        top_text = "Партнёров пока нет"
+
+    bot.send_message(
+        chat_id,
+        f"🤝 Партнёры\n\n"
+        f"Активных партнёров: {active_partners}\n"
+        f"Клиентов партнёров: {partner_clients}\n"
+        f"Оплаченных партнёрских eSIM: {paid_esims}\n"
+        f"Продажи: {format_price(sales)} ₽\n"
+        f"К выплате: {format_price(available)} ₽\n"
+        f"Выплачено: {format_price(paid)} ₽\n\n"
+        f"Топ-20:\n\n{top_text}\n\n"
+        f"Создать партнёра:\n/partner_create КОД TELEGRAM_ID НАЗВАНИЕ\n\n"
+        f"Подробная статистика:\n/partner_stats КОД\n\n"
+        f"Отметить выплату:\n/partner_payout КОД",
+        reply_markup=nav_keyboard()
+    )
+
+def show_partner_stats(chat_id: int, user_id: int, raw_code: str):
+    if user_id != ADMIN_ID:
+        return
+    code = normalize_partner_code(raw_code)
+    partner = get_partner_by_code(code) if code else None
+    if not partner:
+        bot.send_message(chat_id, "Партнёр не найден.")
+        return
+    code, name, telegram_user_id, rate, is_active = partner
+    amounts = get_partner_amounts(code)
+    cursor.execute("""
+        SELECT o.country, o.tariff, pc.sale_amount, pc.commission_amount, pc.status
+        FROM partner_commissions pc
+        LEFT JOIN orders o ON o.id=pc.order_id
+        WHERE pc.partner_code=?
+        ORDER BY pc.id DESC
+        LIMIT 10
+    """, (code,))
+    history_text = format_partner_commission_rows(cursor.fetchall())
+
+    bot.send_message(
+        chat_id,
+        f"🤝 Партнёр\n\n"
+        f"Название: {name}\n"
+        f"Код: {code}\n"
+        f"Telegram ID: {telegram_user_id}\n"
+        f"Ставка: {rate}%\n"
+        f"Ссылка:\n{partner_link(code)}\n\n"
+        f"Клиентов: {amounts['clients']}\n"
+        f"Оплаченных eSIM: {amounts['paid_orders']}\n"
+        f"Продажи: {format_price(amounts['sales'])} ₽\n"
+        f"К выплате: {format_price(amounts['available'])} ₽\n"
+        f"Выплачено: {format_price(amounts['paid'])} ₽\n\n"
+        f"Последние начисления:\n{history_text}\n\n"
+        f"Для полной выплаты:\n/partner_payout {code}"
+    )
+
+def send_partner_payout_request(user_id: int, chat_id: int):
+    partner = get_partner_by_user(user_id)
+    if not partner:
+        bot.send_message(chat_id, "Партнёр не найден.")
+        return
+    code, name, telegram_user_id, rate, is_active = partner
+    amounts = get_partner_amounts(code)
+    if amounts["available"] <= 0:
+        bot.send_message(chat_id, "Сейчас нет суммы к выплате")
+        return
+    bot.send_message(
+        ADMIN_ID,
+        f"💸 Запрос выплаты\n\n"
+        f"Партнёр: {name}\n"
+        f"Код: {code}\n"
+        f"Telegram ID: {telegram_user_id}\n"
+        f"К выплате: {format_price(amounts['available'])} ₽\n\n"
+        f"Для выплаты:\n/partner_payout {code}"
+    )
+    bot.send_message(chat_id, "Запрос отправлен администратору")
+
 def show_instructions_menu(chat_id: int, user_id: int, add_to_history: bool = True):
     search_mode[user_id] = False
     selection_mode.pop(user_id, None)
@@ -1237,32 +1706,10 @@ def show_instructions_menu(chat_id: int, user_id: int, add_to_history: bool = Tr
         push_screen(user_id, "instructions")
 
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add("📱 Инструкция для России")
     kb.add("✈️ Инструкция для путешествий")
     kb.add("🔙 Назад", "🏠 В начало")
 
     bot.send_message(chat_id, "📘 Инструкции\n\nВыберите нужную инструкцию:", reply_markup=kb)
-
-def show_rf_instruction(chat_id: int, user_id: int, add_to_history: bool = True):
-    search_mode[user_id] = False
-    if add_to_history:
-        push_screen(user_id, "rf_instruction")
-
-    bot.send_message(
-        chat_id,
-        "📱 Инструкция по установке eSIM\n\n"
-        "Проверьте совместимость телефона.\n"
-        "Наберите на телефоне команду: *#06#\n"
-        "Если в списке есть строка EID — смартфон поддерживает eSIM.\n\n"
-        "Если вместе с eSIM пришла ссылка установки, откройте её на телефоне и следуйте подсказкам.\n\n"
-        "На iPhone ссылка поддерживается начиная с iOS 17.4.\n"
-        "На Android возможность зависит от модели и поставщика.\n\n"
-        "Если ссылка не открывается или её нет, используйте QR-код.\n\n"
-        "Включите роуминг на eSIM.\n"
-        "Переключите передачу данных на eSIM.\n\n"
-        "⚠️ QR-код может быть одноразовым — не удаляйте установленную eSIM с устройства.",
-        reply_markup=nav_keyboard()
-    )
 
 def show_travel_instruction(chat_id: int, user_id: int, add_to_history: bool = True):
     search_mode[user_id] = False
@@ -1340,8 +1787,7 @@ def finish_selection(chat_id: int, user_id: int, country: str, days: int, usage:
     desired_gb = recommend_gb(days, usage)
     plan = available_plan_by_gb(country, desired_gb)
 
-    zone = COUNTRY_TO_ZONE.get(country)
-    price = ZONE_PRICES.get(zone, {}).get(plan)
+    price = COUNTRY_PRICES.get(country, {}).get(plan)
 
     text = (
         f"🔥 Рекомендация\n\n"
@@ -1374,8 +1820,6 @@ def render_from_state(chat_id: int, user_id: int, state: Tuple[str, Optional[str
         show_region(chat_id, user_id, payload or "", add_to_history=False)
     elif screen == "country":
         show_country(chat_id, user_id, payload or "", add_to_history=False)
-    elif screen == "rf":
-        show_rf(chat_id, user_id, add_to_history=False)
     elif screen == "help":
         show_help(chat_id, user_id, add_to_history=False)
     elif screen == "cabinet":
@@ -1391,14 +1835,204 @@ def render_from_state(chat_id: int, user_id: int, state: Tuple[str, Optional[str
 def start_handler(message):
     user_id = message.from_user.id
     ref = None
+    source_code = None
+    partner_code = None
+    invalid_partner_link = False
     parts = message.text.split()
     if len(parts) > 1:
-        try:
-            ref = int(parts[1])
-        except ValueError:
-            ref = None
+        start_param = parts[1].strip()
+        if start_param.isdigit():
+            ref = int(start_param)
+        elif start_param.lower().startswith("ad_"):
+            source_code = normalize_source_code(start_param)
+            if not source_code and user_id == ADMIN_ID:
+                bot.send_message(message.chat.id, "Неверный рекламный код в ссылке.")
+        elif start_param.lower().startswith("partner_"):
+            partner_code = normalize_partner_code(start_param)
+            if not partner_code or not get_partner_by_code(partner_code) or not get_partner_by_code(partner_code)[4]:
+                invalid_partner_link = True
     remember_user_from_message(message, ref)
+    if source_code:
+        ensure_ad_source(source_code)
+        remember_ad_source_for_user(user_id, source_code)
+    if partner_code and not invalid_partner_link:
+        activate_partner_window(user_id, partner_code)
+    if invalid_partner_link:
+        bot.send_message(message.chat.id, "Партнёрская ссылка недействительна или больше не активна.")
     show_main(message.chat.id, user_id, add_to_history=True)
+
+@bot.message_handler(commands=["myid"])
+def myid_handler(message):
+    remember_user_from_message(message)
+    bot.send_message(message.chat.id, f"Ваш Telegram ID: {message.from_user.id}")
+
+@bot.message_handler(commands=["source"])
+def source_handler(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    parts = message.text.split(maxsplit=2)
+    if len(parts) < 2:
+        bot.send_message(
+            message.chat.id,
+            "Используйте так:\n/source КОД НАЗВАНИЕ\n\nНапример:\n/source tg_travel_moscow Путешествия Москва"
+        )
+        return
+
+    code = normalize_source_code(parts[1])
+    if not code:
+        bot.send_message(message.chat.id, "Неверный код. Разрешены a-z, 0-9 и _, длина от 2 до 48 символов.")
+        return
+
+    requested_name = parts[2].strip() if len(parts) > 2 else None
+    cursor.execute("SELECT name FROM ad_sources WHERE code=?", (code,))
+    row = cursor.fetchone()
+    existed = row is not None
+    if existed:
+        if requested_name:
+            ensure_ad_source(code, requested_name)
+            name = requested_name
+        else:
+            name = row[0] or code
+    else:
+        name = requested_name or code
+        ensure_ad_source(code, name)
+
+    action = "обновлён" if existed else "создан"
+    bot.send_message(
+        message.chat.id,
+        f"✅ Рекламный источник {action}\n\n"
+        f"Название: {name}\n"
+        f"Код: {code}\n\n"
+        f"Ссылка:\n{source_link(code)}"
+    )
+
+@bot.message_handler(commands=["source_stats"])
+def source_stats_handler(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        bot.send_message(message.chat.id, "Используйте так:\n/source_stats КОД")
+        return
+
+    show_source_stats(message.chat.id, message.from_user.id, parts[1])
+
+@bot.message_handler(commands=["partner_create"])
+def partner_create_handler(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    parts = message.text.split(maxsplit=3)
+    if len(parts) < 4:
+        bot.send_message(message.chat.id, "Используйте так:\n/partner_create КОД TELEGRAM_ID НАЗВАНИЕ")
+        return
+    code = normalize_partner_code(parts[1])
+    if not code:
+        bot.send_message(message.chat.id, "Неверный код партнёра. Разрешены a-z, 0-9 и _, от 2 до 48 символов.")
+        return
+    try:
+        telegram_user_id = int(parts[2])
+    except ValueError:
+        bot.send_message(message.chat.id, "TELEGRAM_ID должен быть числом.")
+        return
+    if telegram_user_id <= 0:
+        bot.send_message(message.chat.id, "TELEGRAM_ID должен быть положительным числом.")
+        return
+    name = parts[3].strip()
+    if not name:
+        bot.send_message(message.chat.id, "Название партнёра обязательно.")
+        return
+
+    cursor.execute("SELECT code FROM partners WHERE telegram_user_id=? AND code!=?", (telegram_user_id, code))
+    conflict = cursor.fetchone()
+    if conflict:
+        bot.send_message(message.chat.id, f"Этот Telegram ID уже привязан к партнёру: {conflict[0]}")
+        return
+
+    now = int(time.time())
+    cursor.execute("SELECT code FROM partners WHERE code=?", (code,))
+    existed = cursor.fetchone() is not None
+    try:
+        if existed:
+            cursor.execute(
+                """
+                UPDATE partners
+                SET name=?, telegram_user_id=?, commission_rate=?, is_active=1
+                WHERE code=?
+                """,
+                (name, telegram_user_id, DEFAULT_PARTNER_RATE, code)
+            )
+        else:
+            cursor.execute(
+                """
+                INSERT INTO partners (code, name, telegram_user_id, commission_rate, is_active, created_at)
+                VALUES (?, ?, ?, ?, 1, ?)
+                """,
+                (code, name, telegram_user_id, DEFAULT_PARTNER_RATE, now)
+            )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        bot.send_message(message.chat.id, "Не удалось сохранить партнёра: Telegram ID уже привязан к другому партнёру.")
+        return
+    action = "обновлён" if existed else "создан"
+    bot.send_message(
+        message.chat.id,
+        f"✅ Партнёр {action}\n\n"
+        f"Название: {name}\n"
+        f"Код: {code}\n"
+        f"Telegram ID: {telegram_user_id}\n"
+        f"Ставка: {DEFAULT_PARTNER_RATE}%\n\n"
+        f"Ссылка:\n{partner_link(code)}\n\n"
+        f"Кабинет партнёра:\n/partner"
+    )
+
+@bot.message_handler(commands=["partner"])
+def partner_handler(message):
+    show_partner_cabinet(message.chat.id, message.from_user.id)
+
+@bot.message_handler(commands=["partner_stats"])
+def partner_stats_handler(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        bot.send_message(message.chat.id, "Используйте так:\n/partner_stats КОД")
+        return
+    show_partner_stats(message.chat.id, message.from_user.id, parts[1])
+
+@bot.message_handler(commands=["partner_payout"])
+def partner_payout_handler(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        bot.send_message(message.chat.id, "Используйте так:\n/partner_payout КОД")
+        return
+    code = normalize_partner_code(parts[1])
+    partner = get_partner_by_code(code) if code else None
+    if not partner:
+        bot.send_message(message.chat.id, "Партнёр не найден.")
+        return
+    code, name, telegram_user_id, rate, is_active = partner
+    amounts = get_partner_amounts(code)
+    if amounts["available"] <= 0:
+        bot.send_message(message.chat.id, "У партнёра нет суммы к выплате")
+        return
+    kb = types.InlineKeyboardMarkup()
+    kb.add(
+        types.InlineKeyboardButton("✅ Подтвердить выплату", callback_data=f"pp_ok_{code}"),
+        types.InlineKeyboardButton("❌ Отмена", callback_data="pp_cancel")
+    )
+    bot.send_message(
+        message.chat.id,
+        f"Партнёр: {name}\n"
+        f"К выплате: {format_price(amounts['available'])} ₽\n\n"
+        f"Подтвердите, что деньги уже переведены партнёру.",
+        reply_markup=kb
+    )
 
 @bot.message_handler(commands=["sendqr"])
 def sendqr_handler(message):
@@ -1602,8 +2236,8 @@ def text_handler(message):
         start_selection(chat_id, user_id)
         return
 
-    if text == "🇷🇺 eSIM для России":
-        show_rf(chat_id, user_id, add_to_history=True)
+    if is_legacy_russia_text(text):
+        show_russia_discontinued(chat_id, user_id)
         return
 
     if text == "📘 Инструкции":
@@ -1626,6 +2260,18 @@ def text_handler(message):
         show_admin_users(chat_id, user_id)
         return
 
+    if text == "📣 Реклама":
+        show_ad_stats(chat_id, user_id)
+        return
+
+    if text == "🤝 Партнёры":
+        show_admin_partners(chat_id, user_id)
+        return
+
+    if text == "🤝 Кабинет партнёра":
+        show_partner_cabinet(chat_id, user_id)
+        return
+
     if text == "❓ Помощь":
         show_help(chat_id, user_id, add_to_history=True)
         return
@@ -1646,10 +2292,6 @@ def text_handler(message):
         show_search(chat_id, user_id, add_to_history=True)
         return
 
-    if text == "📱 Инструкция для России":
-        show_rf_instruction(chat_id, user_id, add_to_history=True)
-        return
-
     if text == "✈️ Инструкция для путешествий":
         show_travel_instruction(chat_id, user_id, add_to_history=True)
         return
@@ -1666,7 +2308,7 @@ def text_handler(message):
 
     if search_mode.get(user_id):
         q = text.lower()
-        matches = [country for country in COUNTRY_TO_ZONE.keys() if q in country.lower()]
+        matches = [country for country in COUNTRY_PRICES.keys() if q in country.lower()]
         if not matches:
             bot.send_message(chat_id, "Ничего не найдено. Попробуйте другое название страны.", reply_markup=nav_keyboard())
             return
@@ -1676,6 +2318,10 @@ def text_handler(message):
             kb.add(country_label(country))
         kb.add("🔙 Назад", "🏠 В начало")
         bot.send_message(chat_id, "Результаты поиска:", reply_markup=kb)
+        return
+
+    if is_legacy_russia_text(text):
+        show_russia_discontinued(chat_id, user_id)
         return
 
     if "—" in text and "₽" in text:
@@ -1867,36 +2513,154 @@ def callback_handler(call):
         )
         return
 
+    if data.startswith("pp_req_"):
+        code = data.replace("pp_req_", "", 1)
+        partner = get_partner_by_user(call.from_user.id)
+        if not partner or partner[0] != code:
+            bot.answer_callback_query(call.id, "Партнёр не найден")
+            return
+        bot.answer_callback_query(call.id)
+        send_partner_payout_request(call.from_user.id, call.from_user.id)
+        return
+
+    if data == "pp_cancel":
+        bot.answer_callback_query(call.id, "Отменено")
+        return
+
+    if data.startswith("pp_ok_"):
+        if call.from_user.id != ADMIN_ID:
+            bot.answer_callback_query(call.id, "Недоступно")
+            return
+        code = data.replace("pp_ok_", "", 1)
+        partner = get_partner_by_code(code)
+        if not partner:
+            bot.answer_callback_query(call.id, "Партнёр не найден")
+            return
+        code, name, telegram_user_id, rate, is_active = partner
+        now = int(time.time())
+        try:
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute(
+                "SELECT COALESCE(SUM(commission_amount), 0) FROM partner_commissions WHERE partner_code=? AND status='available'",
+                (code,)
+            )
+            amount = cursor.fetchone()[0]
+            if amount <= 0:
+                conn.rollback()
+                bot.answer_callback_query(call.id, "Выплата уже обработана или доступная сумма равна нулю")
+                return
+            cursor.execute(
+                "INSERT INTO partner_payouts (partner_code, amount, created_at, confirmed_by) VALUES (?, ?, ?, ?)",
+                (code, amount, now, ADMIN_ID)
+            )
+            payout_id = cursor.lastrowid
+            cursor.execute(
+                """
+                UPDATE partner_commissions
+                SET status='paid', payout_id=?, paid_at=?
+                WHERE partner_code=? AND status='available'
+                """,
+                (payout_id, now, code)
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+        amounts = get_partner_amounts(code)
+        bot.answer_callback_query(call.id, "Выплата записана")
+        bot.send_message(
+            ADMIN_ID,
+            f"✅ Выплата записана\n\n"
+            f"Партнёр: {name}\n"
+            f"Выплачено: {format_price(amount)} ₽\n"
+            f"К выплате сейчас: {format_price(amounts['available'])} ₽"
+        )
+        if telegram_user_id:
+            try:
+                bot.send_message(
+                    telegram_user_id,
+                    f"✅ Вознаграждение выплачено\n\n"
+                    f"Сумма: {format_price(amount)} ₽\n"
+                    f"К выплате сейчас: {format_price(amounts['available'])} ₽\n"
+                    f"Выплачено за всё время: {format_price(amounts['paid'])} ₽"
+                )
+            except Exception as exc:
+                bot.send_message(ADMIN_ID, f"⚠️ Выплата сохранена, но уведомление партнёру не отправилось:\n{exc}")
+        return
+
     if data.startswith("ok_"):
         _, order_id, user_id, pay_amount = data.split("_")
         order_id = int(order_id)
         user_id = int(user_id)
 
-        already_had_paid_orders = has_paid_orders(user_id, exclude_order_id=order_id)
+        if call.from_user.id != ADMIN_ID:
+            bot.answer_callback_query(call.id, "Недоступно")
+            return
 
-        paid_at = int(time.time())
-        cursor.execute("UPDATE orders SET status='paid', paid_at=? WHERE id=?", (paid_at, order_id))
-        cancel_reminders_by_type(order_id, ["payment_30m", "payment_24h", "review_15m"])
-        cursor.execute("SELECT country, tariff, price, pay_amount FROM orders WHERE id=?", (order_id,))
-        order_row = cursor.fetchone()
-        country = order_row[0] if order_row else "Не указано"
-        tariff = order_row[1] if order_row else "Не указано"
-        price = order_row[2] if order_row else 0
-        pay_amount = order_row[3] if order_row else 0
-        cursor.execute("SELECT ref FROM users WHERE user_id=?", (user_id,))
-        row = cursor.fetchone()
-        ref = row[0] if row else None
+        ref_to_notify = None
+        try:
+            now = int(time.time())
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute(
+                """
+                SELECT user_id, status, country, tariff, price, pay_amount, partner_code, partner_rate,
+                       partner_commission, ref_bonus_given
+                FROM orders
+                WHERE id=? AND user_id=?
+                """,
+                (order_id, user_id)
+            )
+            order_row = cursor.fetchone()
+            if not order_row or order_row[1] != "pending_review":
+                conn.rollback()
+                bot.answer_callback_query(call.id, "Заказ уже обработан")
+                return
 
-        if ref and not already_had_paid_orders:
-            add_balance(ref, REF_BONUS)
-            cursor.execute("UPDATE orders SET ref_bonus_given=1 WHERE id=?", (order_id,))
+            order_user_id, _status, country, tariff, price, pay_amount, partner_code, partner_rate, partner_commission, ref_bonus_given = order_row
+            cursor.execute("SELECT COUNT(*) FROM orders WHERE user_id=? AND status='paid' AND id!=?", (user_id, order_id))
+            already_had_paid_orders = cursor.fetchone()[0] > 0
+
+            cursor.execute("UPDATE orders SET status='paid', paid_at=? WHERE id=? AND user_id=? AND status='pending_review'", (now, order_id, user_id))
+            if cursor.rowcount != 1:
+                conn.rollback()
+                bot.answer_callback_query(call.id, "Заказ уже обработан")
+                return
+            cursor.execute(
+                "UPDATE reminder_jobs SET status='cancelled' WHERE order_id=? AND reminder_type IN ('payment_30m', 'payment_24h', 'review_15m') AND status IN ('pending', 'processing')",
+                (order_id,)
+            )
+
+            if partner_code:
+                if partner_commission > 0:
+                    cursor.execute(
+                        """
+                        INSERT OR IGNORE INTO partner_commissions
+                            (order_id, partner_code, user_id, sale_amount, commission_rate, commission_amount, status, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, 'available', ?)
+                        """,
+                        (order_id, partner_code, user_id, pay_amount, partner_rate, partner_commission, now)
+                    )
+            else:
+                cursor.execute("SELECT ref FROM users WHERE user_id=?", (user_id,))
+                row = cursor.fetchone()
+                ref = row[0] if row else None
+                if ref and not already_had_paid_orders and not ref_bonus_given:
+                    cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (REF_BONUS, ref))
+                    cursor.execute("UPDATE orders SET ref_bonus_given=1 WHERE id=?", (order_id,))
+                    ref_to_notify = ref
+
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+        if ref_to_notify:
             bot.send_message(
-                ref,
+                ref_to_notify,
                 f"🎉 Вам начислено {REF_BONUS}₽ за реферала.\n"
                 f"Баланс можно использовать при следующей покупке."
             )
-
-        conn.commit()
 
         bot.send_message(
             user_id,
@@ -1928,16 +2692,43 @@ def callback_handler(call):
         order_id = int(order_id)
         user_id = int(user_id)
 
-        cursor.execute("SELECT discount_used FROM orders WHERE id=?", (order_id,))
-        row = cursor.fetchone()
-        discount_used = row[0] if row else 0
+        if call.from_user.id != ADMIN_ID:
+            bot.answer_callback_query(call.id, "Недоступно")
+            return
 
-        if discount_used > 0:
-            add_balance(user_id, discount_used)
+        try:
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute(
+                "SELECT status, discount_used FROM orders WHERE id=? AND user_id=?",
+                (order_id, user_id)
+            )
+            row = cursor.fetchone()
+            if not row or row[0] != "pending_review":
+                conn.rollback()
+                bot.answer_callback_query(call.id, "Заказ уже обработан")
+                return
 
-        cursor.execute("UPDATE orders SET status='cancel' WHERE id=?", (order_id,))
-        cancel_order_reminders(order_id)
-        conn.commit()
+            discount_used = row[1] or 0
+            cursor.execute(
+                "UPDATE orders SET status='cancel' WHERE id=? AND user_id=? AND status='pending_review'",
+                (order_id, user_id)
+            )
+            if cursor.rowcount != 1:
+                conn.rollback()
+                bot.answer_callback_query(call.id, "Заказ уже обработан")
+                return
+
+            if discount_used > 0:
+                cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (discount_used, user_id))
+
+            cursor.execute(
+                "UPDATE reminder_jobs SET status='cancelled' WHERE order_id=? AND status IN ('pending', 'processing')",
+                (order_id,)
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
         bot.send_message(
             user_id,
