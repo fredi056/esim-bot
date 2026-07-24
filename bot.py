@@ -12,6 +12,7 @@ from telebot import types
 
 TOKEN = os.getenv("TOKEN")
 ADMIN_ID_RAW = os.getenv("ADMIN_ID")
+MINI_APP_URL = os.getenv("MINI_APP_URL", "").strip()
 
 if not TOKEN:
     raise ValueError("TOKEN not found")
@@ -576,8 +577,32 @@ def nav_keyboard():
     kb.add("🔙 Назад", "🏠 В начало")
     return kb
 
+def mini_app_button() -> types.KeyboardButton:
+    return types.KeyboardButton(
+        text="🚀 Открыть eSIMLime",
+        web_app=types.WebAppInfo(url=MINI_APP_URL)
+    )
+
+def mini_app_receipt_keyboard():
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add("📸 Отправить чек")
+    if MINI_APP_URL:
+        kb.add(mini_app_button())
+    return kb
+
 def main_keyboard(user_id: Optional[int] = None):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    if MINI_APP_URL:
+        kb.add(mini_app_button())
+        if user_id == ADMIN_ID:
+            kb.add("📊 Статистика", "📦 Заказы")
+            kb.add("👥 Пользователи")
+            kb.add("📣 Реклама")
+            kb.add("🤝 Партнёры")
+        elif user_id and get_partner_by_user(user_id):
+            kb.add("🤝 Кабинет партнёра")
+        return kb
+
     kb.add("✈️ eSIM для путешествий")
     kb.add("⚡ Подобрать eSIM")
     kb.add("📘 Инструкции")
@@ -644,7 +669,10 @@ def process_order_selection(
     user_id: int,
     country: str,
     tariff: str,
-    displayed_price: Optional[int] = None
+    displayed_price: Optional[int] = None,
+    source: str = "bot",
+    use_balance: bool = True,
+    show_payment_message: bool = True
 ) -> None:
     if country == "Russia":
         show_russia_discontinued(chat_id, user_id)
@@ -670,14 +698,19 @@ def process_order_selection(
     price = server_price
     text = f"{country_label(country)} | {tariff} — {server_price}₽"
 
-    balance = get_user_balance(user_id)
-    discount_used = min(balance, price)
-    pay_amount = price - discount_used
+    if use_balance:
+        balance = get_user_balance(user_id)
+        discount_used = min(balance, price)
+        pay_amount = price - discount_used
+    else:
+        discount_used = 0
+        pay_amount = price
 
     if discount_used > 0:
         subtract_balance(user_id, discount_used)
 
-    show_travel_instruction(chat_id, user_id, add_to_history=False)
+    if show_payment_message:
+        show_travel_instruction(chat_id, user_id, add_to_history=False)
 
     partner_code, partner_rate = get_active_partner_for_user(user_id)
     if partner_code:
@@ -689,6 +722,32 @@ def process_order_selection(
         partner_commission = 0
     status = "pending_review" if pay_amount == 0 else "awaiting_receipt"
     created_at = int(time.time())
+
+    if source == "miniapp":
+        cursor.execute(
+            """
+            SELECT id, pay_amount
+            FROM orders
+            WHERE user_id=? AND country=? AND tariff=? AND status='awaiting_receipt' AND created_at>=?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (user_id, country, tariff, created_at - 10 * 60)
+        )
+        duplicate_order = cursor.fetchone()
+        if duplicate_order:
+            duplicate_order_id, duplicate_pay_amount = duplicate_order
+            bot.send_message(
+                chat_id,
+                "✅ Заказ уже создан\n\n"
+                f"Заказ №{duplicate_order_id}\n"
+                f"Страна: {country}\n"
+                f"Тариф: {tariff}\n"
+                f"Сумма: {duplicate_pay_amount} ₽\n\n"
+                "Теперь отправьте сюда скриншот чека одним сообщением как фотографию.",
+                reply_markup=mini_app_receipt_keyboard()
+            )
+            return
 
     cursor.execute(
         """
@@ -702,6 +761,19 @@ def process_order_selection(
     if status == "awaiting_receipt":
         schedule_reminder(user_id, order_id, "payment_30m", created_at + 30 * 60)
         schedule_reminder(user_id, order_id, "payment_24h", created_at + 24 * 60 * 60)
+
+    if not show_payment_message:
+        bot.send_message(
+            chat_id,
+            "✅ Заказ создан\n\n"
+            f"Заказ №{order_id}\n"
+            f"Страна: {country}\n"
+            f"Тариф: {tariff}\n"
+            f"Сумма: {pay_amount} ₽\n\n"
+            "Теперь отправьте сюда скриншот чека одним сообщением как фотографию.",
+            reply_markup=mini_app_receipt_keyboard()
+        )
+        return
 
     if pay_amount == 0:
         bot.send_message(
@@ -1094,17 +1166,26 @@ def show_main(chat_id: int, user_id: int, add_to_history: bool = True):
     if add_to_history:
         reset_to_main(user_id)
 
-    bot.send_message(
-        chat_id,
-        "🌍 Интернет в поездках без роуминга\n\n"
-        "Подключаете eSIM за несколько минут и пользуетесь интернетом сразу по прилёту.\n\n"
-        "✔ Работает в 100+ странах\n"
-        "✔ Не нужно искать местную SIM-карту\n"
-        "✔ Можно подключить заранее\n"
-        "✔ Поддержка, если что-то не получится\n\n"
-        "👇 Выберите, куда вам нужен интернет",
-        reply_markup=main_keyboard(user_id)
-    )
+    if MINI_APP_URL:
+        text = (
+            "🌍 eSIMLime\n\n"
+            "Интернет для путешествий без дорогого роуминга.\n\n"
+            "Выберите страну и тариф в приложении.\n"
+            "Оплата по СБП. После проверки оплаты мы отправим ссылку установки и QR-код.\n\n"
+            "Нажмите кнопку ниже 👇"
+        )
+    else:
+        text = (
+            "🌍 Интернет в поездках без роуминга\n\n"
+            "Подключаете eSIM за несколько минут и пользуетесь интернетом сразу по прилёту.\n\n"
+            "✔ Работает в 100+ странах\n"
+            "✔ Не нужно искать местную SIM-карту\n"
+            "✔ Можно подключить заранее\n"
+            "✔ Поддержка, если что-то не получится\n\n"
+            "👇 Выберите, куда вам нужен интернет"
+        )
+
+    bot.send_message(chat_id, text, reply_markup=main_keyboard(user_id))
 
 def show_travel_home(chat_id: int, user_id: int, add_to_history: bool = True):
     search_mode[user_id] = False
@@ -2174,6 +2255,65 @@ def admin_send_esim_message(message):
             f"Ошибка:\n{e}\n\n"
             f"Режим отправки не сброшен. Можно отправить сообщение ещё раз или отменить командой /cancelqr."
         )
+
+
+@bot.message_handler(content_types=["web_app_data"])
+def web_app_data_handler(message):
+    remember_user_from_message(message)
+
+    error_text = "Не удалось обработать выбранный тариф. Откройте Mini App и попробуйте ещё раз."
+
+    try:
+        payload = json.loads(message.web_app_data.data)
+        if not isinstance(payload, dict):
+            bot.send_message(message.chat.id, error_text, reply_markup=main_keyboard(message.from_user.id))
+            return
+
+        if payload.get("action") != "manual_sbp_order":
+            bot.send_message(message.chat.id, error_text, reply_markup=main_keyboard(message.from_user.id))
+            return
+
+        country = payload.get("country")
+        tariff = payload.get("tariff")
+        displayed_price = payload.get("displayed_price")
+
+        if not isinstance(country, str) or not country.strip():
+            bot.send_message(message.chat.id, error_text, reply_markup=main_keyboard(message.from_user.id))
+            return
+        if not isinstance(tariff, str) or not tariff.strip():
+            bot.send_message(message.chat.id, error_text, reply_markup=main_keyboard(message.from_user.id))
+            return
+        if isinstance(displayed_price, bool) or not isinstance(displayed_price, int) or displayed_price <= 0:
+            bot.send_message(message.chat.id, error_text, reply_markup=main_keyboard(message.from_user.id))
+            return
+
+        country = country.strip()
+        tariff = tariff.strip()
+        server_price = get_valid_plan_price(country, tariff)
+        if server_price is None:
+            bot.send_message(message.chat.id, error_text, reply_markup=main_keyboard(message.from_user.id))
+            return
+
+        if displayed_price != server_price:
+            bot.send_message(
+                message.chat.id,
+                "Цена тарифа изменилась. Откройте Mini App и выберите тариф заново.",
+                reply_markup=main_keyboard(message.from_user.id)
+            )
+            return
+
+        process_order_selection(
+            chat_id=message.chat.id,
+            user_id=message.from_user.id,
+            country=country,
+            tariff=tariff,
+            displayed_price=displayed_price,
+            source="miniapp",
+            use_balance=False,
+            show_payment_message=False
+        )
+    except Exception:
+        bot.send_message(message.chat.id, error_text, reply_markup=main_keyboard(message.from_user.id))
 
 
 @bot.message_handler(content_types=["text"])
