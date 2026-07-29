@@ -1865,6 +1865,12 @@ def show_partner_cabinet(chat_id: int, user_id: int):
         reply_markup=kb
     )
 
+def partner_button_name(name: str, limit: int = 24) -> str:
+    clean = (name or "Партнёр").strip() or "Партнёр"
+    if len(clean) <= limit:
+        return clean
+    return clean[:limit - 1].rstrip() + "…"
+
 def show_admin_partners(chat_id: int, user_id: int):
     if user_id != ADMIN_ID:
         bot.send_message(chat_id, "Раздел доступен только администратору.", reply_markup=main_keyboard(user_id))
@@ -1910,20 +1916,16 @@ def show_admin_partners(chat_id: int, user_id: int):
         LIMIT 20
     """)
     rows = cursor.fetchall()
-    if rows:
-        top = []
-        for idx, (code, name, clients, paid_orders, src_sales, src_available, src_paid) in enumerate(rows, start=1):
-            top.append(
-                f"{idx}. {name}\n"
-                f"Код: {code}\n"
-                f"Клиентов: {clients} | eSIM: {paid_orders}\n"
-                f"Продажи: {format_price(src_sales)} ₽\n"
-                f"К выплате: {format_price(src_available)} ₽\n"
-                f"Выплачено: {format_price(src_paid)} ₽"
-            )
-        top_text = "\n\n".join(top)
-    else:
-        top_text = "Партнёров пока нет"
+
+    kb = types.InlineKeyboardMarkup()
+    for code, name, _clients, _paid_orders, _sales, src_available, _paid in rows:
+        callback_data = f"partner_view_{code}"
+        if len(callback_data.encode("utf-8")) <= 64:
+            kb.add(types.InlineKeyboardButton(
+                f"👤 {partner_button_name(name)} — {format_price(src_available)} ₽",
+                callback_data=callback_data
+            ))
+    kb.add(types.InlineKeyboardButton("🔄 Обновить список", callback_data="partner_list"))
 
     bot.send_message(
         chat_id,
@@ -1937,12 +1939,9 @@ def show_admin_partners(chat_id: int, user_id: int):
         f"Выплачено: {format_price(paid)} ₽\n\n"
         f"Новые заявки приходят вам отдельным сообщением с кнопками «Одобрить» и «Отклонить». "
         f"После одобрения код и партнёрская ссылка создаются автоматически.\n\n"
-        f"Топ-20:\n\n{top_text}\n\n"
-        f"Подробная статистика:\n/partner_stats КОД\n\n"
-        f"Отметить выплату:\n/partner_payout КОД",
-        reply_markup=nav_keyboard()
+        f"Выберите партнёра ниже, чтобы открыть статистику и управление выплатами.",
+        reply_markup=kb
     )
-
 def show_partner_stats(chat_id: int, user_id: int, raw_code: str):
     if user_id != ADMIN_ID:
         return
@@ -1963,6 +1962,11 @@ def show_partner_stats(chat_id: int, user_id: int, raw_code: str):
     """, (code,))
     history_text = format_partner_commission_rows(cursor.fetchall())
 
+    kb = types.InlineKeyboardMarkup()
+    if amounts["available"] > 0:
+        kb.add(types.InlineKeyboardButton("💸 Отметить выплату", callback_data=f"partner_pay_{code}"))
+    kb.add(types.InlineKeyboardButton("🔙 К списку партнёров", callback_data="partner_list"))
+
     bot.send_message(
         chat_id,
         f"🤝 Партнёр\n\n"
@@ -1970,16 +1974,15 @@ def show_partner_stats(chat_id: int, user_id: int, raw_code: str):
         f"Код: {code}\n"
         f"Telegram ID: {telegram_user_id}\n"
         f"Ставка: {rate}%\n"
-        f"Ссылка:\n{partner_link(code)}\n\n"
+        f"Персональная ссылка:\n{partner_link(code)}\n\n"
         f"Клиентов: {amounts['clients']}\n"
         f"Оплаченных eSIM: {amounts['paid_orders']}\n"
         f"Продажи: {format_price(amounts['sales'])} ₽\n"
         f"К выплате: {format_price(amounts['available'])} ₽\n"
         f"Выплачено: {format_price(amounts['paid'])} ₽\n\n"
-        f"Последние начисления:\n{history_text}\n\n"
-        f"Для полной выплаты:\n/partner_payout {code}"
+        f"Последние 10 начислений:\n{history_text}",
+        reply_markup=kb
     )
-
 def send_partner_payout_request(user_id: int, chat_id: int):
     partner = get_partner_by_user(user_id)
     if not partner:
@@ -1990,17 +1993,45 @@ def send_partner_payout_request(user_id: int, chat_id: int):
     if amounts["available"] <= 0:
         bot.send_message(chat_id, "Сейчас нет суммы к выплате")
         return
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("👤 Открыть партнёра", callback_data=f"partner_view_{code}"))
+    kb.add(types.InlineKeyboardButton("💸 Отметить выплату", callback_data=f"partner_pay_{code}"))
     bot.send_message(
         ADMIN_ID,
         f"💸 Запрос выплаты\n\n"
         f"Партнёр: {name}\n"
         f"Код: {code}\n"
         f"Telegram ID: {telegram_user_id}\n"
-        f"К выплате: {format_price(amounts['available'])} ₽\n\n"
-        f"Для выплаты:\n/partner_payout {code}"
+        f"К выплате: {format_price(amounts['available'])} ₽",
+        reply_markup=kb
     )
     bot.send_message(chat_id, "Запрос отправлен администратору")
 
+def show_partner_payout_confirmation(chat_id: int, user_id: int, raw_code: str):
+    if user_id != ADMIN_ID:
+        return
+    code = normalize_partner_code(raw_code)
+    partner = get_partner_by_code(code) if code else None
+    if not partner:
+        bot.send_message(chat_id, "Партнёр не найден.")
+        return
+    code, name, telegram_user_id, rate, is_active = partner
+    amounts = get_partner_amounts(code)
+    if amounts["available"] <= 0:
+        bot.send_message(chat_id, "У партнёра нет суммы к выплате")
+        return
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("✅ Подтвердить выплату", callback_data=f"pp_ok_{code}"))
+    kb.add(types.InlineKeyboardButton("❌ Отмена", callback_data="pp_cancel"))
+    kb.add(types.InlineKeyboardButton("🔙 К партнёру", callback_data=f"partner_view_{code}"))
+    bot.send_message(
+        chat_id,
+        f"💸 Подтверждение выплаты\n\n"
+        f"Партнёр: {name}\n"
+        f"К выплате: {format_price(amounts['available'])} ₽\n\n"
+        f"Подтвердите, что деньги уже переведены партнёру.",
+        reply_markup=kb
+    )
 def show_instructions_menu(chat_id: int, user_id: int, add_to_history: bool = True):
     search_mode[user_id] = False
     selection_mode.pop(user_id, None)
@@ -2301,7 +2332,7 @@ def partner_stats_handler(message):
         return
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
-        bot.send_message(message.chat.id, "Используйте так:\n/partner_stats КОД")
+        bot.send_message(message.chat.id, "Укажите код партнёра после команды.")
         return
     show_partner_stats(message.chat.id, message.from_user.id, parts[1])
 
@@ -2311,30 +2342,9 @@ def partner_payout_handler(message):
         return
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
-        bot.send_message(message.chat.id, "Используйте так:\n/partner_payout КОД")
+        bot.send_message(message.chat.id, "Укажите код партнёра после команды.")
         return
-    code = normalize_partner_code(parts[1])
-    partner = get_partner_by_code(code) if code else None
-    if not partner:
-        bot.send_message(message.chat.id, "Партнёр не найден.")
-        return
-    code, name, telegram_user_id, rate, is_active = partner
-    amounts = get_partner_amounts(code)
-    if amounts["available"] <= 0:
-        bot.send_message(message.chat.id, "У партнёра нет суммы к выплате")
-        return
-    kb = types.InlineKeyboardMarkup()
-    kb.add(
-        types.InlineKeyboardButton("✅ Подтвердить выплату", callback_data=f"pp_ok_{code}"),
-        types.InlineKeyboardButton("❌ Отмена", callback_data="pp_cancel")
-    )
-    bot.send_message(
-        message.chat.id,
-        f"Партнёр: {name}\n"
-        f"К выплате: {format_price(amounts['available'])} ₽\n\n"
-        f"Подтвердите, что деньги уже переведены партнёру.",
-        reply_markup=kb
-    )
+    show_partner_payout_confirmation(message.chat.id, message.from_user.id, parts[1])
 
 @bot.message_handler(commands=["sendqr"])
 def sendqr_handler(message):
@@ -2898,7 +2908,7 @@ def callback_handler(call):
 
     if data == "pa_cancel":
         if has_pending_partner_application(call.from_user.id):
-            bot.answer_callback_query(call.id, "?????? ??? ??????????")
+            bot.answer_callback_query(call.id, "Заявка уже отправлена")
             bot.send_message(call.from_user.id, "Заявка уже отправлена и находится на рассмотрении", reply_markup=main_keyboard(call.from_user.id))
             return
         partner_application_mode.discard(call.from_user.id)
@@ -2959,6 +2969,40 @@ def callback_handler(call):
         )
         return
 
+    if data == "partner_list":
+        if call.from_user.id != ADMIN_ID:
+            bot.answer_callback_query(call.id, "Недоступно")
+            return
+        bot.answer_callback_query(call.id)
+        show_admin_partners(call.message.chat.id, call.from_user.id)
+        return
+
+    if data.startswith("partner_view_"):
+        if call.from_user.id != ADMIN_ID:
+            bot.answer_callback_query(call.id, "Недоступно")
+            return
+        raw_code = data.replace("partner_view_", "", 1)
+        code = normalize_partner_code(raw_code)
+        if not code:
+            bot.answer_callback_query(call.id, "Партнёр не найден")
+            return
+        bot.answer_callback_query(call.id)
+        show_partner_stats(call.message.chat.id, call.from_user.id, code)
+        return
+
+    if data.startswith("partner_pay_"):
+        if call.from_user.id != ADMIN_ID:
+            bot.answer_callback_query(call.id, "Недоступно")
+            return
+        raw_code = data.replace("partner_pay_", "", 1)
+        code = normalize_partner_code(raw_code)
+        if not code:
+            bot.answer_callback_query(call.id, "Партнёр не найден")
+            return
+        bot.answer_callback_query(call.id)
+        show_partner_payout_confirmation(call.message.chat.id, call.from_user.id, code)
+        return
+
     if data.startswith("pp_req_"):
         code = data.replace("pp_req_", "", 1)
         partner = get_partner_by_user(call.from_user.id)
@@ -2970,7 +3014,14 @@ def callback_handler(call):
         return
 
     if data == "pp_cancel":
+        if call.from_user.id != ADMIN_ID:
+            bot.answer_callback_query(call.id, "Недоступно")
+            return
         bot.answer_callback_query(call.id, "Отменено")
+        try:
+            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+        except Exception:
+            pass
         return
 
     if data.startswith("pp_ok_"):
@@ -3015,12 +3066,20 @@ def callback_handler(call):
 
         amounts = get_partner_amounts(code)
         bot.answer_callback_query(call.id, "Выплата записана")
+        try:
+            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+        except Exception:
+            pass
+        kb = types.InlineKeyboardMarkup()
+        kb.add(types.InlineKeyboardButton("👤 Открыть партнёра", callback_data=f"partner_view_{code}"))
+        kb.add(types.InlineKeyboardButton("🤝 Все партнёры", callback_data="partner_list"))
         bot.send_message(
             ADMIN_ID,
             f"✅ Выплата записана\n\n"
             f"Партнёр: {name}\n"
             f"Выплачено: {format_price(amount)} ₽\n"
-            f"К выплате сейчас: {format_price(amounts['available'])} ₽"
+            f"К выплате сейчас: {format_price(amounts['available'])} ₽",
+            reply_markup=kb
         )
         if telegram_user_id:
             try:
