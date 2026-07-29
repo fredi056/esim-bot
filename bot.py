@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import secrets
 import sqlite3
 import threading
 from pathlib import Path
@@ -137,6 +138,21 @@ CREATE TABLE IF NOT EXISTS partner_payouts (
     confirmed_by INTEGER NOT NULL
 )
 """)
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS partner_applications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL UNIQUE,
+    username TEXT NOT NULL DEFAULT '',
+    first_name TEXT NOT NULL DEFAULT '',
+    business_name TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    partner_code TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    reviewed_at INTEGER NOT NULL DEFAULT 0,
+    reviewed_by INTEGER NOT NULL DEFAULT 0
+)
+""")
+cursor.execute("CREATE INDEX IF NOT EXISTS idx_partner_applications_status ON partner_applications(status)")
 cursor.execute("CREATE INDEX IF NOT EXISTS idx_partner_commissions_code_status ON partner_commissions(partner_code, status)")
 cursor.execute("CREATE INDEX IF NOT EXISTS idx_partner_commissions_user ON partner_commissions(user_id)")
 cursor.execute("CREATE INDEX IF NOT EXISTS idx_partner_payouts_code ON partner_payouts(partner_code)")
@@ -322,6 +338,7 @@ search_mode: Dict[int, bool] = {}
 selection_mode: Dict[int, Dict[str, str]] = {}
 admin_send_qr_target: Optional[int] = None
 admin_send_qr_order_id: Optional[int] = None
+partner_application_mode = set()
 
 def ensure_user(user_id: int, ref: Optional[int] = None, username: Optional[str] = None, first_name: Optional[str] = None) -> None:
     username = username or ""
@@ -565,6 +582,7 @@ def reset_to_main(user_id: int) -> None:
     history[user_id] = [("main", None)]
     search_mode[user_id] = False
     selection_mode.pop(user_id, None)
+    partner_application_mode.discard(user_id)
 
 def go_back(user_id: int) -> Tuple[str, Optional[str]]:
     stack = history.setdefault(user_id, [("main", None)])
@@ -601,6 +619,8 @@ def main_keyboard(user_id: Optional[int] = None):
             kb.add("🤝 Партнёры")
         elif user_id and get_partner_by_user(user_id):
             kb.add("🤝 Кабинет партнёра")
+        else:
+            kb.add("🤝 Стать партнёром")
         return kb
 
     kb.add("✈️ eSIM для путешествий")
@@ -614,6 +634,8 @@ def main_keyboard(user_id: Optional[int] = None):
         kb.add("🤝 Партнёры")
     elif user_id and get_partner_by_user(user_id):
         kb.add("🤝 Кабинет партнёра")
+    else:
+        kb.add("🤝 Стать партнёром")
     return kb
 
 def is_legacy_russia_text(text: str) -> bool:
@@ -1613,6 +1635,201 @@ def show_ad_stats(chat_id: int, user_id: int):
         reply_markup=nav_keyboard()
     )
 
+def has_pending_partner_application(user_id: int) -> bool:
+    cursor.execute("SELECT id FROM partner_applications WHERE user_id=? AND status='pending'", (user_id,))
+    return cursor.fetchone() is not None
+
+def generate_partner_code() -> str:
+    for _ in range(20):
+        code = "p_" + secrets.token_hex(4)
+        cursor.execute("SELECT code FROM partners WHERE code=?", (code,))
+        if not cursor.fetchone():
+            return code
+    raise RuntimeError("Could not generate unique partner code")
+
+def show_partner_application_intro(chat_id: int, user_id: int):
+    partner = get_partner_by_user(user_id)
+    if partner and partner[4]:
+        show_partner_cabinet(chat_id, user_id)
+        return
+    if has_pending_partner_application(user_id):
+        bot.send_message(
+            chat_id,
+            "Ваша заявка уже отправлена и находится на рассмотрении",
+            reply_markup=main_keyboard(user_id)
+        )
+        return
+
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("📝 Подать заявку", callback_data="pa_start"))
+    kb.add(types.InlineKeyboardButton("❌ Отмена", callback_data="pa_cancel"))
+    bot.send_message(
+        chat_id,
+        "🤝 Партнёрская программа eSIMLime\n\n"
+        "Получайте 20% от суммы, фактически оплаченной клиентом за eSIM.\n\n"
+        "Как это работает:\n"
+        "1. Вы получаете персональную ссылку.\n"
+        "2. Отправляете её своим клиентам.\n"
+        "3. Клиент переходит по ссылке и покупает eSIM.\n"
+        "4. После подтверждения оплаты вам начисляется 20%.\n\n"
+        "Клиент учитывается в течение 72 часов после перехода по вашей ссылке.\n"
+        "Выплату можно запросить в кабинете партнёра.",
+        reply_markup=kb
+    )
+
+def start_partner_application(chat_id: int, user_id: int):
+    partner = get_partner_by_user(user_id)
+    if partner and partner[4]:
+        show_partner_cabinet(chat_id, user_id)
+        return
+    if has_pending_partner_application(user_id):
+        bot.send_message(
+            chat_id,
+            "Ваша заявка уже отправлена и находится на рассмотрении",
+            reply_markup=main_keyboard(user_id)
+        )
+        return
+    partner_application_mode.add(user_id)
+    search_mode[user_id] = False
+    selection_mode.pop(user_id, None)
+    bot.send_message(
+        chat_id,
+        "Напишите ваше имя или название агентства",
+        reply_markup=nav_keyboard()
+    )
+
+def save_partner_application(message):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    business_name = (message.text or "").strip()
+    if len(business_name) < 2 or len(business_name) > 100:
+        bot.send_message(chat_id, "Название должно быть от 2 до 100 символов.", reply_markup=nav_keyboard())
+        return
+
+    now = int(time.time())
+    username = message.from_user.username or ""
+    first_name = message.from_user.first_name or ""
+    try:
+        cursor.execute("BEGIN IMMEDIATE")
+        cursor.execute(
+            """
+            INSERT INTO partner_applications
+                (user_id, username, first_name, business_name, status, partner_code, created_at, reviewed_at, reviewed_by)
+            VALUES (?, ?, ?, ?, 'pending', '', ?, 0, 0)
+            ON CONFLICT(user_id) DO UPDATE SET
+                username=excluded.username,
+                first_name=excluded.first_name,
+                business_name=excluded.business_name,
+                status='pending',
+                partner_code='',
+                created_at=excluded.created_at,
+                reviewed_at=0,
+                reviewed_by=0
+            """,
+            (user_id, username, first_name, business_name, now)
+        )
+        application_id = cursor.execute("SELECT id FROM partner_applications WHERE user_id=?", (user_id,)).fetchone()[0]
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        partner_application_mode.discard(user_id)
+
+    kb = types.InlineKeyboardMarkup()
+    kb.add(
+        types.InlineKeyboardButton("✅ Одобрить", callback_data=f"pa_ok_{application_id}"),
+        types.InlineKeyboardButton("❌ Отклонить", callback_data=f"pa_no_{application_id}")
+    )
+    telegram = f"@{username}" if username else "не указан"
+    user_name = first_name or "не указано"
+    bot.send_message(
+        ADMIN_ID,
+        f"🤝 Новая заявка в партнёрскую программу\n\n"
+        f"Заявка: #{application_id}\n"
+        f"Имя/агентство: {business_name}\n"
+        f"Пользователь: {user_name}\n"
+        f"Telegram: {telegram}\n"
+        f"Telegram ID: {user_id}",
+        reply_markup=kb
+    )
+    bot.send_message(
+        chat_id,
+        "✅ Заявка отправлена\n\n"
+        "Мы рассмотрим её и сообщим результат в этом чате.",
+        reply_markup=main_keyboard(user_id)
+    )
+
+def approve_partner_application(application_id: int) -> Tuple[Optional[int], Optional[str], Optional[str], Optional[int]]:
+    now = int(time.time())
+    try:
+        cursor.execute("BEGIN IMMEDIATE")
+        cursor.execute(
+            "SELECT user_id, business_name, status FROM partner_applications WHERE id=?",
+            (application_id,)
+        )
+        application = cursor.fetchone()
+        if not application or application[2] != "pending":
+            conn.rollback()
+            return None, None, None, None
+        user_id, business_name, _status = application
+
+        cursor.execute("SELECT code FROM partners WHERE telegram_user_id=?", (user_id,))
+        row = cursor.fetchone()
+        if row:
+            code = row[0]
+            cursor.execute(
+                "UPDATE partners SET name=?, commission_rate=?, is_active=1 WHERE code=?",
+                (business_name, DEFAULT_PARTNER_RATE, code)
+            )
+        else:
+            code = generate_partner_code()
+            cursor.execute(
+                """
+                INSERT INTO partners (code, name, telegram_user_id, commission_rate, is_active, created_at)
+                VALUES (?, ?, ?, ?, 1, ?)
+                """,
+                (code, business_name, user_id, DEFAULT_PARTNER_RATE, now)
+            )
+
+        cursor.execute(
+            """
+            UPDATE partner_applications
+            SET status='approved', partner_code=?, reviewed_at=?, reviewed_by=?
+            WHERE id=? AND status='pending'
+            """,
+            (code, now, ADMIN_ID, application_id)
+        )
+        conn.commit()
+        return user_id, business_name, code, DEFAULT_PARTNER_RATE
+    except Exception:
+        conn.rollback()
+        raise
+
+def reject_partner_application(application_id: int) -> Optional[int]:
+    now = int(time.time())
+    try:
+        cursor.execute("BEGIN IMMEDIATE")
+        cursor.execute("SELECT user_id, status FROM partner_applications WHERE id=?", (application_id,))
+        row = cursor.fetchone()
+        if not row or row[1] != "pending":
+            conn.rollback()
+            return None
+        user_id = row[0]
+        cursor.execute(
+            """
+            UPDATE partner_applications
+            SET status='rejected', reviewed_at=?, reviewed_by=?
+            WHERE id=? AND status='pending'
+            """,
+            (now, ADMIN_ID, application_id)
+        )
+        conn.commit()
+        return user_id
+    except Exception:
+        conn.rollback()
+        raise
+
 def show_partner_cabinet(chat_id: int, user_id: int):
     partner = get_partner_by_user(user_id)
     if not partner:
@@ -2325,13 +2542,22 @@ def text_handler(message):
     remember_user_from_message(message)
 
     if text == "🏠 В начало":
+        partner_application_mode.discard(user_id)
         show_main(chat_id, user_id, add_to_history=True)
         return
 
     if text == "🔙 Назад":
+        partner_application_mode.discard(user_id)
         selection_mode.pop(user_id, None)
         state = go_back(user_id)
         render_from_state(chat_id, user_id, state)
+        return
+
+    if user_id in partner_application_mode:
+        if text.startswith("/"):
+            bot.send_message(chat_id, "Напишите имя или название агентства обычным текстом, без команды.")
+            return
+        save_partner_application(message)
         return
 
     if user_id in selection_mode:
@@ -2410,6 +2636,10 @@ def text_handler(message):
 
     if text == "🤝 Кабинет партнёра":
         show_partner_cabinet(chat_id, user_id)
+        return
+
+    if text == "🤝 Стать партнёром":
+        show_partner_application_intro(chat_id, user_id)
         return
 
     if text == "❓ Помощь":
@@ -2650,6 +2880,78 @@ def callback_handler(call):
             f"Пользователь: {user_line}\n"
             f"Страна: {country or 'Не указано'}\n"
             f"Тариф: {tariff or 'Не указано'}"
+        )
+        return
+
+    if data == "pa_start":
+        bot.answer_callback_query(call.id)
+        try:
+            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+        except Exception:
+            pass
+        start_partner_application(call.from_user.id, call.from_user.id)
+        return
+
+    if data == "pa_cancel":
+        if has_pending_partner_application(call.from_user.id):
+            bot.answer_callback_query(call.id, "?????? ??? ??????????")
+            bot.send_message(call.from_user.id, "Заявка уже отправлена и находится на рассмотрении", reply_markup=main_keyboard(call.from_user.id))
+            return
+        partner_application_mode.discard(call.from_user.id)
+        try:
+            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+        except Exception:
+            pass
+        bot.answer_callback_query(call.id, "Отменено")
+        bot.send_message(call.from_user.id, "Заявка отменена.", reply_markup=main_keyboard(call.from_user.id))
+        return
+
+    if data.startswith("pa_ok_"):
+        if call.from_user.id != ADMIN_ID:
+            bot.answer_callback_query(call.id, "Недоступно")
+            return
+        application_id = int(data.replace("pa_ok_", "", 1))
+        user_id, business_name, code, rate = approve_partner_application(application_id)
+        if not user_id:
+            bot.answer_callback_query(call.id, "Заявка уже обработана")
+            return
+        link = partner_link(code)
+        bot.answer_callback_query(call.id, "Заявка одобрена")
+        bot.send_message(
+            ADMIN_ID,
+            f"✅ Заявка одобрена\n\n"
+            f"Название: {business_name}\n"
+            f"Код: {code}\n"
+            f"Telegram ID: {user_id}\n"
+            f"Ставка: {rate}%\n"
+            f"Ссылка:\n{link}"
+        )
+        bot.send_message(
+            user_id,
+            f"✅ Ваша заявка одобрена\n\n"
+            f"Вы стали партнёром eSIMLime.\n"
+            f"Ваше вознаграждение — {rate}% с каждой подтверждённой оплаты.\n\n"
+            f"Ваша персональная ссылка:\n{link}\n\n"
+            f"Отправляйте её своим клиентам.\n"
+            f"Статистика и запрос выплаты доступны в разделе «🤝 Кабинет партнёра».",
+            reply_markup=main_keyboard(user_id)
+        )
+        return
+
+    if data.startswith("pa_no_"):
+        if call.from_user.id != ADMIN_ID:
+            bot.answer_callback_query(call.id, "Недоступно")
+            return
+        application_id = int(data.replace("pa_no_", "", 1))
+        user_id = reject_partner_application(application_id)
+        if not user_id:
+            bot.answer_callback_query(call.id, "Заявка уже обработана")
+            return
+        bot.answer_callback_query(call.id, "Заявка отклонена")
+        bot.send_message(
+            user_id,
+            "Заявка в партнёрскую программу пока не одобрена. По вопросам напишите: @F_Evdokimov",
+            reply_markup=main_keyboard(user_id)
         )
         return
 
