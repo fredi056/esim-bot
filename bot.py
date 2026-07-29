@@ -339,6 +339,7 @@ selection_mode: Dict[int, Dict[str, str]] = {}
 admin_send_qr_target: Optional[int] = None
 admin_send_qr_order_id: Optional[int] = None
 partner_application_mode = set()
+ad_source_creation_mode = set()
 
 def ensure_user(user_id: int, ref: Optional[int] = None, username: Optional[str] = None, first_name: Optional[str] = None) -> None:
     username = username or ""
@@ -377,6 +378,47 @@ def normalize_source_code(raw_code: str) -> Optional[str]:
 
 def source_link(code: str) -> str:
     return f"https://t.me/esimlimebot?start=ad_{code}"
+
+def source_button_name(name: str, limit: int = 24) -> str:
+    clean = (name or "Источник").strip() or "Источник"
+    if len(clean) <= limit:
+        return clean
+    return clean[:limit - 1].rstrip() + "…"
+
+def generate_ad_source_code() -> str:
+    for _ in range(20):
+        code = "src_" + secrets.token_hex(4)
+        code = normalize_source_code(code)
+        if not code:
+            continue
+        cursor.execute("SELECT code FROM ad_sources WHERE code=?", (code,))
+        if not cursor.fetchone():
+            return code
+    raise RuntimeError("Could not generate unique ad source code")
+
+def ad_source_creation_prompt(chat_id: int) -> None:
+    bot.send_message(
+        chat_id,
+        "Напишите понятное название рекламного источника.\n\n"
+        "Например:\n"
+        "Telegram — Путешествия Москва\n"
+        "VK — Турция\n"
+        "Авито — ОАЭ",
+        reply_markup=nav_keyboard()
+    )
+
+def show_created_ad_source(chat_id: int, code: str, name: str) -> None:
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("📊 Открыть статистику", callback_data=f"ad_view_{code}"))
+    kb.add(types.InlineKeyboardButton("📣 Все источники", callback_data="ad_list"))
+    bot.send_message(
+        chat_id,
+        f"✅ Рекламный источник создан\n\n"
+        f"Название: {name}\n"
+        f"Код: {code}\n"
+        f"Ссылка:\n{source_link(code)}",
+        reply_markup=kb
+    )
 
 def ensure_ad_source(code: str, name: Optional[str] = None) -> None:
     clean_name = (name or code).strip() or code
@@ -583,6 +625,7 @@ def reset_to_main(user_id: int) -> None:
     search_mode[user_id] = False
     selection_mode.pop(user_id, None)
     partner_application_mode.discard(user_id)
+    ad_source_creation_mode.discard(user_id)
 
 def go_back(user_id: int) -> Tuple[str, Optional[str]]:
     stack = history.setdefault(user_id, [("main", None)])
@@ -1527,17 +1570,24 @@ def show_source_stats(chat_id: int, user_id: int, raw_code: str) -> None:
 
     cursor.execute("SELECT name FROM ad_sources WHERE code=?", (code,))
     row = cursor.fetchone()
-    name = row[0] if row else code
+    if not row:
+        bot.send_message(chat_id, "Источник не найден")
+        return
+    name = row[0] or code
     stats = get_source_stats(code)
     order_conversion = percent(stats["ordered_users"], stats["attracted"])
     paid_conversion = percent(stats["paid_users"], stats["attracted"])
 
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("🔄 Обновить статистику", callback_data=f"ad_view_{code}"))
+    kb.add(types.InlineKeyboardButton("🔙 К списку источников", callback_data="ad_list"))
+
     bot.send_message(
         chat_id,
-        f"📣 Источник\n\n"
+        f"📣 Рекламный источник\n\n"
         f"Название: {name}\n"
         f"Код: {code}\n"
-        f"Ссылка:\n{source_link(code)}\n\n"
+        f"Рекламная ссылка:\n{source_link(code)}\n\n"
         f"Пришли: {stats['attracted']}\n"
         f"Создали заказ: {stats['ordered_users']}\n"
         f"Всего заказов: {stats['total_orders']}\n"
@@ -1546,7 +1596,7 @@ def show_source_stats(chat_id: int, user_id: int, raw_code: str) -> None:
         f"Выручка: {format_price(stats['revenue'])} ₽\n\n"
         f"Конверсия в заказ: {order_conversion:.1f}%\n"
         f"Конверсия в оплату: {paid_conversion:.1f}%",
-        reply_markup=nav_keyboard()
+        reply_markup=kb
     )
 
 def show_ad_stats(chat_id: int, user_id: int):
@@ -1580,7 +1630,8 @@ def show_ad_stats(chat_id: int, user_id: int):
             COALESCE(o.ordered_users, 0) AS ordered_users,
             COALESCE(o.paid_users, 0) AS paid_users,
             COALESCE(o.paid_orders, 0) AS paid_orders,
-            COALESCE(o.revenue, 0) AS revenue
+            COALESCE(o.revenue, 0) AS revenue,
+            s.created_at
         FROM ad_sources s
         LEFT JOIN (
             SELECT first_source, COUNT(*) AS attracted
@@ -1599,23 +1650,21 @@ def show_ad_stats(chat_id: int, user_id: int):
             WHERE source_code!=''
             GROUP BY source_code
         ) o ON o.source_code = s.code
-        WHERE COALESCE(u.attracted, 0) > 0
-        ORDER BY revenue DESC, paid_orders DESC, attracted DESC
+        ORDER BY revenue DESC, paid_orders DESC, attracted DESC, s.created_at DESC
         LIMIT 20
     """)
     rows = cursor.fetchall()
-    if rows:
-        top_lines = []
-        for idx, (code, name, src_attracted, src_ordered, src_paid_users, src_paid_orders, src_revenue) in enumerate(rows, start=1):
-            top_lines.append(
-                f"{idx}. {name or code}\n"
-                f"Код: {code}\n"
-                f"Пришли: {src_attracted} | Заказали: {src_ordered} | Оплатили: {src_paid_users}\n"
-                f"Выручка: {format_price(src_revenue)} ₽"
-            )
-        top_text = "\n\n".join(top_lines)
-    else:
-        top_text = "Пока нет источников с пользователями"
+
+    kb = types.InlineKeyboardMarkup()
+    for code, name, _src_attracted, _src_ordered, _src_paid_users, _src_paid_orders, src_revenue, _created_at in rows:
+        callback_data = f"ad_view_{code}"
+        if len(callback_data.encode("utf-8")) <= 64:
+            kb.add(types.InlineKeyboardButton(
+                f"📣 {source_button_name(name or code)} — {format_price(src_revenue)} ₽",
+                callback_data=callback_data
+            ))
+    kb.add(types.InlineKeyboardButton("➕ Создать источник", callback_data="ad_create"))
+    kb.add(types.InlineKeyboardButton("🔄 Обновить список", callback_data="ad_list"))
 
     bot.send_message(
         chat_id,
@@ -1629,10 +1678,8 @@ def show_ad_stats(chat_id: int, user_id: int):
         f"Выручка: {format_price(revenue)} ₽\n"
         f"Конверсия в заказ: {order_conversion:.1f}%\n"
         f"Конверсия в оплату: {paid_conversion:.1f}%\n\n"
-        f"Топ-20 источников:\n\n{top_text}\n\n"
-        f"Для подробной статистики:\n/source_stats КОД\n\n"
-        f"Для создания новой ссылки:\n/source КОД НАЗВАНИЕ",
-        reply_markup=nav_keyboard()
+        f"Выберите рекламный источник ниже, чтобы открыть подробную статистику.",
+        reply_markup=kb
     )
 
 def has_pending_partner_application(user_id: int) -> bool:
@@ -2557,14 +2604,29 @@ def text_handler(message):
 
     if text == "🏠 В начало":
         partner_application_mode.discard(user_id)
+        ad_source_creation_mode.discard(user_id)
         show_main(chat_id, user_id, add_to_history=True)
         return
 
     if text == "🔙 Назад":
         partner_application_mode.discard(user_id)
+        ad_source_creation_mode.discard(user_id)
         selection_mode.pop(user_id, None)
         state = go_back(user_id)
         render_from_state(chat_id, user_id, state)
+        return
+
+    if user_id in ad_source_creation_mode:
+        if text.startswith("/"):
+            bot.send_message(chat_id, "Напишите название рекламного источника обычным текстом, без команды.")
+            return
+        if len(text) < 2 or len(text) > 100:
+            bot.send_message(chat_id, "Название должно быть от 2 до 100 символов.")
+            return
+        code = generate_ad_source_code()
+        ensure_ad_source(code, text)
+        ad_source_creation_mode.discard(user_id)
+        show_created_ad_source(chat_id, code, text)
         return
 
     if user_id in partner_application_mode:
@@ -2895,6 +2957,46 @@ def callback_handler(call):
             f"Страна: {country or 'Не указано'}\n"
             f"Тариф: {tariff or 'Не указано'}"
         )
+        return
+
+    if data == "ad_list":
+        if call.from_user.id != ADMIN_ID:
+            bot.answer_callback_query(call.id, "Недоступно")
+            return
+        bot.answer_callback_query(call.id)
+        show_ad_stats(call.message.chat.id, call.from_user.id)
+        return
+
+    if data.startswith("ad_view_"):
+        if call.from_user.id != ADMIN_ID:
+            bot.answer_callback_query(call.id, "Недоступно")
+            return
+        raw_code = data.replace("ad_view_", "", 1)
+        code = normalize_source_code(raw_code)
+        if not code:
+            bot.answer_callback_query(call.id, "Источник не найден")
+            return
+        cursor.execute("SELECT code FROM ad_sources WHERE code=?", (code,))
+        if not cursor.fetchone():
+            bot.answer_callback_query(call.id, "Источник не найден")
+            return
+        bot.answer_callback_query(call.id)
+        show_source_stats(call.message.chat.id, call.from_user.id, code)
+        return
+
+    if data == "ad_create":
+        if call.from_user.id != ADMIN_ID:
+            bot.answer_callback_query(call.id, "Недоступно")
+            return
+        ad_source_creation_mode.add(call.from_user.id)
+        search_mode[call.from_user.id] = False
+        selection_mode.pop(call.from_user.id, None)
+        bot.answer_callback_query(call.id)
+        try:
+            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+        except Exception:
+            pass
+        ad_source_creation_prompt(call.message.chat.id)
         return
 
     if data == "pa_start":
