@@ -1872,6 +1872,8 @@ def show_admin_partners(chat_id: int, user_id: int):
 
     cursor.execute("SELECT COUNT(*) FROM partners WHERE is_active=1")
     active_partners = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM partner_applications WHERE status='pending'")
+    pending_applications = cursor.fetchone()[0]
     cursor.execute("SELECT COUNT(DISTINCT user_id) FROM partner_commissions WHERE status IN ('available', 'paid')")
     partner_clients = cursor.fetchone()[0]
     cursor.execute("SELECT COUNT(*) FROM partner_commissions WHERE status IN ('available', 'paid')")
@@ -1927,13 +1929,15 @@ def show_admin_partners(chat_id: int, user_id: int):
         chat_id,
         f"🤝 Партнёры\n\n"
         f"Активных партнёров: {active_partners}\n"
+        f"Заявок на рассмотрении: {pending_applications}\n"
         f"Клиентов партнёров: {partner_clients}\n"
         f"Оплаченных партнёрских eSIM: {paid_esims}\n"
         f"Продажи: {format_price(sales)} ₽\n"
         f"К выплате: {format_price(available)} ₽\n"
         f"Выплачено: {format_price(paid)} ₽\n\n"
+        f"Новые заявки приходят вам отдельным сообщением с кнопками «Одобрить» и «Отклонить». "
+        f"После одобрения код и партнёрская ссылка создаются автоматически.\n\n"
         f"Топ-20:\n\n{top_text}\n\n"
-        f"Создать партнёра:\n/partner_create КОД TELEGRAM_ID НАЗВАНИЕ\n\n"
         f"Подробная статистика:\n/partner_stats КОД\n\n"
         f"Отметить выплату:\n/partner_payout КОД",
         reply_markup=nav_keyboard()
