@@ -2881,4 +2881,6 @@ def callback_handler(call):
         return
 
 threading.Thread(target=reminder_worker, daemon=True).start()
+bot.remove_webhook()
+time.sleep(1)
 bot.polling(none_stop=True)
