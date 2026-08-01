@@ -6,7 +6,7 @@ import sqlite3
 import threading
 from pathlib import Path
 import time
-from typing import Optional, Dict, List, Tuple
+from typing import Any, Optional, Dict, List, Tuple
 
 import telebot
 from telebot import types
@@ -70,6 +70,12 @@ add_column_if_not_exists("orders", "source_code", "TEXT DEFAULT ''")
 add_column_if_not_exists("orders", "partner_code", "TEXT DEFAULT ''")
 add_column_if_not_exists("orders", "partner_rate", "INTEGER DEFAULT 0")
 add_column_if_not_exists("orders", "partner_commission", "INTEGER DEFAULT 0")
+add_column_if_not_exists("orders", "plan_type", "TEXT DEFAULT ''")
+add_column_if_not_exists("orders", "supplier_key", "TEXT DEFAULT ''")
+add_column_if_not_exists("orders", "supplier_tariff", "TEXT DEFAULT ''")
+add_column_if_not_exists("orders", "duration_days", "INTEGER DEFAULT 0")
+add_column_if_not_exists("orders", "post_limit_speed", "TEXT DEFAULT ''")
+add_column_if_not_exists("orders", "daily_high_speed_gb", "INTEGER DEFAULT 0")
 add_column_if_not_exists("users", "username", "TEXT DEFAULT ''")
 add_column_if_not_exists("users", "first_name", "TEXT DEFAULT ''")
 add_column_if_not_exists("users", "first_source", "TEXT DEFAULT ''")
@@ -202,6 +208,105 @@ def load_country_prices() -> Dict[str, Dict[str, int]]:
     return normalized
 
 COUNTRY_PRICES = load_country_prices()
+
+UNLIMITED_FILE = Path(__file__).resolve().parent / "unlimited_catalog.json"
+
+
+def format_day_word(days: int) -> str:
+    mod100 = days % 100
+    mod10 = days % 10
+    if 11 <= mod100 <= 14:
+        return "дней"
+    if mod10 == 1:
+        return "день"
+    if 2 <= mod10 <= 4:
+        return "дня"
+    return "дней"
+
+
+def format_days(days: int) -> str:
+    return f"{days} {format_day_word(days)}"
+
+
+def get_unlimited_tariff_title(plan: Dict[str, Any], days: int) -> str:
+    return f"Безлимит {plan['daily_high_speed_gb']} ГБ/день — {format_days(days)}"
+
+
+def get_supplier_tariff_title(plan: Dict[str, Any]) -> str:
+    return (
+        f"Unlimited {plan['daily_high_speed_gb']}GB/day "
+        f"{plan['supplier_class']}"
+    )
+
+
+def load_unlimited_catalog() -> Dict[str, Dict[str, Any]]:
+    try:
+        raw = UNLIMITED_FILE.read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"unlimited_catalog.json not found: {UNLIMITED_FILE}") from exc
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"unlimited_catalog.json is not valid JSON: {exc}") from exc
+
+    plans = data.get("plans") if isinstance(data, dict) else None
+    excluded = data.get("excluded_without_1_or_2gb", []) if isinstance(data, dict) else None
+    if not isinstance(plans, list) or not plans:
+        raise RuntimeError("unlimited_catalog.json must contain a non-empty plans list")
+    if not isinstance(excluded, list):
+        raise RuntimeError("unlimited_catalog.json excluded_without_1_or_2gb must be a list")
+
+    normalized: Dict[str, Dict[str, Any]] = {}
+    for plan in plans:
+        if not isinstance(plan, dict):
+            raise RuntimeError("unlimited_catalog.json contains a non-object plan")
+        supplier_key = plan.get("supplier_key")
+        display_name = plan.get("display_name")
+        direction_type = plan.get("direction_type")
+        daily_gb = plan.get("daily_high_speed_gb")
+        supplier_class = plan.get("supplier_class")
+        prices = plan.get("retail_prices_rub")
+        if not isinstance(supplier_key, str) or not supplier_key.strip():
+            raise RuntimeError("unlimited plan contains an invalid supplier_key")
+        if supplier_key in normalized:
+            raise RuntimeError(f"unlimited_catalog.json contains duplicate supplier_key: {supplier_key}")
+        if not isinstance(display_name, str) or not display_name.strip():
+            raise RuntimeError(f"unlimited plan contains an invalid display_name: {supplier_key}")
+        if direction_type not in {"country", "region"}:
+            raise RuntimeError(f"unlimited plan contains an invalid direction_type for {supplier_key}")
+        if isinstance(daily_gb, bool) or not isinstance(daily_gb, int) or daily_gb not in {1, 2}:
+            raise RuntimeError(f"unlimited plan contains invalid daily_high_speed_gb for {supplier_key}")
+        if supplier_class not in {"Economy", "Comfort", "Premium"}:
+            raise RuntimeError(f"unlimited plan contains invalid supplier_class for {supplier_key}")
+        if not isinstance(plan.get("plan_title"), str) or not plan["plan_title"].strip():
+            raise RuntimeError(f"unlimited plan contains an invalid plan_title for {supplier_key}")
+        if not isinstance(plan.get("post_limit_speed"), str) or not plan["post_limit_speed"].strip():
+            raise RuntimeError(f"unlimited plan contains an invalid post_limit_speed for {supplier_key}")
+        if not isinstance(prices, dict):
+            raise RuntimeError(f"unlimited plan contains invalid prices for {supplier_key}")
+
+        previous_price = 0
+        normalized_prices: Dict[str, int] = {}
+        for days in range(1, 31):
+            price = prices.get(str(days))
+            if isinstance(price, bool) or not isinstance(price, int) or price <= 0:
+                raise RuntimeError(f"unlimited plan contains invalid price for {supplier_key} / {days} days")
+            if price < previous_price:
+                raise RuntimeError(f"unlimited plan price decreases for {supplier_key} / {days} days")
+            previous_price = price
+            normalized_prices[str(days)] = price
+
+        normalized[supplier_key] = {
+            **plan,
+            "supplier_key": supplier_key.strip(),
+            "display_name": display_name.strip(),
+            "supplier_class": supplier_class,
+            "retail_prices_rub": normalized_prices,
+        }
+
+    return normalized
+
+
+UNLIMITED_PLANS = load_unlimited_catalog()
 
 
 REGIONS = {
@@ -723,6 +828,73 @@ def parse_order_details(text: str) -> Tuple[str, str]:
 def get_valid_plan_price(country: str, tariff: str) -> Optional[int]:
     return COUNTRY_PRICES.get(country, {}).get(tariff)
 
+def validate_unlimited_order_payload(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    country = payload.get("country")
+    tariff = payload.get("tariff")
+    displayed_price = payload.get("displayed_price")
+    unlimited_key = payload.get("unlimited_key")
+    days = payload.get("days")
+
+    if not isinstance(country, str) or not country.strip():
+        return None
+    if not isinstance(tariff, str) or not tariff.strip():
+        return None
+    if not isinstance(unlimited_key, str) or not unlimited_key.strip():
+        return None
+    if isinstance(days, bool) or not isinstance(days, int) or days < 1 or days > 30:
+        return None
+    if isinstance(displayed_price, bool) or not isinstance(displayed_price, int) or displayed_price <= 0:
+        return None
+
+    plan = UNLIMITED_PLANS.get(unlimited_key.strip())
+    if not plan:
+        return None
+
+    expected_country = plan["display_name"]
+    expected_price = plan["retail_prices_rub"].get(str(days))
+    expected_tariff = get_unlimited_tariff_title(plan, days)
+
+    if country.strip() != expected_country:
+        return None
+    if tariff.strip() != expected_tariff:
+        return None
+    if displayed_price != expected_price:
+        return None
+
+    return {
+        "plan": plan,
+        "country": expected_country,
+        "tariff": expected_tariff,
+        "price": expected_price,
+        "days": days,
+        "unlimited_key": plan["supplier_key"],
+        "supplier_tariff": get_supplier_tariff_title(plan),
+        "post_limit_speed": plan["post_limit_speed"],
+        "daily_high_speed_gb": plan["daily_high_speed_gb"],
+    }
+
+
+def format_unlimited_admin_details(
+    plan_type: str,
+    supplier_key: str,
+    supplier_tariff: str,
+    duration_days: int,
+    post_limit_speed: str,
+    daily_high_speed_gb: int,
+) -> str:
+    if plan_type != "unlimited":
+        return ""
+    return (
+        "\n"
+        "Тип: безлимит\n"
+        f"Ключ поставщика: {supplier_key}\n"
+        f"Тариф поставщика: {supplier_tariff}\n"
+        f"Дневной пакет: {daily_high_speed_gb} ГБ\n"
+        f"Срок: {format_days(duration_days)}\n"
+        f"После лимита: {post_limit_speed}"
+    )
+
+
 def refresh_tariff_selection(chat_id: int, user_id: int, country: Optional[str]) -> None:
     if country and country in COUNTRY_PRICES:
         show_country(chat_id, user_id, country, add_to_history=False)
@@ -897,6 +1069,176 @@ def process_order_selection(
         f"Банк: Т-Банк\n"
         f"Получатель: Федор Е.\n\n"
         f"После оплаты нажмите «📸 Отправить чек» и отправьте скриншот.",
+        reply_markup=kb
+    )
+
+
+def process_unlimited_order_selection(
+    chat_id: int,
+    user_id: int,
+    order: Dict[str, Any],
+    source: str = "miniapp",
+    use_balance: bool = False,
+    show_payment_message: bool = False
+) -> None:
+    country = order["country"]
+    tariff = order["tariff"]
+    price = int(order["price"])
+    days = int(order["days"])
+    unlimited_key = order["unlimited_key"]
+    supplier_tariff = order["supplier_tariff"]
+    post_limit_speed = order["post_limit_speed"]
+    daily_high_speed_gb = int(order["daily_high_speed_gb"])
+    text = f"{country} | {tariff} — {price}₽"
+
+    if use_balance:
+        balance = get_user_balance(user_id)
+        discount_used = min(balance, price)
+        pay_amount = price - discount_used
+    else:
+        discount_used = 0
+        pay_amount = price
+
+    if discount_used > 0:
+        subtract_balance(user_id, discount_used)
+
+    if show_payment_message:
+        show_travel_instruction(chat_id, user_id, add_to_history=False)
+
+    partner_code, partner_rate = get_active_partner_for_user(user_id)
+    if partner_code:
+        source_code = ""
+        partner_commission = int(round(pay_amount * partner_rate / 100))
+    else:
+        source_code = get_user_first_source(user_id)
+        partner_rate = 0
+        partner_commission = 0
+
+    status = "pending_review" if pay_amount == 0 else "awaiting_receipt"
+    created_at = int(time.time())
+
+    if source == "miniapp":
+        cursor.execute(
+            """
+            SELECT id, pay_amount
+            FROM orders
+            WHERE user_id=? AND plan_type='unlimited' AND supplier_key=? AND duration_days=? AND status='awaiting_receipt' AND created_at>=?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (user_id, unlimited_key, days, created_at - 10 * 60)
+        )
+        duplicate_order = cursor.fetchone()
+        if duplicate_order:
+            duplicate_order_id, duplicate_pay_amount = duplicate_order
+            bot.send_message(
+                chat_id,
+                "✅ Заказ уже создан\n\n"
+                f"Заказ №{duplicate_order_id}\n"
+                f"Страна: {country}\n"
+                f"Тариф: Безлимит {daily_high_speed_gb} ГБ/день\n"
+                f"Срок: {format_days(days)}\n"
+                f"После дневного лимита: {post_limit_speed}\n"
+                f"Сумма: {duplicate_pay_amount} ₽\n\n"
+                "Теперь отправьте сюда скриншот чека одним сообщением как фотографию.",
+                reply_markup=mini_app_receipt_keyboard()
+            )
+            return
+
+    cursor.execute(
+        """
+        INSERT INTO orders (
+            user_id, text, price, pay_amount, discount_used, status, country, tariff, created_at,
+            source_code, partner_code, partner_rate, partner_commission,
+            plan_type, supplier_key, supplier_tariff, duration_days, post_limit_speed, daily_high_speed_gb
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            user_id, text, price, pay_amount, discount_used, status, country, tariff, created_at,
+            source_code, partner_code, partner_rate, partner_commission,
+            "unlimited", unlimited_key, supplier_tariff, days, post_limit_speed, daily_high_speed_gb
+        )
+    )
+    conn.commit()
+    order_id = cursor.lastrowid
+
+    if status == "awaiting_receipt":
+        schedule_reminder(user_id, order_id, "payment_30m", created_at + 30 * 60)
+        schedule_reminder(user_id, order_id, "payment_24h", created_at + 24 * 60 * 60)
+
+    if not show_payment_message:
+        bot.send_message(
+            chat_id,
+            "✅ Заказ создан\n\n"
+            f"Заказ №{order_id}\n"
+            f"Страна: {country}\n"
+            f"Безлимит {daily_high_speed_gb} ГБ/день\n"
+            f"Срок: {format_days(days)}\n"
+            f"После дневного лимита: {post_limit_speed}\n"
+            f"Итого: {pay_amount} ₽\n\n"
+            "Теперь отправьте сюда скриншот чека одним сообщением как фотографию.",
+            reply_markup=mini_app_receipt_keyboard()
+        )
+        return
+
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.add("📸 Отправить чек")
+    kb.add("🔙 Назад", "🏠 В начало")
+
+    admin_details = format_unlimited_admin_details(
+        "unlimited", unlimited_key, supplier_tariff, days, post_limit_speed, daily_high_speed_gb
+    )
+
+    if pay_amount == 0:
+        kb_admin = types.InlineKeyboardMarkup()
+        kb_admin.add(
+            types.InlineKeyboardButton("✅ Подтвердить", callback_data=f"ok_{order_id}_{user_id}_{pay_amount}"),
+            types.InlineKeyboardButton("❌ Отклонить", callback_data=f"no_{order_id}_{user_id}")
+        )
+        bot.send_message(
+            ADMIN_ID,
+            "🧾 Новый заказ за баланс\n\n"
+            f"Пользователь ID: {user_id}\n"
+            f"Заказ: {text}\n"
+            f"Стоимость: {price}₽\n"
+            f"Списано с баланса: {discount_used}₽\n"
+            f"К оплате: 0₽"
+            f"{admin_details}",
+            reply_markup=kb_admin
+        )
+        bot.send_message(
+            chat_id,
+            f"🧾 Ваш заказ:\n{text}\n\n"
+            f"Безлимит {daily_high_speed_gb} ГБ/день\n"
+            f"Срок: {format_days(days)}\n"
+            f"После дневного лимита: {post_limit_speed}\n"
+            f"Стоимость: {price}₽\n"
+            f"Списано с баланса: {discount_used}₽\n"
+            "К оплате: 0₽\n\n"
+            "Заказ отправлен на подтверждение. Ожидайте данные для установки eSIM: ссылку и/или QR-код с инструкцией.",
+            reply_markup=main_keyboard(user_id)
+        )
+        return
+
+    bot.send_message(
+        chat_id,
+        "Перед оплатой:\n\n"
+        "✔ Убедитесь, что телефон поддерживает eSIM\n"
+        "✔ Установка занимает несколько минут\n"
+        "✔ QR-код одноразовый — не удаляйте eSIM после установки\n\n"
+        f"🧾 Ваш заказ:\n{text}\n\n"
+        f"Безлимит {daily_high_speed_gb} ГБ/день\n"
+        f"Срок: {format_days(days)}\n"
+        f"После дневного лимита: {post_limit_speed}\n"
+        f"Стоимость: {price}₽\n"
+        f"Списано с баланса: {discount_used}₽\n"
+        f"К оплате: {pay_amount}₽\n\n"
+        "Оплата по СБП:\n"
+        "Номер: 89870005569\n"
+        "Банк: Т-Банк\n"
+        "Получатель: Федор Е.\n\n"
+        "После оплаты нажмите «📸 Отправить чек» и отправьте скриншот.",
         reply_markup=kb
     )
 
@@ -2551,6 +2893,27 @@ def web_app_data_handler(message):
             bot.send_message(message.chat.id, error_text, reply_markup=main_keyboard(message.from_user.id))
             return
 
+        plan_type = payload.get("plan_type", "")
+        if plan_type == "unlimited":
+            unlimited_order = validate_unlimited_order_payload(payload)
+            if not unlimited_order:
+                bot.send_message(message.chat.id, error_text, reply_markup=main_keyboard(message.from_user.id))
+                return
+
+            process_unlimited_order_selection(
+                chat_id=message.chat.id,
+                user_id=message.from_user.id,
+                order=unlimited_order,
+                source="miniapp",
+                use_balance=False,
+                show_payment_message=False
+            )
+            return
+
+        if plan_type not in ("", None):
+            bot.send_message(message.chat.id, error_text, reply_markup=main_keyboard(message.from_user.id))
+            return
+
         country = payload.get("country")
         tariff = payload.get("tariff")
         displayed_price = payload.get("displayed_price")
@@ -2818,7 +3181,8 @@ def photo_handler(message):
             return
 
     cursor.execute("""
-        SELECT id, text, price, pay_amount, discount_used, country, tariff
+        SELECT id, text, price, pay_amount, discount_used, country, tariff,
+               plan_type, supplier_key, supplier_tariff, duration_days, post_limit_speed, daily_high_speed_gb
         FROM orders
         WHERE user_id=? AND status='awaiting_receipt'
         ORDER BY id DESC
@@ -2830,7 +3194,10 @@ def photo_handler(message):
         bot.send_message(message.chat.id, "Не нашел заказ, который ждет чек. Сначала выберите тариф.", reply_markup=main_keyboard(user_id))
         return
 
-    order_id, order_text, price, pay_amount, discount_used, country, tariff = row
+    (
+        order_id, order_text, price, pay_amount, discount_used, country, tariff,
+        plan_type, supplier_key, supplier_tariff, duration_days, post_limit_speed, daily_high_speed_gb
+    ) = row
     receipt_received_at = int(time.time())
     cursor.execute(
         "UPDATE orders SET status='pending_review', receipt_received_at=? WHERE id=?",
@@ -2850,6 +3217,10 @@ def photo_handler(message):
         types.InlineKeyboardButton("❌ Отклонить", callback_data=f"no_{order_id}_{user_id}")
     )
 
+    unlimited_admin_details = format_unlimited_admin_details(
+        plan_type, supplier_key, supplier_tariff, duration_days, post_limit_speed, daily_high_speed_gb
+    )
+
     bot.send_message(
         ADMIN_ID,
         f"Детали чека по заказу #{order_id}\n"
@@ -2858,6 +3229,7 @@ def photo_handler(message):
         f"Тариф: {tariff}\n"
         f"Сумма: {price}₽\n"
         f"К оплате: {pay_amount}₽"
+        f"{unlimited_admin_details}"
     )
 
     bot.send_photo(
@@ -2871,6 +3243,7 @@ def photo_handler(message):
             f"Стоимость: {price}₽\n"
             f"Списано с баланса: {discount_used}₽\n"
             f"К оплате: {pay_amount}₽"
+            f"{unlimited_admin_details}"
         ),
         reply_markup=kb
     )
@@ -3212,7 +3585,8 @@ def callback_handler(call):
             cursor.execute(
                 """
                 SELECT user_id, status, country, tariff, price, pay_amount, partner_code, partner_rate,
-                       partner_commission, ref_bonus_given
+                       partner_commission, ref_bonus_given, plan_type, supplier_key, supplier_tariff,
+                       duration_days, post_limit_speed, daily_high_speed_gb
                 FROM orders
                 WHERE id=? AND user_id=?
                 """,
@@ -3224,7 +3598,11 @@ def callback_handler(call):
                 bot.answer_callback_query(call.id, "Заказ уже обработан")
                 return
 
-            order_user_id, _status, country, tariff, price, pay_amount, partner_code, partner_rate, partner_commission, ref_bonus_given = order_row
+            (
+                order_user_id, _status, country, tariff, price, pay_amount, partner_code, partner_rate,
+                partner_commission, ref_bonus_given, plan_type, supplier_key, supplier_tariff,
+                duration_days, post_limit_speed, daily_high_speed_gb
+            ) = order_row
             cursor.execute("SELECT COUNT(*) FROM orders WHERE user_id=? AND status='paid' AND id!=?", (user_id, order_id))
             already_had_paid_orders = cursor.fetchone()[0] > 0
 
@@ -3278,6 +3656,10 @@ def callback_handler(call):
             reply_markup=main_keyboard(user_id)
         )
 
+        unlimited_admin_details = format_unlimited_admin_details(
+            plan_type, supplier_key, supplier_tariff, duration_days, post_limit_speed, daily_high_speed_gb
+        )
+
         bot.send_message(
             ADMIN_ID,
             f"✅ Оплата подтверждена\n\n"
@@ -3286,7 +3668,8 @@ def callback_handler(call):
             f"Страна: {country}\n"
             f"Тариф: {tariff}\n"
             f"Сумма: {price}₽\n"
-            f"К оплате: {pay_amount}₽\n\n"
+            f"К оплате: {pay_amount}₽"
+            f"{unlimited_admin_details}\n\n"
             f"Чтобы отправить eSIM этому пользователю, отправь команду:\n"
             f"/sendqr {user_id} {order_id}"
         )
