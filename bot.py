@@ -444,6 +444,7 @@ selection_mode: Dict[int, Dict[str, str]] = {}
 admin_send_qr_target: Optional[int] = None
 admin_send_qr_order_id: Optional[int] = None
 partner_application_mode = set()
+partner_message_mode: Dict[int, str] = {}
 ad_source_creation_mode = set()
 
 def ensure_user(user_id: int, ref: Optional[int] = None, username: Optional[str] = None, first_name: Optional[str] = None) -> None:
@@ -730,6 +731,7 @@ def reset_to_main(user_id: int) -> None:
     search_mode[user_id] = False
     selection_mode.pop(user_id, None)
     partner_application_mode.discard(user_id)
+    partner_message_mode.pop(user_id, None)
     ad_source_creation_mode.discard(user_id)
 
 def go_back(user_id: int) -> Tuple[str, Optional[str]]:
@@ -2260,6 +2262,54 @@ def partner_button_name(name: str, limit: int = 24) -> str:
         return clean
     return clean[:limit - 1].rstrip() + "…"
 
+def clean_partner_username(username: Optional[str]) -> str:
+    return (username or "").strip().lstrip("@")
+
+def partner_name_fallback(name: str, first_name: str, telegram_user_id: Optional[int]) -> str:
+    clean_name = (name or "").strip()
+    generic_names = {"партнёр", "партнер", "partner", "-", "—"}
+    if clean_name and clean_name.lower() not in generic_names:
+        return clean_name
+    clean_first_name = (first_name or "").strip()
+    if clean_first_name:
+        return clean_first_name
+    return f"ID {telegram_user_id}" if telegram_user_id else "ID не указан"
+
+def admin_partner_display_name(
+    name: str,
+    telegram_user_id: Optional[int],
+    username: Optional[str],
+    first_name: Optional[str] = "",
+    limit: int = 24,
+) -> str:
+    clean_username = clean_partner_username(username)
+    if clean_username:
+        return partner_button_name(f"@{clean_username}", limit)
+    return partner_button_name(partner_name_fallback(name, first_name or "", telegram_user_id), limit)
+
+def partner_telegram_text(username: Optional[str]) -> str:
+    clean_username = clean_partner_username(username)
+    return f"@{clean_username}" if clean_username else "не указан"
+
+def get_partner_contact_by_code(code: str):
+    cursor.execute(
+        """
+        SELECT
+            p.code,
+            p.name,
+            p.telegram_user_id,
+            p.commission_rate,
+            p.is_active,
+            COALESCE(u.username, '') AS username,
+            COALESCE(u.first_name, '') AS first_name
+        FROM partners p
+        LEFT JOIN users u ON u.user_id = p.telegram_user_id
+        WHERE p.code=?
+        """,
+        (code,)
+    )
+    return cursor.fetchone()
+
 def show_admin_partners(chat_id: int, user_id: int):
     if user_id != ADMIN_ID:
         bot.send_message(chat_id, "Раздел доступен только администратору.", reply_markup=main_keyboard(user_id))
@@ -2284,6 +2334,9 @@ def show_admin_partners(chat_id: int, user_id: int):
         SELECT
             p.code,
             p.name,
+            p.telegram_user_id,
+            COALESCE(u.username, '') AS username,
+            COALESCE(u.first_name, '') AS first_name,
             COALESCE(pc.clients, 0) AS clients,
             COALESCE(pc.paid_orders, 0) AS paid_orders,
             COALESCE(pc.sales, 0) AS sales,
@@ -2300,18 +2353,20 @@ def show_admin_partners(chat_id: int, user_id: int):
             WHERE status IN ('available', 'paid')
             GROUP BY partner_code
         ) pc ON pc.partner_code=p.code
-        GROUP BY p.code, p.name
+        LEFT JOIN users u ON u.user_id = p.telegram_user_id
+        GROUP BY p.code, p.name, p.telegram_user_id, u.username, u.first_name
         ORDER BY sales DESC, available DESC, paid_orders DESC
         LIMIT 20
     """)
     rows = cursor.fetchall()
 
     kb = types.InlineKeyboardMarkup()
-    for code, name, _clients, _paid_orders, _sales, src_available, _paid in rows:
+    for code, name, telegram_user_id, username, first_name, _clients, _paid_orders, _sales, src_available, _paid in rows:
         callback_data = f"partner_view_{code}"
         if len(callback_data.encode("utf-8")) <= 64:
+            display_name = admin_partner_display_name(name, telegram_user_id, username, first_name)
             kb.add(types.InlineKeyboardButton(
-                f"👤 {partner_button_name(name)} — {format_price(src_available)} ₽",
+                f"👤 {display_name} — {format_price(src_available)} ₽",
                 callback_data=callback_data
             ))
     kb.add(types.InlineKeyboardButton("🔄 Обновить список", callback_data="partner_list"))
@@ -2331,16 +2386,23 @@ def show_admin_partners(chat_id: int, user_id: int):
         f"Выберите партнёра ниже, чтобы открыть статистику и управление выплатами.",
         reply_markup=kb
     )
+
 def show_partner_stats(chat_id: int, user_id: int, raw_code: str):
     if user_id != ADMIN_ID:
         return
     code = normalize_partner_code(raw_code)
-    partner = get_partner_by_code(code) if code else None
+    partner = get_partner_contact_by_code(code) if code else None
     if not partner:
         bot.send_message(chat_id, "Партнёр не найден.")
         return
-    code, name, telegram_user_id, rate, is_active = partner
+    code, name, telegram_user_id, rate, is_active, username, first_name = partner
     amounts = get_partner_amounts(code)
+    accrued = amounts["available"] + amounts["paid"]
+    telegram = partner_telegram_text(username)
+    clean_username = clean_partner_username(username)
+    partner_name = partner_name_fallback(name, first_name, telegram_user_id)
+    telegram_id_text = str(telegram_user_id) if telegram_user_id else "не указан"
+
     cursor.execute("""
         SELECT o.country, o.tariff, pc.sale_amount, pc.commission_amount, pc.status
         FROM partner_commissions pc
@@ -2352,6 +2414,9 @@ def show_partner_stats(chat_id: int, user_id: int, raw_code: str):
     history_text = format_partner_commission_rows(cursor.fetchall())
 
     kb = types.InlineKeyboardMarkup()
+    if clean_username:
+        kb.add(types.InlineKeyboardButton("💬 Написать партнёру", url=f"https://t.me/{clean_username}"))
+    kb.add(types.InlineKeyboardButton("✉️ Сообщение через бота", callback_data=f"partner_message_{code}"))
     if amounts["available"] > 0:
         kb.add(types.InlineKeyboardButton("💸 Отметить выплату", callback_data=f"partner_pay_{code}"))
     kb.add(types.InlineKeyboardButton("🔙 К списку партнёров", callback_data="partner_list"))
@@ -2359,19 +2424,90 @@ def show_partner_stats(chat_id: int, user_id: int, raw_code: str):
     bot.send_message(
         chat_id,
         f"🤝 Партнёр\n\n"
-        f"Название: {name}\n"
+        f"Имя: {partner_name}\n"
+        f"Telegram: {telegram}\n"
+        f"Telegram ID: {telegram_id_text}\n"
         f"Код: {code}\n"
-        f"Telegram ID: {telegram_user_id}\n"
         f"Ставка: {rate}%\n"
         f"Персональная ссылка:\n{partner_link(code)}\n\n"
         f"Клиентов: {amounts['clients']}\n"
         f"Оплаченных eSIM: {amounts['paid_orders']}\n"
         f"Продажи: {format_price(amounts['sales'])} ₽\n"
-        f"К выплате: {format_price(amounts['available'])} ₽\n"
-        f"Выплачено: {format_price(amounts['paid'])} ₽\n\n"
+        f"Начислено: {format_price(accrued)} ₽\n"
+        f"Выплачено: {format_price(amounts['paid'])} ₽\n"
+        f"К выплате: {format_price(amounts['available'])} ₽\n\n"
         f"Последние 10 начислений:\n{history_text}",
         reply_markup=kb
     )
+
+def prompt_partner_message(chat_id: int, user_id: int, raw_code: str) -> None:
+    if user_id != ADMIN_ID:
+        bot.send_message(chat_id, "Раздел доступен только администратору.", reply_markup=main_keyboard(user_id))
+        return
+
+    code = normalize_partner_code(raw_code)
+    partner = get_partner_contact_by_code(code) if code else None
+    if not partner:
+        bot.send_message(chat_id, "Партнёр не найден.", reply_markup=main_keyboard(user_id))
+        return
+
+    partner_message_mode[user_id] = code
+    username = partner[5]
+    clean_username = clean_partner_username(username)
+    target = f"@{clean_username}" if clean_username else "партнёра"
+
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("❌ Отмена", callback_data="partner_message_cancel"))
+    bot.send_message(
+        chat_id,
+        f"Введите сообщение для {target}:",
+        reply_markup=kb
+    )
+
+def send_admin_message_to_partner(message) -> None:
+    admin_id = message.from_user.id
+    chat_id = message.chat.id
+    text = (message.text or "").strip()
+
+    if admin_id != ADMIN_ID:
+        partner_message_mode.pop(admin_id, None)
+        return
+
+    if text.startswith("/"):
+        partner_message_mode.pop(admin_id, None)
+        bot.send_message(chat_id, "Отправка сообщения отменена.", reply_markup=main_keyboard(admin_id))
+        return
+
+    code = partner_message_mode.get(admin_id)
+    partner = get_partner_contact_by_code(code) if code else None
+    if not partner:
+        partner_message_mode.pop(admin_id, None)
+        bot.send_message(chat_id, "Партнёр не найден.", reply_markup=main_keyboard(admin_id))
+        return
+
+    telegram_user_id = partner[2]
+    if not telegram_user_id:
+        partner_message_mode.pop(admin_id, None)
+        bot.send_message(chat_id, "У партнёра не указан Telegram ID.", reply_markup=main_keyboard(admin_id))
+        return
+
+    try:
+        bot.send_message(
+            telegram_user_id,
+            f"💬 Сообщение от eSIMLime:\n\n{text}"
+        )
+    except Exception as exc:
+        partner_message_mode.pop(admin_id, None)
+        bot.send_message(
+            chat_id,
+            f"⚠️ Не удалось отправить сообщение партнёру.\n{exc}",
+            reply_markup=main_keyboard(admin_id)
+        )
+        return
+
+    partner_message_mode.pop(admin_id, None)
+    bot.send_message(chat_id, "✅ Сообщение отправлено партнёру", reply_markup=main_keyboard(admin_id))
+
 def send_partner_payout_request(user_id: int, chat_id: int):
     partner = get_partner_by_user(user_id)
     if not partner:
@@ -2965,18 +3101,24 @@ def text_handler(message):
 
     remember_user_from_message(message)
 
-    if text == "🏠 В начало":
+    if text in ("🏠 В начало", "🏠 Главное меню"):
         partner_application_mode.discard(user_id)
+        partner_message_mode.pop(user_id, None)
         ad_source_creation_mode.discard(user_id)
         show_main(chat_id, user_id, add_to_history=True)
         return
 
     if text == "🔙 Назад":
         partner_application_mode.discard(user_id)
+        partner_message_mode.pop(user_id, None)
         ad_source_creation_mode.discard(user_id)
         selection_mode.pop(user_id, None)
         state = go_back(user_id)
         render_from_state(chat_id, user_id, state)
+        return
+
+    if user_id in partner_message_mode:
+        send_admin_message_to_partner(message)
         return
 
     if user_id in ad_source_creation_mode:
@@ -3254,6 +3396,13 @@ def photo_handler(message):
 def callback_handler(call):
     data = call.data
 
+    if (
+        call.from_user.id == ADMIN_ID
+        and call.from_user.id in partner_message_mode
+        and not data.startswith("partner_message_")
+    ):
+        partner_message_mode.pop(call.from_user.id, None)
+
     if data.startswith("reminder_stop_"):
         order_id = int(data.replace("reminder_stop_", "", 1))
         user_id = call.from_user.id
@@ -3442,6 +3591,32 @@ def callback_handler(call):
             "Заявка в партнёрскую программу пока не одобрена. По вопросам напишите: @F_Evdokimov",
             reply_markup=main_keyboard(user_id)
         )
+        return
+
+    if data == "partner_message_cancel":
+        if call.from_user.id != ADMIN_ID:
+            bot.answer_callback_query(call.id, "Недоступно")
+            return
+        partner_message_mode.pop(call.from_user.id, None)
+        bot.answer_callback_query(call.id, "Отменено")
+        try:
+            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+        except Exception:
+            pass
+        bot.send_message(call.message.chat.id, "Отправка сообщения отменена.", reply_markup=main_keyboard(call.from_user.id))
+        return
+
+    if data.startswith("partner_message_"):
+        if call.from_user.id != ADMIN_ID:
+            bot.answer_callback_query(call.id, "Недоступно")
+            return
+        raw_code = data.replace("partner_message_", "", 1)
+        code = normalize_partner_code(raw_code)
+        if not code or not get_partner_contact_by_code(code):
+            bot.answer_callback_query(call.id, "Партнёр не найден")
+            return
+        bot.answer_callback_query(call.id)
+        prompt_partner_message(call.message.chat.id, call.from_user.id, code)
         return
 
     if data == "partner_list":
