@@ -100,6 +100,11 @@ CREATE TABLE IF NOT EXISTS reminder_jobs (
 """)
 conn.commit()
 
+cursor.execute(
+    "UPDATE reminder_jobs SET status='cancelled' WHERE reminder_type='review_15m' AND status IN ('pending', 'processing')"
+)
+conn.commit()
+
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS ad_sources (
     code TEXT PRIMARY KEY,
@@ -158,6 +163,27 @@ CREATE TABLE IF NOT EXISTS partner_applications (
     reviewed_by INTEGER NOT NULL DEFAULT 0
 )
 """)
+add_column_if_not_exists("partners", "approved_at", "INTEGER DEFAULT 0")
+add_column_if_not_exists("partner_commissions", "sale_notified_at", "INTEGER DEFAULT 0")
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS engagement_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_type TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    job_type TEXT NOT NULL,
+    scheduled_at INTEGER NOT NULL,
+    status TEXT DEFAULT 'pending',
+    attempts INTEGER DEFAULT 0,
+    last_error TEXT DEFAULT '',
+    created_at INTEGER NOT NULL,
+    sent_at INTEGER DEFAULT 0,
+    processing_started_at INTEGER DEFAULT 0,
+    UNIQUE(target_type, target_id, job_type)
+)
+""")
+add_column_if_not_exists("engagement_jobs", "processing_started_at", "INTEGER DEFAULT 0")
+cursor.execute("CREATE INDEX IF NOT EXISTS idx_engagement_jobs_status_time ON engagement_jobs(status, scheduled_at)")
+cursor.execute("CREATE INDEX IF NOT EXISTS idx_engagement_jobs_target ON engagement_jobs(target_type, target_id)")
 cursor.execute("CREATE INDEX IF NOT EXISTS idx_partner_applications_status ON partner_applications(status)")
 cursor.execute("CREATE INDEX IF NOT EXISTS idx_partner_commissions_code_status ON partner_commissions(partner_code, status)")
 cursor.execute("CREATE INDEX IF NOT EXISTS idx_partner_commissions_user ON partner_commissions(user_id)")
@@ -168,6 +194,33 @@ REF_BONUS = 100
 DEFAULT_PARTNER_RATE = 20
 PARTNER_WINDOW_HOURS = 72
 PARTNER_WINDOW_SECONDS = PARTNER_WINDOW_HOURS * 60 * 60
+SUPPORT_URL = "https://t.me/F_Evdokimov"
+VISITOR_24H_DELAY = 24 * 60 * 60
+ADMIN_ESIM_15M_DELAY = 15 * 60
+PARTNER_24H_DELAY = 24 * 60 * 60
+PARTNER_7D_DELAY = 7 * 24 * 60 * 60
+ENGAGEMENT_PROCESSING_TIMEOUT = 10 * 60
+
+class ReminderRetryLater(Exception):
+    pass
+
+
+def recover_stale_engagement_jobs(db_cursor, db_conn, now: Optional[int] = None) -> None:
+    now = now or int(time.time())
+    db_cursor.execute(
+        """
+        UPDATE engagement_jobs
+        SET status='pending', processing_started_at=0
+        WHERE status='processing'
+          AND COALESCE(processing_started_at, 0) > 0
+          AND processing_started_at <= ?
+        """,
+        (now - ENGAGEMENT_PROCESSING_TIMEOUT,)
+    )
+    db_conn.commit()
+
+
+recover_stale_engagement_jobs(cursor, conn, int(time.time()))
 
 ROAMING_COMPARISON = {
     "operator": "МТС",
@@ -997,6 +1050,7 @@ def process_order_selection(
     )
     conn.commit()
     order_id = cursor.lastrowid
+    cancel_engagement_jobs("user", user_id, "visitor_24h")
     if status == "awaiting_receipt":
         schedule_reminder(user_id, order_id, "payment_30m", created_at + 30 * 60)
         schedule_reminder(user_id, order_id, "payment_24h", created_at + 24 * 60 * 60)
@@ -1164,6 +1218,7 @@ def process_unlimited_order_selection(
     )
     conn.commit()
     order_id = cursor.lastrowid
+    cancel_engagement_jobs("user", user_id, "visitor_24h")
 
     if status == "awaiting_receipt":
         schedule_reminder(user_id, order_id, "payment_30m", created_at + 30 * 60)
@@ -1282,7 +1337,7 @@ def install_instruction_text() -> str:
         "⚠️ Не удаляйте установленную eSIM: повторная установка может быть недоступна."
     )
 
-def schedule_reminder(user_id: int, order_id: int, reminder_type: str, scheduled_at: int, db_cursor=None, db_conn=None) -> None:
+def schedule_reminder(user_id: int, order_id: int, reminder_type: str, scheduled_at: int, db_cursor=None, db_conn=None, commit: bool = True) -> None:
     db_cursor = db_cursor or cursor
     db_conn = db_conn or conn
     now = int(time.time())
@@ -1294,7 +1349,8 @@ def schedule_reminder(user_id: int, order_id: int, reminder_type: str, scheduled
         """,
         (user_id, order_id, reminder_type, scheduled_at, now)
     )
-    db_conn.commit()
+    if commit:
+        db_conn.commit()
 
 def cancel_order_reminders(order_id: int, db_cursor=None, db_conn=None) -> None:
     db_cursor = db_cursor or cursor
@@ -1333,6 +1389,307 @@ def install_check_keyboard(order_id: int):
     )
     return kb
 
+def visitor_24h_keyboard():
+    kb = types.InlineKeyboardMarkup()
+    if MINI_APP_URL:
+        kb.add(types.InlineKeyboardButton("🌍 Выбрать eSIM", web_app=types.WebAppInfo(url=MINI_APP_URL)))
+    else:
+        kb.add(types.InlineKeyboardButton("🌍 Выбрать eSIM", callback_data="visitor_catalog"))
+    kb.add(types.InlineKeyboardButton("💬 Помочь с выбором", url=SUPPORT_URL))
+    return kb
+
+def admin_order_reminder_keyboard(order_id: int):
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("📦 Открыть заказ", callback_data=f"admin_order_{order_id}"))
+    return kb
+
+def partner_engagement_keyboard(code: str, include_client_text: bool = False):
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("🔗 Моя ссылка", url=partner_link(code)))
+    if include_client_text:
+        kb.add(types.InlineKeyboardButton("📋 Текст для клиента", callback_data="partner_client_text"))
+    kb.add(types.InlineKeyboardButton("📊 Кабинет", callback_data="partner_cabinet"))
+    kb.add(types.InlineKeyboardButton("💬 Написать Фёдору", url=SUPPORT_URL))
+    return kb
+
+def visitor_24h_text() -> str:
+    return (
+        "✈️ Собираетесь за границу?\n\n"
+        "Интернет лучше подготовить заранее — чтобы после прилёта сразу были карты, такси, мессенджеры и связь.\n\n"
+        "В eSIMLime можно выбрать eSIM для нужной страны и установить её заранее. "
+        "Не нужно искать SIM-карту в аэропорту или подключать дорогой роуминг.\n\n"
+        "Не знаете, какой тариф выбрать — поможем."
+    )
+
+def partner_client_text(code: str) -> str:
+    return (
+        "✈️ Чтобы в поездке было на один вопрос меньше\n\n"
+        "Советую заранее подготовить интернет. Тогда сразу после прилёта будут доступны карты, такси, "
+        "мессенджеры и связь с близкими — без поиска SIM-карты в аэропорту.\n\n"
+        "eSIM можно оформить заранее здесь:\n"
+        f"{partner_link(code)}\n\n"
+        "Выберите страну и подходящий тариф. Если понадобится помощь с установкой — подскажут."
+    )
+
+def partner_24h_text() -> str:
+    return (
+        "🤝 Ваша партнёрская ссылка eSIMLime уже работает\n\n"
+        "Многие туристы вспоминают про интернет только после прилёта — когда уже нужны карты, такси и мессенджеры.\n\n"
+        "Помогите клиенту закрыть этот вопрос заранее: отправьте ему ссылку на eSIMLime. "
+        "Он сам выберет тариф и оформит eSIM, а если понадобится помощь — мы подскажем.\n\n"
+        "Вам автоматически начисляется 20% с каждой оплаченной продажи.\n\n"
+        "Нужны готовые тексты для клиентов или помощь — напишите мне."
+    )
+
+def partner_7d_text(code: str) -> str:
+    return (
+        "🌍 Как предложить eSIM клиенту\n\n"
+        "Многие туристы вспоминают про интернет уже после прилёта. Проще помочь клиенту подготовиться заранее.\n\n"
+        "Можно отправить ему такой текст:\n\n"
+        "«"
+        f"{partner_client_text(code)}"
+        "»\n\n"
+        "Клиент оформляет всё самостоятельно, вам начисляется 20% с оплаченной продажи.\n\n"
+        "Нужна помощь — напишите мне."
+    )
+
+def partner_sale_text(commission: int, available_balance: int) -> str:
+    return (
+        "🎉 Новая продажа eSIMLime\n\n"
+        "По вашей ссылке клиент оплатил eSIM.\n\n"
+        f"Начислено: {format_price(commission)} ₽\n"
+        f"Доступно к выплате: {format_price(available_balance)} ₽\n\n"
+        "Спасибо, что помогаете клиентам заранее решить вопрос со связью в поездке."
+    )
+
+def user_has_any_orders(user_id: int, db_cursor=None) -> bool:
+    db_cursor = db_cursor or cursor
+    db_cursor.execute("SELECT COUNT(*) FROM orders WHERE user_id=?", (user_id,))
+    return db_cursor.fetchone()[0] > 0
+
+def partner_paid_sales_count(code: str, db_cursor=None) -> int:
+    db_cursor = db_cursor or cursor
+    db_cursor.execute(
+        "SELECT COUNT(*) FROM partner_commissions WHERE partner_code=? AND status IN ('available', 'paid')",
+        (code,)
+    )
+    return db_cursor.fetchone()[0]
+
+def partner_available_balance(code: str, db_cursor=None) -> int:
+    db_cursor = db_cursor or cursor
+    db_cursor.execute(
+        "SELECT COALESCE(SUM(commission_amount), 0) FROM partner_commissions WHERE partner_code=? AND status='available'",
+        (code,)
+    )
+    return db_cursor.fetchone()[0]
+
+def schedule_engagement_job(target_type: str, target_id, job_type: str, scheduled_at: int, db_cursor=None, db_conn=None, commit: bool = True) -> None:
+    db_cursor = db_cursor or cursor
+    db_conn = db_conn or conn
+    now = int(time.time())
+    db_cursor.execute(
+        """
+        INSERT OR IGNORE INTO engagement_jobs
+            (target_type, target_id, job_type, scheduled_at, status, attempts, last_error, created_at, sent_at, processing_started_at)
+        VALUES (?, ?, ?, ?, 'pending', 0, '', ?, 0, 0)
+        """,
+        (target_type, str(target_id), job_type, scheduled_at, now)
+    )
+    if commit:
+        db_conn.commit()
+
+def cancel_engagement_jobs(target_type: str, target_id, job_types, db_cursor=None, db_conn=None, commit: bool = True) -> None:
+    db_cursor = db_cursor or cursor
+    db_conn = db_conn or conn
+    if isinstance(job_types, str):
+        job_types = [job_types]
+    for job_type in job_types:
+        db_cursor.execute(
+            """
+            UPDATE engagement_jobs
+            SET status='cancelled', processing_started_at=0
+            WHERE target_type=? AND target_id=? AND job_type=? AND status IN ('pending', 'processing')
+            """,
+            (target_type, str(target_id), job_type)
+        )
+    if commit:
+        db_conn.commit()
+
+def schedule_visitor_24h(user_id: int, started_at: Optional[int] = None) -> None:
+    if user_has_any_orders(user_id):
+        return
+    scheduled_from = started_at or int(time.time())
+    schedule_engagement_job("user", user_id, "visitor_24h", scheduled_from + VISITOR_24H_DELAY)
+
+def schedule_partner_engagement_jobs(code: str, approved_at: int, db_cursor=None, db_conn=None, commit: bool = True) -> None:
+    db_cursor = db_cursor or cursor
+    db_conn = db_conn or conn
+    schedule_engagement_job("partner", code, "partner_24h", approved_at + PARTNER_24H_DELAY, db_cursor=db_cursor, db_conn=db_conn, commit=False)
+    schedule_engagement_job("partner", code, "partner_7d", approved_at + PARTNER_7D_DELAY, db_cursor=db_cursor, db_conn=db_conn, commit=False)
+    if commit:
+        db_conn.commit()
+
+def schedule_partner_sale_job(order_id: int, scheduled_at: int, db_cursor=None, db_conn=None, commit: bool = True) -> None:
+    schedule_engagement_job("partner_sale", order_id, "partner_sale", scheduled_at, db_cursor=db_cursor, db_conn=db_conn, commit=commit)
+
+def mark_due_engagement_job(db_cursor, job_id: int) -> bool:
+    now = int(time.time())
+    db_cursor.execute(
+        "UPDATE engagement_jobs SET status='processing', processing_started_at=? WHERE id=? AND status='pending'",
+        (now, job_id)
+    )
+    return db_cursor.rowcount == 1
+
+def send_engagement_job(db_cursor, job) -> bool:
+    job_id, target_type, target_id, job_type, attempts = job
+
+    if target_type == "user" and job_type == "visitor_24h":
+        try:
+            user_id = int(target_id)
+        except ValueError:
+            return False
+        db_cursor.execute("SELECT user_id FROM users WHERE user_id=?", (user_id,))
+        if not db_cursor.fetchone() or user_has_any_orders(user_id, db_cursor):
+            return False
+        bot.send_message(user_id, visitor_24h_text(), reply_markup=visitor_24h_keyboard())
+        return True
+
+    if target_type == "partner" and job_type in ("partner_24h", "partner_7d"):
+        code = target_id
+        db_cursor.execute(
+            "SELECT telegram_user_id, is_active, COALESCE(approved_at, 0) FROM partners WHERE code=?",
+            (code,)
+        )
+        partner = db_cursor.fetchone()
+        if not partner:
+            return False
+        telegram_user_id, is_active, approved_at = partner
+        if not telegram_user_id or not is_active or approved_at <= 0:
+            return False
+        if partner_paid_sales_count(code, db_cursor) > 0:
+            return False
+        if job_type == "partner_24h":
+            bot.send_message(
+                telegram_user_id,
+                partner_24h_text(),
+                reply_markup=partner_engagement_keyboard(code, include_client_text=True)
+            )
+        else:
+            bot.send_message(
+                telegram_user_id,
+                partner_7d_text(code),
+                reply_markup=partner_engagement_keyboard(code)
+            )
+        return True
+
+    if target_type == "partner_sale" and job_type == "partner_sale":
+        try:
+            order_id = int(target_id)
+        except ValueError:
+            return False
+        db_cursor.execute(
+            """
+            SELECT pc.partner_code, pc.commission_amount, COALESCE(pc.sale_notified_at, 0), p.telegram_user_id, p.is_active
+            FROM partner_commissions pc
+            LEFT JOIN partners p ON p.code=pc.partner_code
+            WHERE pc.order_id=?
+            """,
+            (order_id,)
+        )
+        row = db_cursor.fetchone()
+        if not row:
+            return False
+        code, commission, sale_notified_at, telegram_user_id, is_active = row
+        if sale_notified_at or not telegram_user_id or not is_active:
+            return False
+        available_balance = partner_available_balance(code, db_cursor)
+        bot.send_message(
+            telegram_user_id,
+            partner_sale_text(commission, available_balance),
+            reply_markup=partner_engagement_keyboard(code)
+        )
+        db_cursor.execute(
+            "UPDATE partner_commissions SET sale_notified_at=? WHERE order_id=? AND COALESCE(sale_notified_at, 0)=0",
+            (int(time.time()), order_id)
+        )
+        return db_cursor.rowcount == 1
+
+    return False
+
+def finish_engagement_job(db_cursor, db_conn, job) -> None:
+    job_id = job[0]
+    try:
+        sent = send_engagement_job(db_cursor, job)
+        if sent:
+            db_cursor.execute(
+                "UPDATE engagement_jobs SET status='sent', sent_at=?, processing_started_at=0 WHERE id=?",
+                (int(time.time()), job_id)
+            )
+        else:
+            db_cursor.execute(
+                "UPDATE engagement_jobs SET status='cancelled', processing_started_at=0 WHERE id=?",
+                (job_id,)
+            )
+        db_conn.commit()
+    except Exception as exc:
+        attempts = job[4] + 1
+        if attempts >= 3:
+            db_cursor.execute(
+                "UPDATE engagement_jobs SET status='failed', attempts=?, last_error=?, processing_started_at=0 WHERE id=?",
+                (attempts, str(exc)[:500], job_id)
+            )
+        else:
+            db_cursor.execute(
+                """
+                UPDATE engagement_jobs
+                SET status='pending', attempts=?, last_error=?, scheduled_at=?, processing_started_at=0
+                WHERE id=?
+                """,
+                (attempts, str(exc)[:500], int(time.time()) + 5 * 60, job_id)
+            )
+        db_conn.commit()
+
+def process_due_engagement_jobs(db_cursor, db_conn, now: int) -> None:
+    recover_stale_engagement_jobs(db_cursor, db_conn, now)
+    db_cursor.execute(
+        """
+        SELECT id, target_type, target_id, job_type, attempts
+        FROM engagement_jobs
+        WHERE status='pending' AND scheduled_at<=?
+        ORDER BY scheduled_at ASC
+        LIMIT 10
+        """,
+        (now,)
+    )
+    jobs = db_cursor.fetchall()
+    for job in jobs:
+        job_id = job[0]
+        if not mark_due_engagement_job(db_cursor, job_id):
+            db_conn.commit()
+            continue
+        db_conn.commit()
+        finish_engagement_job(db_cursor, db_conn, job)
+
+def process_engagement_job_now(target_type: str, target_id, job_type: str) -> None:
+    now = int(time.time())
+    cursor.execute(
+        """
+        SELECT id, target_type, target_id, job_type, attempts
+        FROM engagement_jobs
+        WHERE target_type=? AND target_id=? AND job_type=? AND status='pending' AND scheduled_at<=?
+        LIMIT 1
+        """,
+        (target_type, str(target_id), job_type, now)
+    )
+    job = cursor.fetchone()
+    if not job:
+        return
+    if not mark_due_engagement_job(cursor, job[0]):
+        conn.commit()
+        return
+    conn.commit()
+    finish_engagement_job(cursor, conn, job)
+
 def mark_due_reminder(db_cursor, job_id: int) -> bool:
     db_cursor.execute(
         "UPDATE reminder_jobs SET status='processing' WHERE id=? AND status='pending'",
@@ -1344,17 +1701,20 @@ def send_reminder_job(db_cursor, job) -> bool:
     job_id, user_id, order_id, reminder_type, attempts = job
     db_cursor.execute(
         """
-        SELECT status, country, tariff, pay_amount, created_at, receipt_received_at, esim_sent_at, install_confirmed
+        SELECT user_id, status, country, tariff, pay_amount, created_at, receipt_received_at, paid_at, esim_sent_at, install_confirmed
         FROM orders
-        WHERE id=? AND user_id=?
+        WHERE id=?
         """,
-        (order_id, user_id)
+        (order_id,)
     )
     order = db_cursor.fetchone()
     if not order:
         return False
 
-    status, country, tariff, pay_amount, created_at, receipt_received_at, esim_sent_at, install_confirmed = order
+    order_user_id, status, country, tariff, pay_amount, created_at, receipt_received_at, paid_at, esim_sent_at, install_confirmed = order
+    if reminder_type != "admin_esim_15m" and order_user_id != user_id:
+        return False
+
     country = country or "Не указано"
     tariff = tariff or "Не указано"
 
@@ -1372,22 +1732,51 @@ def send_reminder_job(db_cursor, job) -> bool:
         else:
             text = (
                 "⏰ Напоминание о заказе\n\n"
-                f"Вы выбирали:\n{country} | {tariff}\n\n"
+                f"Для {country} вы выбрали:\n{tariff}\n\n"
                 f"К оплате: {pay_amount} ₽\n\n"
-                "Заказ пока не оплачен. Если он больше не нужен, напоминания можно отключить."
+                "Интернет для поездки лучше подготовить заранее — чтобы после прилёта сразу были доступны карты, такси и мессенджеры.\n\n"
+                "Чтобы продолжить оформление, отправьте чек об оплате.\n\n"
+                "Нужна помощь — мы рядом."
             )
         bot.send_message(user_id, text, reply_markup=reminder_stop_keyboard(order_id))
         return True
 
     if reminder_type == "review_15m":
-        if status != "pending_review" or receipt_received_at <= 0:
+        return False
+
+    if reminder_type == "admin_esim_15m":
+        if status != "paid" or paid_at <= 0 or esim_sent_at:
             return False
+        if admin_send_qr_order_id == order_id:
+            raise ReminderRetryLater("eSIM send is in progress")
+        db_cursor.execute(
+            """
+            SELECT r.status, o.status, COALESCE(o.paid_at, 0), COALESCE(o.esim_sent_at, 0), o.country, o.tariff
+            FROM reminder_jobs r
+            LEFT JOIN orders o ON o.id=r.order_id
+            WHERE r.id=? AND r.order_id=? AND r.reminder_type='admin_esim_15m'
+            """,
+            (job_id, order_id)
+        )
+        current = db_cursor.fetchone()
+        if not current:
+            return False
+        job_status, fresh_status, fresh_paid_at, fresh_esim_sent_at, fresh_country, fresh_tariff = current
+        if job_status != "processing" or fresh_status != "paid" or fresh_paid_at <= 0 or fresh_esim_sent_at:
+            db_cursor.execute(
+                "UPDATE reminder_jobs SET status='cancelled' WHERE id=? AND status='processing'",
+                (job_id,)
+            )
+            return False
+        country = fresh_country or country
+        tariff = fresh_tariff or tariff
         bot.send_message(
-            user_id,
-            "⏳ Чек получен и находится на проверке\n\n"
-            "Повторно отправлять его не нужно.\n\n"
-            "После подтверждения оплаты мы подготовим данные для установки eSIM.\n"
-            "Если нужна помощь — напишите @F_Evdokimov."
+            ADMIN_ID,
+            "⚠️ Оплаченный заказ ещё не выдан\n\n"
+            f"Заказ №{order_id}\n"
+            f"{country} | {tariff}\n\n"
+            "Оплата подтверждена 15 минут назад, но eSIM клиенту ещё не отправлена.",
+            reply_markup=admin_order_reminder_keyboard(order_id)
         )
         return True
 
@@ -1404,7 +1793,6 @@ def send_reminder_job(db_cursor, job) -> bool:
         return True
 
     return False
-
 def reminder_worker():
     worker_conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     worker_conn.execute("PRAGMA busy_timeout = 5000")
@@ -1446,6 +1834,16 @@ def reminder_worker():
                             (job_id,)
                         )
                     worker_conn.commit()
+                except ReminderRetryLater as exc:
+                    worker_cursor.execute(
+                        """
+                        UPDATE reminder_jobs
+                        SET status='pending', last_error=?, scheduled_at=?
+                        WHERE id=? AND status='processing'
+                        """,
+                        (str(exc)[:500], int(time.time()) + 5 * 60, job_id)
+                    )
+                    worker_conn.commit()
                 except Exception as exc:
                     attempts = job[4] + 1
                     if attempts >= 3:
@@ -1463,6 +1861,8 @@ def reminder_worker():
                             (attempts, str(exc)[:500], int(time.time()) + 5 * 60, job_id)
                         )
                     worker_conn.commit()
+
+            process_due_engagement_jobs(worker_cursor, worker_conn, now)
         except Exception:
             try:
                 worker_conn.rollback()
@@ -1830,6 +2230,66 @@ def show_admin_orders(chat_id: int, user_id: int):
         reply_markup=nav_keyboard()
     )
 
+def show_admin_order(chat_id: int, user_id: int, order_id: int):
+    if user_id != ADMIN_ID:
+        bot.send_message(chat_id, "Раздел доступен только администратору.", reply_markup=main_keyboard(user_id))
+        return
+
+    cursor.execute(
+        """
+        SELECT o.id, o.user_id, u.username, u.first_name, o.country, o.tariff, o.price, o.pay_amount,
+               o.discount_used, o.status, o.created_at, o.receipt_received_at, o.paid_at, o.esim_sent_at,
+               o.install_confirmed, o.plan_type, o.supplier_key, o.supplier_tariff, o.duration_days,
+               o.post_limit_speed, o.daily_high_speed_gb
+        FROM orders o
+        LEFT JOIN users u ON u.user_id=o.user_id
+        WHERE o.id=?
+        """,
+        (order_id,)
+    )
+    row = cursor.fetchone()
+    if not row:
+        bot.send_message(chat_id, "Заказ не найден.")
+        return
+
+    (
+        order_id, order_user_id, username, first_name, country, tariff, price, pay_amount,
+        discount_used, status, created_at, receipt_received_at, paid_at, esim_sent_at,
+        install_confirmed, plan_type, supplier_key, supplier_tariff, duration_days,
+        post_limit_speed, daily_high_speed_gb
+    ) = row
+    unlimited_details = format_unlimited_admin_details(
+        plan_type, supplier_key, supplier_tariff, duration_days, post_limit_speed, daily_high_speed_gb
+    )
+    text = (
+        f"📦 Заказ #{order_id}\n\n"
+        f"Покупатель: {format_user_for_admin(order_user_id)}\n"
+        f"Страна: {country or 'Не указано'}\n"
+        f"Тариф: {tariff or 'Не указано'}\n"
+        f"Сумма: {price}₽\n"
+        f"Списано с баланса: {discount_used or 0}₽\n"
+        f"К оплате: {pay_amount}₽\n"
+        f"Статус: {status_label(status)}\n"
+        f"created_at: {created_at or 0}\n"
+        f"receipt_received_at: {receipt_received_at or 0}\n"
+        f"paid_at: {paid_at or 0}\n"
+        f"esim_sent_at: {esim_sent_at or 0}\n"
+        f"install_confirmed: {install_confirmed or 0}"
+        f"{unlimited_details}"
+    )
+    if status == "paid" and not esim_sent_at:
+        text += f"\n\nЧтобы отправить eSIM этому пользователю, отправь команду:\n/sendqr {order_user_id} {order_id}"
+
+    kb = None
+    if status == "pending_review":
+        kb = types.InlineKeyboardMarkup()
+        kb.add(
+            types.InlineKeyboardButton("✅ Подтвердить", callback_data=f"ok_{order_id}_{order_user_id}_{pay_amount}"),
+            types.InlineKeyboardButton("❌ Отклонить", callback_data=f"no_{order_id}_{order_user_id}")
+        )
+    bot.send_message(chat_id, text, reply_markup=kb)
+
+
 def show_admin_users(chat_id: int, user_id: int):
     if user_id != ADMIN_ID:
         bot.send_message(chat_id, "Раздел доступен только администратору.", reply_markup=main_keyboard(user_id))
@@ -2170,17 +2630,17 @@ def approve_partner_application(application_id: int) -> Tuple[Optional[int], Opt
         if row:
             code = row[0]
             cursor.execute(
-                "UPDATE partners SET name=?, commission_rate=?, is_active=1 WHERE code=?",
-                (business_name, DEFAULT_PARTNER_RATE, code)
+                "UPDATE partners SET name=?, commission_rate=?, is_active=1, approved_at=? WHERE code=?",
+                (business_name, DEFAULT_PARTNER_RATE, now, code)
             )
         else:
             code = generate_partner_code()
             cursor.execute(
                 """
-                INSERT INTO partners (code, name, telegram_user_id, commission_rate, is_active, created_at)
-                VALUES (?, ?, ?, ?, 1, ?)
+                INSERT INTO partners (code, name, telegram_user_id, commission_rate, is_active, created_at, approved_at)
+                VALUES (?, ?, ?, ?, 1, ?, ?)
                 """,
-                (code, business_name, user_id, DEFAULT_PARTNER_RATE, now)
+                (code, business_name, user_id, DEFAULT_PARTNER_RATE, now, now)
             )
 
         cursor.execute(
@@ -2191,6 +2651,7 @@ def approve_partner_application(application_id: int) -> Tuple[Optional[int], Opt
             """,
             (code, now, ADMIN_ID, application_id)
         )
+        schedule_partner_engagement_jobs(code, now, db_cursor=cursor, db_conn=conn, commit=False)
         conn.commit()
         return user_id, business_name, code, DEFAULT_PARTNER_RATE
     except Exception:
@@ -2715,6 +3176,7 @@ def start_handler(message):
         remember_ad_source_for_user(user_id, source_code)
     if partner_code and not invalid_partner_link:
         activate_partner_window(user_id, partner_code)
+    schedule_visitor_24h(user_id, int(time.time()))
     if invalid_partner_link:
         bot.send_message(message.chat.id, "Партнёрская ссылка недействительна или больше не активна.")
     show_main(message.chat.id, user_id, add_to_history=True)
@@ -2810,26 +3272,43 @@ def partner_create_handler(message):
         return
 
     now = int(time.time())
-    cursor.execute("SELECT code FROM partners WHERE code=?", (code,))
-    existed = cursor.fetchone() is not None
+    cursor.execute("SELECT code, is_active, COALESCE(approved_at, 0) FROM partners WHERE code=?", (code,))
+    partner_row = cursor.fetchone()
+    existed = partner_row is not None
+    should_schedule_onboarding = False
     try:
         if existed:
-            cursor.execute(
-                """
-                UPDATE partners
-                SET name=?, telegram_user_id=?, commission_rate=?, is_active=1
-                WHERE code=?
-                """,
-                (name, telegram_user_id, DEFAULT_PARTNER_RATE, code)
-            )
+            _existing_code, existing_is_active, existing_approved_at = partner_row
+            if existing_is_active:
+                cursor.execute(
+                    """
+                    UPDATE partners
+                    SET name=?, telegram_user_id=?, commission_rate=?, is_active=1
+                    WHERE code=?
+                    """,
+                    (name, telegram_user_id, DEFAULT_PARTNER_RATE, code)
+                )
+            else:
+                cursor.execute(
+                    """
+                    UPDATE partners
+                    SET name=?, telegram_user_id=?, commission_rate=?, is_active=1, approved_at=?
+                    WHERE code=?
+                    """,
+                    (name, telegram_user_id, DEFAULT_PARTNER_RATE, now, code)
+                )
+                should_schedule_onboarding = True
         else:
             cursor.execute(
                 """
-                INSERT INTO partners (code, name, telegram_user_id, commission_rate, is_active, created_at)
-                VALUES (?, ?, ?, ?, 1, ?)
+                INSERT INTO partners (code, name, telegram_user_id, commission_rate, is_active, created_at, approved_at)
+                VALUES (?, ?, ?, ?, 1, ?, ?)
                 """,
-                (code, name, telegram_user_id, DEFAULT_PARTNER_RATE, now)
+                (code, name, telegram_user_id, DEFAULT_PARTNER_RATE, now, now)
             )
+            should_schedule_onboarding = True
+        if should_schedule_onboarding:
+            schedule_partner_engagement_jobs(code, now, db_cursor=cursor, db_conn=conn, commit=False)
         conn.commit()
     except sqlite3.IntegrityError:
         conn.rollback()
@@ -2992,6 +3471,7 @@ def admin_send_esim_message(message):
         already_sent = bool(row and row[0])
         cursor.execute("UPDATE orders SET esim_sent_at=? WHERE id=? AND user_id=?", (now, order_id, target_user_id))
         conn.commit()
+        cancel_reminders_by_type(order_id, "admin_esim_15m")
         if not already_sent:
             schedule_reminder(target_user_id, order_id, "install_2h", now + 2 * 60 * 60)
 
@@ -3309,6 +3789,7 @@ def photo_handler(message):
             already_sent = bool(row and row[0])
             cursor.execute("UPDATE orders SET esim_sent_at=? WHERE id=? AND user_id=?", (now, order_id, target_user_id))
             conn.commit()
+            cancel_reminders_by_type(order_id, "admin_esim_15m")
             if not already_sent:
                 schedule_reminder(target_user_id, order_id, "install_2h", now + 2 * 60 * 60)
             bot.send_message(ADMIN_ID, f"✅ eSIM отправлена пользователю {target_user_id}\nЗаказ #{order_id}")
@@ -3347,7 +3828,6 @@ def photo_handler(message):
     )
     conn.commit()
     cancel_reminders_by_type(order_id, ["payment_30m", "payment_24h"])
-    schedule_reminder(user_id, order_id, "review_15m", receipt_received_at + 15 * 60)
 
     username = message.from_user.username
     first_name = message.from_user.first_name or "Без имени"
@@ -3403,6 +3883,43 @@ def callback_handler(call):
     ):
         partner_message_mode.pop(call.from_user.id, None)
 
+    if data == "visitor_catalog":
+        bot.answer_callback_query(call.id)
+        show_travel_home(call.message.chat.id, call.from_user.id, add_to_history=True)
+        return
+
+    if data == "partner_cabinet":
+        bot.answer_callback_query(call.id)
+        show_partner_cabinet(call.message.chat.id, call.from_user.id)
+        return
+
+    if data == "partner_client_text":
+        partner = get_partner_by_user(call.from_user.id)
+        if not partner or not partner[4]:
+            bot.answer_callback_query(call.id, "Партнёр не найден")
+            return
+        code = partner[0]
+        bot.answer_callback_query(call.id)
+        bot.send_message(
+            call.from_user.id,
+            partner_client_text(code),
+            reply_markup=partner_engagement_keyboard(code)
+        )
+        return
+
+    if data.startswith("admin_order_"):
+        if call.from_user.id != ADMIN_ID:
+            bot.answer_callback_query(call.id, "Недоступно")
+            return
+        try:
+            order_id = int(data.replace("admin_order_", "", 1))
+        except ValueError:
+            bot.answer_callback_query(call.id, "Заказ не найден")
+            return
+        bot.answer_callback_query(call.id)
+        show_admin_order(call.message.chat.id, call.from_user.id, order_id)
+        return
+
     if data.startswith("reminder_stop_"):
         order_id = int(data.replace("reminder_stop_", "", 1))
         user_id = call.from_user.id
@@ -3411,8 +3928,8 @@ def callback_handler(call):
             bot.answer_callback_query(call.id, "Это не ваш заказ.")
             return
         cursor.execute(
-            "UPDATE reminder_jobs SET status='cancelled' WHERE order_id=? AND status='pending'",
-            (order_id,)
+            "UPDATE reminder_jobs SET status='cancelled' WHERE order_id=? AND user_id=? AND status='pending'",
+            (order_id, user_id)
         )
         conn.commit()
         bot.answer_callback_query(call.id, "Напоминания отключены")
@@ -3754,6 +4271,7 @@ def callback_handler(call):
             return
 
         ref_to_notify = None
+        partner_sale_job_order_id = None
         try:
             now = int(time.time())
             cursor.execute("BEGIN IMMEDIATE")
@@ -3790,6 +4308,15 @@ def callback_handler(call):
                 "UPDATE reminder_jobs SET status='cancelled' WHERE order_id=? AND reminder_type IN ('payment_30m', 'payment_24h', 'review_15m') AND status IN ('pending', 'processing')",
                 (order_id,)
             )
+            schedule_reminder(
+                ADMIN_ID,
+                order_id,
+                "admin_esim_15m",
+                now + ADMIN_ESIM_15M_DELAY,
+                db_cursor=cursor,
+                db_conn=conn,
+                commit=False
+            )
 
             if partner_code:
                 if partner_commission > 0:
@@ -3801,6 +4328,17 @@ def callback_handler(call):
                         """,
                         (order_id, partner_code, user_id, pay_amount, partner_rate, partner_commission, now)
                     )
+                    if cursor.rowcount == 1:
+                        cancel_engagement_jobs(
+                            "partner",
+                            partner_code,
+                            ["partner_24h", "partner_7d"],
+                            db_cursor=cursor,
+                            db_conn=conn,
+                            commit=False
+                        )
+                        schedule_partner_sale_job(order_id, now, db_cursor=cursor, db_conn=conn, commit=False)
+                        partner_sale_job_order_id = order_id
             else:
                 cursor.execute("SELECT ref FROM users WHERE user_id=?", (user_id,))
                 row = cursor.fetchone()
@@ -3814,6 +4352,9 @@ def callback_handler(call):
         except Exception:
             conn.rollback()
             raise
+
+        if partner_sale_job_order_id:
+            process_engagement_job_now("partner_sale", partner_sale_job_order_id, "partner_sale")
 
         if ref_to_notify:
             bot.send_message(
