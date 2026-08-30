@@ -1,4 +1,5 @@
 import json
+import hashlib
 import os
 import re
 import secrets
@@ -166,6 +167,22 @@ CREATE TABLE IF NOT EXISTS partner_applications (
 add_column_if_not_exists("partners", "approved_at", "INTEGER DEFAULT 0")
 add_column_if_not_exists("partner_commissions", "sale_notified_at", "INTEGER DEFAULT 0")
 cursor.execute("""
+CREATE TABLE IF NOT EXISTS external_sales (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_code TEXT NOT NULL DEFAULT 'avito_manual',
+    country TEXT DEFAULT '',
+    tariff TEXT DEFAULT '',
+    amount INTEGER DEFAULT 0,
+    invite_token_hash TEXT NOT NULL UNIQUE,
+    telegram_user_id INTEGER DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'created',
+    created_at INTEGER NOT NULL,
+    claimed_at INTEGER DEFAULT 0,
+    expires_at INTEGER DEFAULT 0,
+    created_by INTEGER DEFAULT 0
+)
+""")
+cursor.execute("""
 CREATE TABLE IF NOT EXISTS engagement_jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     target_type TEXT NOT NULL,
@@ -188,6 +205,7 @@ cursor.execute("CREATE INDEX IF NOT EXISTS idx_partner_applications_status ON pa
 cursor.execute("CREATE INDEX IF NOT EXISTS idx_partner_commissions_code_status ON partner_commissions(partner_code, status)")
 cursor.execute("CREATE INDEX IF NOT EXISTS idx_partner_commissions_user ON partner_commissions(user_id)")
 cursor.execute("CREATE INDEX IF NOT EXISTS idx_partner_payouts_code ON partner_payouts(partner_code)")
+cursor.execute("CREATE INDEX IF NOT EXISTS idx_external_sales_user_status ON external_sales(telegram_user_id, status)")
 conn.commit()
 
 REF_BONUS = 100
@@ -200,6 +218,10 @@ ADMIN_ESIM_15M_DELAY = 15 * 60
 PARTNER_24H_DELAY = 24 * 60 * 60
 PARTNER_7D_DELAY = 7 * 24 * 60 * 60
 ENGAGEMENT_PROCESSING_TIMEOUT = 10 * 60
+AVITO_SOURCE_CODE = "avito_manual"
+AVITO_TOKEN_PREFIX = "avito_"
+AVITO_LINK_TTL_SECONDS = 7 * 24 * 60 * 60
+AVITO_TOKEN_BYTES = 24
 
 class ReminderRetryLater(Exception):
     pass
@@ -499,6 +521,7 @@ admin_send_qr_order_id: Optional[int] = None
 partner_application_mode = set()
 partner_message_mode: Dict[int, str] = {}
 ad_source_creation_mode = set()
+avito_sale_mode: Dict[int, Dict[str, Any]] = {}
 
 def ensure_user(user_id: int, ref: Optional[int] = None, username: Optional[str] = None, first_name: Optional[str] = None) -> None:
     username = username or ""
@@ -537,6 +560,295 @@ def normalize_source_code(raw_code: str) -> Optional[str]:
 
 def source_link(code: str) -> str:
     return f"https://t.me/esimlimebot?start=ad_{code}"
+
+def avito_deep_link(token: str) -> str:
+    return f"https://t.me/esimlimebot?start={AVITO_TOKEN_PREFIX}{token}"
+
+def avito_token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+def normalize_avito_start_token(raw_param: str) -> Optional[str]:
+    value = (raw_param or "").strip()
+    if not value.lower().startswith(AVITO_TOKEN_PREFIX):
+        return None
+    token = value[len(AVITO_TOKEN_PREFIX):]
+    if not 16 <= len(token) <= 58:
+        return None
+    if len(value.encode("utf-8")) > 64:
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", token):
+        return None
+    return token
+
+def clean_external_sale_field(value: str, limit: int = 120) -> str:
+    return re.sub(r"\s+", " ", (value or "").strip())[:limit]
+
+def create_external_sale(country: str, tariff: str, amount: int, created_by: int) -> Tuple[str, Dict[str, Any]]:
+    now = int(time.time())
+    expires_at = now + AVITO_LINK_TTL_SECONDS
+    clean_country = clean_external_sale_field(country)
+    clean_tariff = clean_external_sale_field(tariff)
+
+    for _ in range(20):
+        token = secrets.token_urlsafe(AVITO_TOKEN_BYTES)
+        if len(f"{AVITO_TOKEN_PREFIX}{token}".encode("utf-8")) > 64:
+            continue
+        token_hash = avito_token_hash(token)
+        try:
+            cursor.execute(
+                """
+                INSERT INTO external_sales
+                    (source_code, country, tariff, amount, invite_token_hash, telegram_user_id, status, created_at, claimed_at, expires_at, created_by)
+                VALUES (?, ?, ?, ?, ?, 0, 'created', ?, 0, ?, ?)
+                """,
+                (AVITO_SOURCE_CODE, clean_country, clean_tariff, amount, token_hash, now, expires_at, created_by)
+            )
+            conn.commit()
+            return avito_deep_link(token), {
+                "id": cursor.lastrowid,
+                "country": clean_country,
+                "tariff": clean_tariff,
+                "amount": amount,
+                "created_at": now,
+                "expires_at": expires_at,
+            }
+        except sqlite3.IntegrityError:
+            conn.rollback()
+
+    raise RuntimeError("Could not generate unique external sale token")
+
+def ensure_user_with_cursor(db_cursor, user_id: int, username: Optional[str], first_name: Optional[str], ref: Optional[int] = None) -> None:
+    username = username or ""
+    first_name = first_name or ""
+    if ref == user_id:
+        ref = None
+    db_cursor.execute("SELECT user_id FROM users WHERE user_id=?", (user_id,))
+    if db_cursor.fetchone():
+        db_cursor.execute(
+            "UPDATE users SET username=?, first_name=? WHERE user_id=?",
+            (username, first_name, user_id)
+        )
+        return
+    db_cursor.execute(
+        "INSERT INTO users (user_id, balance, ref, username, first_name) VALUES (?, ?, ?, ?, ?)",
+        (user_id, 0, ref, username, first_name)
+    )
+
+def remember_avito_source_for_user(db_cursor, user_id: int, now: int) -> None:
+    db_cursor.execute(
+        """
+        UPDATE users
+        SET first_source=?, first_source_at=?
+        WHERE user_id=? AND COALESCE(first_source, '')=''
+        """,
+        (AVITO_SOURCE_CODE, now, user_id)
+    )
+
+def sale_row_to_dict(row) -> Dict[str, Any]:
+    sale_id, country, tariff, amount, status, telegram_user_id, claimed_at, expires_at = row
+    return {
+        "id": sale_id,
+        "country": country or "",
+        "tariff": tariff or "",
+        "amount": amount or 0,
+        "status": status or "",
+        "telegram_user_id": telegram_user_id or 0,
+        "claimed_at": claimed_at or 0,
+        "expires_at": expires_at or 0,
+    }
+
+def claim_external_sale(token: str, message) -> Dict[str, Any]:
+    user_id = message.from_user.id
+    now = int(time.time())
+    token_hash = avito_token_hash(token)
+    db_conn = sqlite3.connect(DB_PATH, timeout=5)
+    db_conn.execute("PRAGMA busy_timeout = 5000")
+    db_cursor = db_conn.cursor()
+
+    try:
+        db_cursor.execute("BEGIN IMMEDIATE")
+        db_cursor.execute(
+            """
+            SELECT id, country, tariff, amount, status, telegram_user_id, claimed_at, expires_at
+            FROM external_sales
+            WHERE invite_token_hash=?
+            """,
+            (token_hash,)
+        )
+        row = db_cursor.fetchone()
+        if not row:
+            db_conn.rollback()
+            return {"status": "not_found"}
+
+        sale = sale_row_to_dict(row)
+        if sale["status"] == "claimed":
+            db_conn.rollback()
+            if sale["telegram_user_id"] == user_id:
+                return {"status": "already_self", "sale": sale}
+            return {"status": "already_used"}
+
+        if sale["status"] != "created" or sale["claimed_at"]:
+            db_conn.rollback()
+            return {"status": "unavailable"}
+
+        if sale["expires_at"] and sale["expires_at"] <= now:
+            db_cursor.execute(
+                "UPDATE external_sales SET status='expired' WHERE id=? AND status='created' AND COALESCE(claimed_at, 0)=0",
+                (sale["id"],)
+            )
+            db_conn.commit()
+            return {"status": "expired"}
+
+        ensure_user_with_cursor(
+            db_cursor,
+            user_id,
+            message.from_user.username,
+            message.from_user.first_name
+        )
+        db_cursor.execute(
+            """
+            UPDATE external_sales
+            SET telegram_user_id=?, claimed_at=?, status='claimed'
+            WHERE id=?
+              AND status='created'
+              AND COALESCE(claimed_at, 0)=0
+              AND (COALESCE(expires_at, 0)=0 OR expires_at>?)
+            """,
+            (user_id, now, sale["id"], now)
+        )
+        if db_cursor.rowcount != 1:
+            db_conn.rollback()
+            return {"status": "already_used"}
+
+        remember_avito_source_for_user(db_cursor, user_id, now)
+        cancel_engagement_jobs("user", user_id, "visitor_24h", db_cursor=db_cursor, db_conn=db_conn, commit=False)
+        db_conn.commit()
+        sale["telegram_user_id"] = user_id
+        sale["claimed_at"] = now
+        sale["status"] = "claimed"
+        return {"status": "claimed", "sale": sale}
+    except Exception:
+        db_conn.rollback()
+        raise
+    finally:
+        db_conn.close()
+
+def external_sale_open_keyboard(label: str = "🌍 Открыть eSIMLime"):
+    kb = types.InlineKeyboardMarkup()
+    if MINI_APP_URL:
+        kb.add(types.InlineKeyboardButton(label, web_app=types.WebAppInfo(url=MINI_APP_URL)))
+    else:
+        kb.add(types.InlineKeyboardButton(label, callback_data="visitor_catalog"))
+    return kb
+
+def external_sale_customer_keyboard():
+    kb = types.InlineKeyboardMarkup()
+    if MINI_APP_URL:
+        kb.add(types.InlineKeyboardButton("🌍 Выбрать eSIM", web_app=types.WebAppInfo(url=MINI_APP_URL)))
+    else:
+        kb.add(types.InlineKeyboardButton("🌍 Выбрать eSIM", callback_data="visitor_catalog"))
+    kb.add(types.InlineKeyboardButton("📱 Установка eSIM", callback_data="avito_install"))
+    kb.add(types.InlineKeyboardButton("💬 Поддержка", url=SUPPORT_URL))
+    return kb
+
+def external_sale_customer_text(country: str, tariff: str) -> str:
+    text = (
+        "💚 Спасибо, что выбрали eSIMLime!\n\n"
+        "Ваша покупка сохранена в eSIMLime.\n\n"
+        "В следующий раз eSIM можно оформить самостоятельно прямо здесь — выбрать страну и подходящий тариф.\n\n"
+        "Если понадобится помощь с выбором или установкой, мы на связи.\n\n"
+        "Хорошей поездки! ✈️"
+    )
+    if country or tariff:
+        text += f"\n\n{country or 'Не указано'} | {tariff or 'Не указано'}"
+    return text
+
+def show_external_sale_created(chat_id: int, country: str, tariff: str, amount: int, deep_link: str) -> None:
+    bot.send_message(
+        chat_id,
+        "✅ Ссылка для клиента создана\n\n"
+        f"{country} | {tariff}\n"
+        f"{format_price(amount)} ₽\n\n"
+        "Персональная ссылка:\n"
+        f"{deep_link}\n\n"
+        "Готовый текст для клиента:\n\n"
+        "Чтобы eSIM, инструкция и поддержка сохранились у вас в одном месте, откройте eSIMLime по ссылке 👇\n\n"
+        f"{deep_link}\n\n"
+        "Ссылка действует 7 дней и предназначена для одного клиента.",
+        reply_markup=main_keyboard(ADMIN_ID)
+    )
+
+def notify_admin_external_sale_claimed(sale: Dict[str, Any], message) -> None:
+    user_id = message.from_user.id
+    telegram = f"@{message.from_user.username}" if message.from_user.username else f"ID {user_id}"
+    try:
+        bot.send_message(
+            ADMIN_ID,
+            "✅ Клиент с Авито подключён к eSIMLime\n\n"
+            f"{sale.get('country') or 'Не указано'} | {sale.get('tariff') or 'Не указано'}\n"
+            f"Сумма продажи: {format_price(int(sale.get('amount') or 0))} ₽\n\n"
+            f"Telegram:\n{telegram}"
+        )
+    except Exception:
+        pass
+
+def handle_avito_start(message, token: Optional[str]) -> None:
+    reset_to_main(message.from_user.id)
+    if not token:
+        remember_user_from_message(message)
+        bot.send_message(
+            message.chat.id,
+            "Персональная ссылка недействительна или больше не активна.",
+            reply_markup=external_sale_open_keyboard()
+        )
+        return
+
+    result = claim_external_sale(token, message)
+    status = result.get("status")
+    sale = result.get("sale") or {}
+
+    if status == "claimed":
+        bot.send_message(
+            message.chat.id,
+            external_sale_customer_text(sale.get("country", ""), sale.get("tariff", "")),
+            reply_markup=external_sale_customer_keyboard()
+        )
+        notify_admin_external_sale_claimed(sale, message)
+        return
+
+    if status == "already_self":
+        remember_user_from_message(message)
+        bot.send_message(
+            message.chat.id,
+            "Эта покупка уже сохранена в вашем eSIMLime 💚",
+            reply_markup=external_sale_customer_keyboard()
+        )
+        return
+
+    if status in ("already_used", "already_used_race"):
+        remember_user_from_message(message)
+        bot.send_message(
+            message.chat.id,
+            "Эта персональная ссылка уже использована.",
+            reply_markup=external_sale_open_keyboard()
+        )
+        return
+
+    if status == "expired":
+        remember_user_from_message(message)
+        bot.send_message(
+            message.chat.id,
+            "Срок действия персональной ссылки истёк.",
+            reply_markup=external_sale_open_keyboard()
+        )
+        return
+
+    remember_user_from_message(message)
+    bot.send_message(
+        message.chat.id,
+        "Персональная ссылка недействительна или больше не активна.",
+        reply_markup=external_sale_open_keyboard()
+    )
 
 def source_button_name(name: str, limit: int = 24) -> str:
     clean = (name or "Источник").strip() or "Источник"
@@ -578,6 +890,97 @@ def show_created_ad_source(chat_id: int, code: str, name: str) -> None:
         f"Ссылка:\n{source_link(code)}",
         reply_markup=kb
     )
+
+def start_avito_sale_flow(chat_id: int, user_id: int) -> None:
+    if user_id != ADMIN_ID:
+        bot.send_message(chat_id, "Раздел доступен только администратору.", reply_markup=main_keyboard(user_id))
+        return
+
+    search_mode[user_id] = False
+    selection_mode.pop(user_id, None)
+    partner_application_mode.discard(user_id)
+    partner_message_mode.pop(user_id, None)
+    ad_source_creation_mode.discard(user_id)
+    avito_sale_mode[user_id] = {"step": "country"}
+
+    bot.send_message(
+        chat_id,
+        "🛒 Продажа с Авито\n\nНапишите страну.",
+        reply_markup=nav_keyboard()
+    )
+
+def show_avito_sale_confirmation(chat_id: int, state: Dict[str, Any]) -> None:
+    kb = types.InlineKeyboardMarkup()
+    kb.add(
+        types.InlineKeyboardButton("✅ Создать ссылку", callback_data="avito_create_link"),
+        types.InlineKeyboardButton("❌ Отмена", callback_data="avito_cancel")
+    )
+    bot.send_message(
+        chat_id,
+        "🛒 Продажа с Авито\n\n"
+        f"Страна: {state['country']}\n"
+        f"Тариф: {state['tariff']}\n"
+        f"Сумма: {format_price(int(state['amount']))} ₽\n\n"
+        "Создать персональную ссылку?",
+        reply_markup=kb
+    )
+
+def handle_avito_sale_text(message) -> bool:
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    state = avito_sale_mode.get(user_id)
+    if not state:
+        return False
+
+    if user_id != ADMIN_ID:
+        avito_sale_mode.pop(user_id, None)
+        return False
+
+    text = (message.text or "").strip()
+    if text.startswith("/"):
+        bot.send_message(chat_id, "Напишите данные продажи обычным текстом, без команды.")
+        return True
+
+    step = state.get("step")
+    if step == "country":
+        country = clean_external_sale_field(text, limit=80)
+        if len(country) < 2:
+            bot.send_message(chat_id, "Страна должна быть не короче 2 символов.")
+            return True
+        state["country"] = country
+        state["step"] = "tariff"
+        bot.send_message(
+            chat_id,
+            "Напишите тариф.\n\nНапример:\n20 ГБ / 30 дней",
+            reply_markup=nav_keyboard()
+        )
+        return True
+
+    if step == "tariff":
+        tariff = clean_external_sale_field(text, limit=120)
+        if len(tariff) < 2:
+            bot.send_message(chat_id, "Тариф должен быть не короче 2 символов.")
+            return True
+        state["tariff"] = tariff
+        state["step"] = "amount"
+        bot.send_message(chat_id, "Напишите сумму продажи в рублях целым числом.", reply_markup=nav_keyboard())
+        return True
+
+    if step == "amount":
+        if not re.fullmatch(r"\d+", text):
+            bot.send_message(chat_id, "Сумма должна быть положительным целым числом.")
+            return True
+        amount = int(text)
+        if amount <= 0:
+            bot.send_message(chat_id, "Сумма должна быть больше нуля.")
+            return True
+        state["amount"] = amount
+        state["step"] = "confirm"
+        show_avito_sale_confirmation(chat_id, state)
+        return True
+
+    bot.send_message(chat_id, "Подтвердите создание ссылки кнопкой ниже или нажмите «🏠 В начало».")
+    return True
 
 def ensure_ad_source(code: str, name: Optional[str] = None) -> None:
     clean_name = (name or code).strip() or code
@@ -786,6 +1189,7 @@ def reset_to_main(user_id: int) -> None:
     partner_application_mode.discard(user_id)
     partner_message_mode.pop(user_id, None)
     ad_source_creation_mode.discard(user_id)
+    avito_sale_mode.pop(user_id, None)
 
 def go_back(user_id: int) -> Tuple[str, Optional[str]]:
     stack = history.setdefault(user_id, [("main", None)])
@@ -819,6 +1223,7 @@ def main_keyboard(user_id: Optional[int] = None):
             kb.add("📊 Статистика", "📦 Заказы")
             kb.add("👥 Пользователи")
             kb.add("📣 Реклама")
+            kb.add("🛒 Продажа с Авито")
             kb.add("🤝 Партнёры")
         elif user_id and get_partner_by_user(user_id):
             kb.add("🤝 Кабинет партнёра")
@@ -834,6 +1239,7 @@ def main_keyboard(user_id: Optional[int] = None):
         kb.add("📊 Статистика", "📦 Заказы")
         kb.add("👥 Пользователи")
         kb.add("📣 Реклама")
+        kb.add("🛒 Продажа с Авито")
         kb.add("🤝 Партнёры")
     elif user_id and get_partner_by_user(user_id):
         kb.add("🤝 Кабинет партнёра")
@@ -1467,6 +1873,17 @@ def user_has_any_orders(user_id: int, db_cursor=None) -> bool:
     db_cursor.execute("SELECT COUNT(*) FROM orders WHERE user_id=?", (user_id,))
     return db_cursor.fetchone()[0] > 0
 
+def user_has_claimed_external_sale(user_id: int, db_cursor=None) -> bool:
+    db_cursor = db_cursor or cursor
+    db_cursor.execute(
+        "SELECT COUNT(*) FROM external_sales WHERE telegram_user_id=? AND status='claimed'",
+        (user_id,)
+    )
+    return db_cursor.fetchone()[0] > 0
+
+def user_is_customer_for_engagement(user_id: int, db_cursor=None) -> bool:
+    return user_has_any_orders(user_id, db_cursor) or user_has_claimed_external_sale(user_id, db_cursor)
+
 def partner_paid_sales_count(code: str, db_cursor=None) -> int:
     db_cursor = db_cursor or cursor
     db_cursor.execute(
@@ -1516,7 +1933,7 @@ def cancel_engagement_jobs(target_type: str, target_id, job_types, db_cursor=Non
         db_conn.commit()
 
 def schedule_visitor_24h(user_id: int, started_at: Optional[int] = None) -> None:
-    if user_has_any_orders(user_id):
+    if user_is_customer_for_engagement(user_id):
         return
     scheduled_from = started_at or int(time.time())
     schedule_engagement_job("user", user_id, "visitor_24h", scheduled_from + VISITOR_24H_DELAY)
@@ -1549,7 +1966,7 @@ def send_engagement_job(db_cursor, job) -> bool:
         except ValueError:
             return False
         db_cursor.execute("SELECT user_id FROM users WHERE user_id=?", (user_id,))
-        if not db_cursor.fetchone() or user_has_any_orders(user_id, db_cursor):
+        if not db_cursor.fetchone() or user_is_customer_for_engagement(user_id, db_cursor):
             return False
         bot.send_message(user_id, visitor_24h_text(), reply_markup=visitor_24h_keyboard())
         return True
@@ -3160,6 +3577,9 @@ def start_handler(message):
     parts = message.text.split()
     if len(parts) > 1:
         start_param = parts[1].strip()
+        if start_param.lower().startswith(AVITO_TOKEN_PREFIX):
+            handle_avito_start(message, normalize_avito_start_token(start_param))
+            return
         if start_param.isdigit():
             ref = int(start_param)
         elif start_param.lower().startswith("ad_"):
@@ -3585,6 +4005,7 @@ def text_handler(message):
         partner_application_mode.discard(user_id)
         partner_message_mode.pop(user_id, None)
         ad_source_creation_mode.discard(user_id)
+        avito_sale_mode.pop(user_id, None)
         show_main(chat_id, user_id, add_to_history=True)
         return
 
@@ -3592,10 +4013,15 @@ def text_handler(message):
         partner_application_mode.discard(user_id)
         partner_message_mode.pop(user_id, None)
         ad_source_creation_mode.discard(user_id)
+        avito_sale_mode.pop(user_id, None)
         selection_mode.pop(user_id, None)
         state = go_back(user_id)
         render_from_state(chat_id, user_id, state)
         return
+
+    if user_id in avito_sale_mode:
+        if handle_avito_sale_text(message):
+            return
 
     if user_id in partner_message_mode:
         send_admin_message_to_partner(message)
@@ -3689,6 +4115,10 @@ def text_handler(message):
 
     if text == "📣 Реклама":
         show_ad_stats(chat_id, user_id)
+        return
+
+    if text == "🛒 Продажа с Авито":
+        start_avito_sale_flow(chat_id, user_id)
         return
 
     if text == "🤝 Партнёры":
@@ -3883,9 +4313,61 @@ def callback_handler(call):
     ):
         partner_message_mode.pop(call.from_user.id, None)
 
+    if (
+        call.from_user.id == ADMIN_ID
+        and call.from_user.id in avito_sale_mode
+        and not data.startswith("avito_")
+    ):
+        avito_sale_mode.pop(call.from_user.id, None)
+
     if data == "visitor_catalog":
         bot.answer_callback_query(call.id)
         show_travel_home(call.message.chat.id, call.from_user.id, add_to_history=True)
+        return
+
+    if data == "avito_install":
+        bot.answer_callback_query(call.id)
+        bot.send_message(call.from_user.id, install_instruction_text(), reply_markup=external_sale_customer_keyboard())
+        return
+
+    if data == "avito_cancel":
+        if call.from_user.id != ADMIN_ID:
+            bot.answer_callback_query(call.id, "Недоступно")
+            return
+        avito_sale_mode.pop(call.from_user.id, None)
+        bot.answer_callback_query(call.id, "Отменено")
+        try:
+            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+        except Exception:
+            pass
+        bot.send_message(call.message.chat.id, "❌ Создание ссылки отменено.", reply_markup=main_keyboard(call.from_user.id))
+        return
+
+    if data == "avito_create_link":
+        if call.from_user.id != ADMIN_ID:
+            bot.answer_callback_query(call.id, "Недоступно")
+            return
+        state = avito_sale_mode.pop(call.from_user.id, None)
+        if not state or state.get("step") != "confirm":
+            bot.answer_callback_query(call.id, "Сценарий уже завершён")
+            return
+        try:
+            deep_link, _sale = create_external_sale(
+                state["country"],
+                state["tariff"],
+                int(state["amount"]),
+                call.from_user.id
+            )
+        except Exception:
+            bot.answer_callback_query(call.id, "Не удалось создать ссылку")
+            bot.send_message(call.message.chat.id, "Не удалось создать ссылку. Попробуйте ещё раз.", reply_markup=main_keyboard(call.from_user.id))
+            return
+        bot.answer_callback_query(call.id, "Ссылка создана")
+        try:
+            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+        except Exception:
+            pass
+        show_external_sale_created(call.message.chat.id, state["country"], state["tariff"], int(state["amount"]), deep_link)
         return
 
     if data == "partner_cabinet":
