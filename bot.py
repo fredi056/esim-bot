@@ -763,34 +763,44 @@ def external_sale_customer_text(country: str, tariff: str) -> str:
         text += f"\n\n{country or 'Не указано'} | {tariff or 'Не указано'}"
     return text
 
-def show_external_sale_created(chat_id: int, country: str, tariff: str, amount: int, deep_link: str) -> None:
+def avito_admin_back_keyboard():
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("⬅️ В админку", callback_data="avito_admin_back"))
+    return kb
+
+
+def show_external_sale_created(chat_id: int, deep_link: str) -> None:
     bot.send_message(
         chat_id,
-        "✅ Ссылка для клиента создана\n\n"
-        f"{country} | {tariff}\n"
-        f"{format_price(amount)} ₽\n\n"
-        "Персональная ссылка:\n"
-        f"{deep_link}\n\n"
-        "Готовый текст для клиента:\n\n"
         "Чтобы eSIM, инструкция и поддержка сохранились у вас в одном месте, откройте eSIMLime по ссылке 👇\n\n"
         f"{deep_link}\n\n"
-        "Ссылка действует 7 дней и предназначена для одного клиента.",
-        reply_markup=main_keyboard(ADMIN_ID)
+        "В следующий раз eSIM можно будет оформить самостоятельно прямо здесь.",
+        reply_markup=avito_admin_back_keyboard()
     )
+
 
 def notify_admin_external_sale_claimed(sale: Dict[str, Any], message) -> None:
     user_id = message.from_user.id
     telegram = f"@{message.from_user.username}" if message.from_user.username else f"ID {user_id}"
+    details = []
+    country = sale.get("country") or ""
+    tariff = sale.get("tariff") or ""
+    amount = int(sale.get("amount") or 0)
+    if country or tariff:
+        details.append(" | ".join(part for part in (country, tariff) if part))
+    if amount:
+        details.append(f"Сумма продажи: {format_price(amount)} ₽")
+
+    text = "✅ Клиент с Авито подключён к eSIMLime\n\n"
+    if details:
+        text += "\n".join(details) + "\n\n"
+    text += f"Telegram:\n{telegram}"
+
     try:
-        bot.send_message(
-            ADMIN_ID,
-            "✅ Клиент с Авито подключён к eSIMLime\n\n"
-            f"{sale.get('country') or 'Не указано'} | {sale.get('tariff') or 'Не указано'}\n"
-            f"Сумма продажи: {format_price(int(sale.get('amount') or 0))} ₽\n\n"
-            f"Telegram:\n{telegram}"
-        )
+        bot.send_message(ADMIN_ID, text)
     except Exception:
         pass
+
 
 def handle_avito_start(message, token: Optional[str]) -> None:
     reset_to_main(message.from_user.id)
@@ -901,86 +911,16 @@ def start_avito_sale_flow(chat_id: int, user_id: int) -> None:
     partner_application_mode.discard(user_id)
     partner_message_mode.pop(user_id, None)
     ad_source_creation_mode.discard(user_id)
-    avito_sale_mode[user_id] = {"step": "country"}
+    avito_sale_mode.pop(user_id, None)
 
-    bot.send_message(
-        chat_id,
-        "🛒 Продажа с Авито\n\nНапишите страну.",
-        reply_markup=nav_keyboard()
-    )
+    try:
+        deep_link, _sale = create_external_sale("", "", 0, user_id)
+    except Exception:
+        bot.send_message(chat_id, "Не удалось создать ссылку. Попробуйте ещё раз.", reply_markup=main_keyboard(user_id))
+        return
 
-def show_avito_sale_confirmation(chat_id: int, state: Dict[str, Any]) -> None:
-    kb = types.InlineKeyboardMarkup()
-    kb.add(
-        types.InlineKeyboardButton("✅ Создать ссылку", callback_data="avito_create_link"),
-        types.InlineKeyboardButton("❌ Отмена", callback_data="avito_cancel")
-    )
-    bot.send_message(
-        chat_id,
-        "🛒 Продажа с Авито\n\n"
-        f"Страна: {state['country']}\n"
-        f"Тариф: {state['tariff']}\n"
-        f"Сумма: {format_price(int(state['amount']))} ₽\n\n"
-        "Создать персональную ссылку?",
-        reply_markup=kb
-    )
+    show_external_sale_created(chat_id, deep_link)
 
-def handle_avito_sale_text(message) -> bool:
-    user_id = message.from_user.id
-    chat_id = message.chat.id
-    state = avito_sale_mode.get(user_id)
-    if not state:
-        return False
-
-    if user_id != ADMIN_ID:
-        avito_sale_mode.pop(user_id, None)
-        return False
-
-    text = (message.text or "").strip()
-    if text.startswith("/"):
-        bot.send_message(chat_id, "Напишите данные продажи обычным текстом, без команды.")
-        return True
-
-    step = state.get("step")
-    if step == "country":
-        country = clean_external_sale_field(text, limit=80)
-        if len(country) < 2:
-            bot.send_message(chat_id, "Страна должна быть не короче 2 символов.")
-            return True
-        state["country"] = country
-        state["step"] = "tariff"
-        bot.send_message(
-            chat_id,
-            "Напишите тариф.\n\nНапример:\n20 ГБ / 30 дней",
-            reply_markup=nav_keyboard()
-        )
-        return True
-
-    if step == "tariff":
-        tariff = clean_external_sale_field(text, limit=120)
-        if len(tariff) < 2:
-            bot.send_message(chat_id, "Тариф должен быть не короче 2 символов.")
-            return True
-        state["tariff"] = tariff
-        state["step"] = "amount"
-        bot.send_message(chat_id, "Напишите сумму продажи в рублях целым числом.", reply_markup=nav_keyboard())
-        return True
-
-    if step == "amount":
-        if not re.fullmatch(r"\d+", text):
-            bot.send_message(chat_id, "Сумма должна быть положительным целым числом.")
-            return True
-        amount = int(text)
-        if amount <= 0:
-            bot.send_message(chat_id, "Сумма должна быть больше нуля.")
-            return True
-        state["amount"] = amount
-        state["step"] = "confirm"
-        show_avito_sale_confirmation(chat_id, state)
-        return True
-
-    bot.send_message(chat_id, "Подтвердите создание ссылки кнопкой ниже или нажмите «🏠 В начало».")
-    return True
 
 def ensure_ad_source(code: str, name: Optional[str] = None) -> None:
     clean_name = (name or code).strip() or code
@@ -1223,7 +1163,7 @@ def main_keyboard(user_id: Optional[int] = None):
             kb.add("📊 Статистика", "📦 Заказы")
             kb.add("👥 Пользователи")
             kb.add("📣 Реклама")
-            kb.add("🛒 Продажа с Авито")
+            kb.add("🛒 Клиент с Авито")
             kb.add("🤝 Партнёры")
         elif user_id and get_partner_by_user(user_id):
             kb.add("🤝 Кабинет партнёра")
@@ -1239,7 +1179,7 @@ def main_keyboard(user_id: Optional[int] = None):
         kb.add("📊 Статистика", "📦 Заказы")
         kb.add("👥 Пользователи")
         kb.add("📣 Реклама")
-        kb.add("🛒 Продажа с Авито")
+        kb.add("🛒 Клиент с Авито")
         kb.add("🤝 Партнёры")
     elif user_id and get_partner_by_user(user_id):
         kb.add("🤝 Кабинет партнёра")
@@ -4019,9 +3959,6 @@ def text_handler(message):
         render_from_state(chat_id, user_id, state)
         return
 
-    if user_id in avito_sale_mode:
-        if handle_avito_sale_text(message):
-            return
 
     if user_id in partner_message_mode:
         send_admin_message_to_partner(message)
@@ -4117,7 +4054,7 @@ def text_handler(message):
         show_ad_stats(chat_id, user_id)
         return
 
-    if text == "🛒 Продажа с Авито":
+    if text in ("🛒 Клиент с Авито", "🛒 Продажа с Авито"):
         start_avito_sale_flow(chat_id, user_id)
         return
 
@@ -4330,45 +4267,14 @@ def callback_handler(call):
         bot.send_message(call.from_user.id, install_instruction_text(), reply_markup=external_sale_customer_keyboard())
         return
 
-    if data == "avito_cancel":
+    if data == "avito_admin_back":
         if call.from_user.id != ADMIN_ID:
             bot.answer_callback_query(call.id, "Недоступно")
             return
-        avito_sale_mode.pop(call.from_user.id, None)
-        bot.answer_callback_query(call.id, "Отменено")
-        try:
-            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
-        except Exception:
-            pass
-        bot.send_message(call.message.chat.id, "❌ Создание ссылки отменено.", reply_markup=main_keyboard(call.from_user.id))
+        bot.answer_callback_query(call.id)
+        show_main(call.message.chat.id, call.from_user.id, add_to_history=False)
         return
 
-    if data == "avito_create_link":
-        if call.from_user.id != ADMIN_ID:
-            bot.answer_callback_query(call.id, "Недоступно")
-            return
-        state = avito_sale_mode.pop(call.from_user.id, None)
-        if not state or state.get("step") != "confirm":
-            bot.answer_callback_query(call.id, "Сценарий уже завершён")
-            return
-        try:
-            deep_link, _sale = create_external_sale(
-                state["country"],
-                state["tariff"],
-                int(state["amount"]),
-                call.from_user.id
-            )
-        except Exception:
-            bot.answer_callback_query(call.id, "Не удалось создать ссылку")
-            bot.send_message(call.message.chat.id, "Не удалось создать ссылку. Попробуйте ещё раз.", reply_markup=main_keyboard(call.from_user.id))
-            return
-        bot.answer_callback_query(call.id, "Ссылка создана")
-        try:
-            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
-        except Exception:
-            pass
-        show_external_sale_created(call.message.chat.id, state["country"], state["tariff"], int(state["amount"]), deep_link)
-        return
 
     if data == "partner_cabinet":
         bot.answer_callback_query(call.id)
