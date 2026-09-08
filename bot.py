@@ -225,7 +225,6 @@ AVITO_TOKEN_PREFIX = "avito_"
 AVITO_LINK_TTL_SECONDS = 7 * 24 * 60 * 60
 AVITO_TOKEN_BYTES = 24
 AVITO_REVIEW_48H_DELAY = 48 * 60 * 60
-REFERRAL_PROGRAM_DELAY_AFTER_ESIM = 24 * 60 * 60
 
 class ReminderRetryLater(Exception):
     pass
@@ -527,7 +526,7 @@ partner_message_mode: Dict[int, str] = {}
 ad_source_creation_mode = set()
 avito_sale_mode: Dict[int, Dict[str, Any]] = {}
 
-def ensure_user(user_id: int, ref: Optional[int] = None, username: Optional[str] = None, first_name: Optional[str] = None) -> None:
+def ensure_user(user_id: int, ref: Optional[int] = None, username: Optional[str] = None, first_name: Optional[str] = None) -> bool:
     username = username or ""
     first_name = first_name or ""
     cursor.execute("SELECT user_id FROM users WHERE user_id=?", (user_id,))
@@ -537,7 +536,7 @@ def ensure_user(user_id: int, ref: Optional[int] = None, username: Optional[str]
             (username, first_name, user_id)
         )
         conn.commit()
-        return
+        return False
     if ref == user_id:
         ref = None
     cursor.execute(
@@ -545,14 +544,18 @@ def ensure_user(user_id: int, ref: Optional[int] = None, username: Optional[str]
         (user_id, 0, ref, username, first_name)
     )
     conn.commit()
+    return True
 
-def remember_user_from_message(message, ref: Optional[int] = None) -> None:
-    ensure_user(
+def remember_user_from_message(message, ref: Optional[int] = None, schedule_referral_now: bool = True) -> bool:
+    is_new_user = ensure_user(
         message.from_user.id,
         ref=ref,
         username=message.from_user.username,
         first_name=message.from_user.first_name
     )
+    if is_new_user and schedule_referral_now:
+        schedule_referral_program_job(message.from_user.id, int(time.time()))
+    return is_new_user
 
 def normalize_source_code(raw_code: str) -> Optional[str]:
     code = (raw_code or "").strip().lower()
@@ -621,7 +624,7 @@ def create_external_sale(country: str, tariff: str, amount: int, created_by: int
 
     raise RuntimeError("Could not generate unique external sale token")
 
-def ensure_user_with_cursor(db_cursor, user_id: int, username: Optional[str], first_name: Optional[str], ref: Optional[int] = None) -> None:
+def ensure_user_with_cursor(db_cursor, user_id: int, username: Optional[str], first_name: Optional[str], ref: Optional[int] = None) -> bool:
     username = username or ""
     first_name = first_name or ""
     if ref == user_id:
@@ -632,11 +635,12 @@ def ensure_user_with_cursor(db_cursor, user_id: int, username: Optional[str], fi
             "UPDATE users SET username=?, first_name=? WHERE user_id=?",
             (username, first_name, user_id)
         )
-        return
+        return False
     db_cursor.execute(
         "INSERT INTO users (user_id, balance, ref, username, first_name) VALUES (?, ?, ?, ?, ?)",
         (user_id, 0, ref, username, first_name)
     )
+    return True
 
 def remember_avito_source_for_user(db_cursor, user_id: int, now: int) -> None:
     db_cursor.execute(
@@ -769,16 +773,56 @@ def referral_program_text() -> str:
     )
 
 
-def referral_program_keyboard(user_id: int):
+def referral_share_url(user_id: int) -> str:
+    link = referral_link(user_id)
     share_text = (
         "✈️ Собираешься за границу?\n\n"
         "Я пользуюсь eSIMLime — здесь можно заранее оформить eSIM и после прилёта сразу быть с интернетом.\n\n"
         "Выбрать страну и тариф 👇\n\n"
+        f"{link}"
+    )
+    return "https://t.me/share/url?" + urlencode({"url": link, "text": share_text})
+
+
+def referral_program_keyboard(user_id: int):
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("✈️ Поделиться с другом", url=referral_share_url(user_id)))
+    kb.add(types.InlineKeyboardButton("🔗 Моя ссылка", callback_data="referral_link_screen"))
+    return kb
+
+
+def referral_link_screen_text(user_id: int) -> str:
+    return (
+        "🎁 Получайте 100 ₽ за друзей\n\n"
+        "Пригласите друга в eSIMLime по своей персональной ссылке.\n\n"
+        "После его первой оплаченной покупки вам начислится 100 ₽ на баланс eSIMLime.\n\n"
+        "Бонусами можно уменьшать стоимость следующих покупок eSIM.\n\n"
+        "Ваша персональная ссылка:\n"
         f"{referral_link(user_id)}"
     )
-    share_url = "https://t.me/share/url?" + urlencode({"url": referral_link(user_id), "text": share_text})
+
+
+def referral_link_screen_keyboard(user_id: int):
     kb = types.InlineKeyboardMarkup()
-    kb.add(types.InlineKeyboardButton("🎁 Пригласить друга — получить 100 ₽", url=share_url))
+    kb.add(types.InlineKeyboardButton("✈️ Поделиться с другом", url=referral_share_url(user_id)))
+    kb.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="referral_back_main"))
+    return kb
+
+
+def referral_bonus_awarded_text(current_balance: int) -> str:
+    return (
+        "🎉 Вам начислено 100 ₽\n\n"
+        "Ваш друг совершил первую покупку в eSIMLime.\n\n"
+        "+100 ₽ на ваш баланс\n\n"
+        f"Текущий баланс: {current_balance} ₽\n\n"
+        "Используйте бонусы при следующей покупке eSIM или приглашайте ещё друзей 💚"
+    )
+
+
+def referral_bonus_awarded_keyboard(user_id: int):
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("🎁 Пригласить ещё", url=referral_share_url(user_id)))
+    kb.add(types.InlineKeyboardButton("💰 Мой кабинет", callback_data="user_cabinet"))
     return kb
 
 
@@ -1206,6 +1250,7 @@ def main_keyboard(user_id: Optional[int] = None):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     if MINI_APP_URL:
         kb.add(mini_app_button())
+        kb.add("🎁 Пригласить друга — 100 ₽")
         if user_id == ADMIN_ID:
             kb.add("📊 Статистика", "📦 Заказы")
             kb.add("👥 Пользователи")
@@ -1221,6 +1266,7 @@ def main_keyboard(user_id: Optional[int] = None):
     kb.add("✈️ eSIM для путешествий")
     kb.add("⚡ Подобрать eSIM")
     kb.add("📘 Инструкции")
+    kb.add("🎁 Пригласить друга — 100 ₽")
     kb.add("👤 Личный кабинет", "❓ Помощь")
     if user_id == ADMIN_ID:
         kb.add("📊 Статистика", "📦 Заказы")
@@ -1981,6 +2027,10 @@ def schedule_referral_program_job(user_id: int, scheduled_at: int, db_cursor=Non
 def schedule_avito_review_job(user_id: int, claimed_at: int, db_cursor=None, db_conn=None, commit: bool = True) -> None:
     schedule_engagement_job("user", user_id, "avito_review_48h", claimed_at + AVITO_REVIEW_48H_DELAY, db_cursor=db_cursor, db_conn=db_conn, commit=commit)
 
+
+def schedule_referral_bonus_awarded_job(order_id: int, scheduled_at: int, db_cursor=None, db_conn=None, commit: bool = True) -> None:
+    schedule_engagement_job("order", order_id, "referral_bonus_awarded", scheduled_at, db_cursor=db_cursor, db_conn=db_conn, commit=commit)
+
 def mark_due_engagement_job(db_cursor, job_id: int) -> bool:
     now = int(time.time())
     db_cursor.execute(
@@ -2026,6 +2076,39 @@ def send_engagement_job(db_cursor, job) -> bool:
             return False
         bot.send_message(user_id, avito_review_text(), reply_markup=avito_review_keyboard())
         return True
+
+    if target_type == "order" and job_type == "referral_bonus_awarded":
+        try:
+            order_id = int(target_id)
+        except ValueError:
+            return False
+        db_cursor.execute(
+            """
+            SELECT COALESCE(o.ref_bonus_given, 0), u.ref
+            FROM orders o
+            LEFT JOIN users u ON u.user_id=o.user_id
+            WHERE o.id=?
+            """,
+            (order_id,)
+        )
+        row = db_cursor.fetchone()
+        if not row:
+            return False
+        ref_bonus_given, referrer_id = row
+        if not ref_bonus_given or not referrer_id:
+            return False
+        db_cursor.execute("SELECT COALESCE(balance, 0) FROM users WHERE user_id=?", (referrer_id,))
+        referrer = db_cursor.fetchone()
+        if not referrer:
+            return False
+        current_balance = referrer[0] or 0
+        bot.send_message(
+            referrer_id,
+            referral_bonus_awarded_text(current_balance),
+            reply_markup=referral_bonus_awarded_keyboard(referrer_id)
+        )
+        return True
+
     if target_type == "partner" and job_type in ("partner_24h", "partner_7d"):
         code = target_id
         db_cursor.execute(
@@ -2468,6 +2551,16 @@ def show_main(chat_id: int, user_id: int, add_to_history: bool = True):
 
     bot.send_message(chat_id, text, reply_markup=main_keyboard(user_id))
 
+def show_referral_link_screen(chat_id: int, user_id: int, add_to_history: bool = True):
+    search_mode[user_id] = False
+    selection_mode.pop(user_id, None)
+    if add_to_history:
+        push_screen(user_id, "referral")
+    bot.send_message(
+        chat_id,
+        referral_link_screen_text(user_id),
+        reply_markup=referral_link_screen_keyboard(user_id)
+    )
 def show_travel_home(chat_id: int, user_id: int, add_to_history: bool = True):
     search_mode[user_id] = False
     selection_mode.pop(user_id, None)
@@ -3615,6 +3708,8 @@ def render_from_state(chat_id: int, user_id: int, state: Tuple[str, Optional[str
         show_help(chat_id, user_id, add_to_history=False)
     elif screen == "cabinet":
         show_cabinet(chat_id, user_id, add_to_history=False)
+    elif screen == "referral":
+        show_referral_link_screen(chat_id, user_id, add_to_history=False)
     elif screen == "instructions":
         show_instructions_menu(chat_id, user_id, add_to_history=False)
     elif screen == "search":
@@ -3645,12 +3740,14 @@ def start_handler(message):
             partner_code = normalize_partner_code(start_param)
             if not partner_code or not get_partner_by_code(partner_code) or not get_partner_by_code(partner_code)[4]:
                 invalid_partner_link = True
-    remember_user_from_message(message, ref)
+    is_new_user = remember_user_from_message(message, ref, schedule_referral_now=False)
     if source_code:
         ensure_ad_source(source_code)
         remember_ad_source_for_user(user_id, source_code)
     if partner_code and not invalid_partner_link:
         activate_partner_window(user_id, partner_code)
+    if is_new_user:
+        schedule_referral_program_job(user_id, int(time.time()))
     schedule_visitor_24h(user_id, int(time.time()))
     if invalid_partner_link:
         bot.send_message(message.chat.id, "Партнёрская ссылка недействительна или больше не активна.")
@@ -3949,7 +4046,6 @@ def admin_send_esim_message(message):
         cancel_reminders_by_type(order_id, "admin_esim_15m")
         if not already_sent:
             schedule_reminder(target_user_id, order_id, "install_2h", now + 2 * 60 * 60)
-            schedule_referral_program_job(target_user_id, now + REFERRAL_PROGRAM_DELAY_AFTER_ESIM)
 
         bot.send_message(
             ADMIN_ID,
@@ -4154,6 +4250,10 @@ def text_handler(message):
         show_cabinet(chat_id, user_id, add_to_history=True)
         return
 
+    if text == "🎁 Пригласить друга — 100 ₽":
+        show_referral_link_screen(chat_id, user_id, add_to_history=True)
+        return
+
     if text in ("📊 Статистика", "📊 Админ-статистика"):
         show_admin_stats(chat_id, user_id)
         return
@@ -4275,7 +4375,6 @@ def photo_handler(message):
             cancel_reminders_by_type(order_id, "admin_esim_15m")
             if not already_sent:
                 schedule_reminder(target_user_id, order_id, "install_2h", now + 2 * 60 * 60)
-                schedule_referral_program_job(target_user_id, now + REFERRAL_PROGRAM_DELAY_AFTER_ESIM)
             bot.send_message(ADMIN_ID, f"✅ eSIM отправлена пользователю {target_user_id}\nЗаказ #{order_id}")
             admin_send_qr_target = None
             admin_send_qr_order_id = None
@@ -4392,6 +4491,23 @@ def callback_handler(call):
         show_main(call.message.chat.id, call.from_user.id, add_to_history=False)
         return
 
+
+    if data == "referral_link_screen":
+        remember_user_from_message(call, schedule_referral_now=False)
+        bot.answer_callback_query(call.id)
+        show_referral_link_screen(call.message.chat.id, call.from_user.id, add_to_history=True)
+        return
+
+    if data == "referral_back_main":
+        bot.answer_callback_query(call.id)
+        show_main(call.message.chat.id, call.from_user.id, add_to_history=False)
+        return
+
+    if data == "user_cabinet":
+        remember_user_from_message(call, schedule_referral_now=False)
+        bot.answer_callback_query(call.id)
+        show_cabinet(call.message.chat.id, call.from_user.id, add_to_history=True)
+        return
 
     if data == "partner_cabinet":
         bot.answer_callback_query(call.id)
@@ -4775,7 +4891,7 @@ def callback_handler(call):
             bot.answer_callback_query(call.id, "Недоступно")
             return
 
-        ref_to_notify = None
+        referral_bonus_job_order_id = None
         partner_sale_job_order_id = None
         try:
             now = int(time.time())
@@ -4850,8 +4966,11 @@ def callback_handler(call):
                 ref = row[0] if row else None
                 if ref and not already_had_paid_orders and not ref_bonus_given:
                     cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (REF_BONUS, ref))
+                    bonus_balance_updated = cursor.rowcount == 1
                     cursor.execute("UPDATE orders SET ref_bonus_given=1 WHERE id=?", (order_id,))
-                    ref_to_notify = ref
+                    if bonus_balance_updated and cursor.rowcount == 1:
+                        schedule_referral_bonus_awarded_job(order_id, now, db_cursor=cursor, db_conn=conn, commit=False)
+                        referral_bonus_job_order_id = order_id
 
             conn.commit()
         except Exception:
@@ -4861,12 +4980,8 @@ def callback_handler(call):
         if partner_sale_job_order_id:
             process_engagement_job_now("partner_sale", partner_sale_job_order_id, "partner_sale")
 
-        if ref_to_notify:
-            bot.send_message(
-                ref_to_notify,
-                f"🎉 Вам начислено {REF_BONUS}₽ за реферала.\n"
-                f"Баланс можно использовать при следующей покупке."
-            )
+        if referral_bonus_job_order_id:
+            process_engagement_job_now("order", referral_bonus_job_order_id, "referral_bonus_awarded")
 
         bot.send_message(
             user_id,
