@@ -826,6 +826,81 @@ def referral_bonus_awarded_keyboard(user_id: int):
     return kb
 
 
+def referral_backfill_stats(db_cursor=None) -> Dict[str, int]:
+    db_cursor = db_cursor or cursor
+    db_cursor.execute("SELECT COUNT(*) FROM users")
+    total_users = db_cursor.fetchone()[0]
+    db_cursor.execute(
+        """
+        SELECT COUNT(*)
+        FROM users u
+        WHERE EXISTS (
+            SELECT 1
+            FROM engagement_jobs ej
+            WHERE ej.target_type='user'
+              AND ej.target_id=CAST(u.user_id AS TEXT)
+              AND ej.job_type='referral_program'
+        )
+        """
+    )
+    users_with_referral_program = db_cursor.fetchone()[0]
+    return {
+        "total": total_users,
+        "existing": users_with_referral_program,
+        "to_add": total_users - users_with_referral_program,
+    }
+
+
+def referral_backfill_confirmation_keyboard():
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("✅ Запустить рассылку", callback_data="referral_backfill_run"))
+    kb.add(types.InlineKeyboardButton("❌ Отмена", callback_data="referral_backfill_cancel"))
+    return kb
+
+
+def referral_backfill_stats_text(stats: Dict[str, int]) -> str:
+    return (
+        "🎁 Backfill referral_program\n\n"
+        f"Пользователей всего: {stats['total']}\n"
+        f"Уже имеют referral_program: {stats['existing']}\n"
+        f"Будет добавлено: {stats['to_add']}"
+    )
+
+
+def create_referral_backfill_jobs(db_cursor=None, db_conn=None) -> int:
+    db_cursor = db_cursor or cursor
+    db_conn = db_conn or conn
+    now = int(time.time())
+    db_cursor.execute(
+        """
+        SELECT u.user_id
+        FROM users u
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM engagement_jobs ej
+            WHERE ej.target_type='user'
+              AND ej.target_id=CAST(u.user_id AS TEXT)
+              AND ej.job_type='referral_program'
+        )
+        """
+    )
+    user_ids = [row[0] for row in db_cursor.fetchall()]
+    created = 0
+    for user_id in user_ids:
+        schedule_engagement_job(
+            "user",
+            user_id,
+            "referral_program",
+            now,
+            db_cursor=db_cursor,
+            db_conn=db_conn,
+            commit=False
+        )
+        created += db_cursor.rowcount
+    db_conn.commit()
+    return created
+
+
 def avito_review_text() -> str:
     return (
         "⭐ Как вам eSIMLime?\n\n"
@@ -3758,6 +3833,17 @@ def myid_handler(message):
     remember_user_from_message(message)
     bot.send_message(message.chat.id, f"Ваш Telegram ID: {message.from_user.id}")
 
+@bot.message_handler(commands=["referral_backfill"])
+def referral_backfill_handler(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    stats = referral_backfill_stats()
+    bot.send_message(
+        message.chat.id,
+        referral_backfill_stats_text(stats),
+        reply_markup=referral_backfill_confirmation_keyboard()
+    )
+
 @bot.message_handler(commands=["source"])
 def source_handler(message):
     if message.from_user.id != ADMIN_ID:
@@ -4458,6 +4544,38 @@ def photo_handler(message):
 @bot.callback_query_handler(func=lambda c: True)
 def callback_handler(call):
     data = call.data
+
+    if data == "referral_backfill_cancel":
+        if call.from_user.id != ADMIN_ID:
+            bot.answer_callback_query(call.id, "Недоступно")
+            return
+        bot.answer_callback_query(call.id, "Отменено")
+        try:
+            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+        except Exception:
+            pass
+        bot.send_message(call.message.chat.id, "Backfill referral_program отменён.", reply_markup=main_keyboard(call.from_user.id))
+        return
+
+    if data == "referral_backfill_run":
+        if call.from_user.id != ADMIN_ID:
+            bot.answer_callback_query(call.id, "Недоступно")
+            return
+        stats_before = referral_backfill_stats()
+        created = create_referral_backfill_jobs()
+        stats_after = referral_backfill_stats()
+        bot.answer_callback_query(call.id, f"Создано: {created}")
+        try:
+            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+        except Exception:
+            pass
+        bot.send_message(
+            call.message.chat.id,
+            referral_backfill_stats_text(stats_before) +
+            f"\n\nСоздано jobs: {created}\nБудет добавлено после запуска: {stats_after['to_add']}",
+            reply_markup=main_keyboard(call.from_user.id)
+        )
+        return
 
     if (
         call.from_user.id == ADMIN_ID
