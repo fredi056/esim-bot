@@ -7,6 +7,7 @@ import sqlite3
 import threading
 from pathlib import Path
 import time
+from urllib.parse import urlencode
 from typing import Any, Optional, Dict, List, Tuple
 
 import telebot
@@ -15,6 +16,7 @@ from telebot import types
 TOKEN = os.getenv("TOKEN")
 ADMIN_ID_RAW = os.getenv("ADMIN_ID")
 MINI_APP_URL = os.getenv("MINI_APP_URL", "").strip()
+AVITO_REVIEW_URL = os.getenv("AVITO_REVIEW_URL", "").strip()
 
 if not TOKEN:
     raise ValueError("TOKEN not found")
@@ -222,6 +224,8 @@ AVITO_SOURCE_CODE = "avito_manual"
 AVITO_TOKEN_PREFIX = "avito_"
 AVITO_LINK_TTL_SECONDS = 7 * 24 * 60 * 60
 AVITO_TOKEN_BYTES = 24
+AVITO_REVIEW_48H_DELAY = 48 * 60 * 60
+REFERRAL_PROGRAM_DELAY_AFTER_ESIM = 24 * 60 * 60
 
 class ReminderRetryLater(Exception):
     pass
@@ -751,6 +755,47 @@ def external_sale_customer_keyboard():
     kb.add(types.InlineKeyboardButton("💬 Поддержка", url=SUPPORT_URL))
     return kb
 
+def referral_link(user_id: int) -> str:
+    return f"https://t.me/esimlimebot?start={user_id}"
+
+
+def referral_program_text() -> str:
+    return (
+        "🎁 Получайте 100 ₽ за друзей\n\n"
+        "В eSIMLime работает реферальная программа.\n\n"
+        "Пригласите друга по своей персональной ссылке — после его первой оплаченной покупки вам начислится 100 ₽ на баланс eSIMLime.\n\n"
+        "Бонусами можно уменьшать стоимость следующих покупок eSIM.\n\n"
+        "Отправьте eSIMLime другу одной кнопкой 👇"
+    )
+
+
+def referral_program_keyboard(user_id: int):
+    share_text = (
+        "✈️ Собираешься за границу?\n\n"
+        "Я пользуюсь eSIMLime — здесь можно заранее оформить eSIM и после прилёта сразу быть с интернетом.\n\n"
+        "Выбрать страну и тариф 👇\n\n"
+        f"{referral_link(user_id)}"
+    )
+    share_url = "https://t.me/share/url?" + urlencode({"url": referral_link(user_id), "text": share_text})
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("🎁 Пригласить друга — получить 100 ₽", url=share_url))
+    return kb
+
+
+def avito_review_text() -> str:
+    return (
+        "⭐ Как вам eSIMLime?\n\n"
+        "Если всё прошло хорошо, будем благодарны за короткий отзыв на Авито.\n\n"
+        "Он помогает другим путешественникам понять, что eSIM можно спокойно оформить заранее и не искать связь после прилёта.\n\n"
+        "Спасибо, что выбрали eSIMLime 💚"
+    )
+
+
+def avito_review_keyboard():
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("⭐ Оставить отзыв на Авито", url=AVITO_REVIEW_URL))
+    return kb
+
 def external_sale_customer_text(country: str, tariff: str) -> str:
     text = (
         "💚 Спасибо, что выбрали eSIMLime!\n\n"
@@ -823,6 +868,8 @@ def handle_avito_start(message, token: Optional[str]) -> None:
             external_sale_customer_text(sale.get("country", ""), sale.get("tariff", "")),
             reply_markup=external_sale_customer_keyboard()
         )
+        schedule_referral_program_job(message.from_user.id, int(time.time()))
+        schedule_avito_review_job(message.from_user.id, int(sale.get("claimed_at") or time.time()))
         notify_admin_external_sale_claimed(sale, message)
         return
 
@@ -1889,6 +1936,51 @@ def schedule_partner_engagement_jobs(code: str, approved_at: int, db_cursor=None
 def schedule_partner_sale_job(order_id: int, scheduled_at: int, db_cursor=None, db_conn=None, commit: bool = True) -> None:
     schedule_engagement_job("partner_sale", order_id, "partner_sale", scheduled_at, db_cursor=db_cursor, db_conn=db_conn, commit=commit)
 
+
+def schedule_referral_program_job(user_id: int, scheduled_at: int, db_cursor=None, db_conn=None, commit: bool = True) -> None:
+    db_cursor = db_cursor or cursor
+    db_conn = db_conn or conn
+    now = int(time.time())
+    target_id = str(user_id)
+    db_cursor.execute(
+        """
+        INSERT OR IGNORE INTO engagement_jobs
+            (target_type, target_id, job_type, scheduled_at, status, attempts, last_error, created_at, sent_at, processing_started_at)
+        VALUES ('user', ?, 'referral_program', ?, 'pending', 0, '', ?, 0, 0)
+        """,
+        (target_id, scheduled_at, now)
+    )
+    if db_cursor.rowcount == 0:
+        db_cursor.execute(
+            """
+            UPDATE engagement_jobs
+            SET scheduled_at=?
+            WHERE target_type='user'
+              AND target_id=?
+              AND job_type='referral_program'
+              AND status='pending'
+              AND scheduled_at>?
+            """,
+            (scheduled_at, target_id, scheduled_at)
+        )
+        db_cursor.execute(
+            """
+            UPDATE engagement_jobs
+            SET status='pending', scheduled_at=?, attempts=0, last_error='', sent_at=0, processing_started_at=0
+            WHERE target_type='user'
+              AND target_id=?
+              AND job_type='referral_program'
+              AND status IN ('cancelled', 'failed')
+            """,
+            (scheduled_at, target_id)
+        )
+    if commit:
+        db_conn.commit()
+
+
+def schedule_avito_review_job(user_id: int, claimed_at: int, db_cursor=None, db_conn=None, commit: bool = True) -> None:
+    schedule_engagement_job("user", user_id, "avito_review_48h", claimed_at + AVITO_REVIEW_48H_DELAY, db_cursor=db_cursor, db_conn=db_conn, commit=commit)
+
 def mark_due_engagement_job(db_cursor, job_id: int) -> bool:
     now = int(time.time())
     db_cursor.execute(
@@ -1911,6 +2003,29 @@ def send_engagement_job(db_cursor, job) -> bool:
         bot.send_message(user_id, visitor_24h_text(), reply_markup=visitor_24h_keyboard())
         return True
 
+    if target_type == "user" and job_type == "referral_program":
+        try:
+            user_id = int(target_id)
+        except ValueError:
+            return False
+        db_cursor.execute("SELECT user_id FROM users WHERE user_id=?", (user_id,))
+        if not db_cursor.fetchone():
+            return False
+        bot.send_message(user_id, referral_program_text(), reply_markup=referral_program_keyboard(user_id))
+        return True
+
+    if target_type == "user" and job_type == "avito_review_48h":
+        try:
+            user_id = int(target_id)
+        except ValueError:
+            return False
+        if not AVITO_REVIEW_URL:
+            print(f"AVITO_REVIEW_URL is empty; cancelling avito_review_48h for user {user_id}")
+            return False
+        if not user_has_claimed_external_sale(user_id, db_cursor):
+            return False
+        bot.send_message(user_id, avito_review_text(), reply_markup=avito_review_keyboard())
+        return True
     if target_type == "partner" and job_type in ("partner_24h", "partner_7d"):
         code = target_id
         db_cursor.execute(
@@ -3834,6 +3949,7 @@ def admin_send_esim_message(message):
         cancel_reminders_by_type(order_id, "admin_esim_15m")
         if not already_sent:
             schedule_reminder(target_user_id, order_id, "install_2h", now + 2 * 60 * 60)
+            schedule_referral_program_job(target_user_id, now + REFERRAL_PROGRAM_DELAY_AFTER_ESIM)
 
         bot.send_message(
             ADMIN_ID,
@@ -4159,6 +4275,7 @@ def photo_handler(message):
             cancel_reminders_by_type(order_id, "admin_esim_15m")
             if not already_sent:
                 schedule_reminder(target_user_id, order_id, "install_2h", now + 2 * 60 * 60)
+                schedule_referral_program_job(target_user_id, now + REFERRAL_PROGRAM_DELAY_AFTER_ESIM)
             bot.send_message(ADMIN_ID, f"✅ eSIM отправлена пользователю {target_user_id}\nЗаказ #{order_id}")
             admin_send_qr_target = None
             admin_send_qr_order_id = None
