@@ -1,5 +1,6 @@
 import json
 import hashlib
+import mimetypes
 import os
 import re
 import secrets
@@ -12,6 +13,8 @@ from typing import Any, Optional, Dict, List, Tuple
 
 import telebot
 from telebot import types
+
+from account_api import delivery_data, read_account, start_account_api
 
 TOKEN = os.getenv("TOKEN")
 ADMIN_ID_RAW = os.getenv("ADMIN_ID")
@@ -79,6 +82,8 @@ add_column_if_not_exists("orders", "supplier_tariff", "TEXT DEFAULT ''")
 add_column_if_not_exists("orders", "duration_days", "INTEGER DEFAULT 0")
 add_column_if_not_exists("orders", "post_limit_speed", "TEXT DEFAULT ''")
 add_column_if_not_exists("orders", "daily_high_speed_gb", "INTEGER DEFAULT 0")
+add_column_if_not_exists("orders", "install_url", "TEXT DEFAULT ''")
+add_column_if_not_exists("orders", "esim_file_id", "TEXT DEFAULT ''")
 add_column_if_not_exists("users", "username", "TEXT DEFAULT ''")
 add_column_if_not_exists("users", "first_name", "TEXT DEFAULT ''")
 add_column_if_not_exists("users", "first_source", "TEXT DEFAULT ''")
@@ -1848,8 +1853,30 @@ def install_instruction_text() -> str:
         "На iPhone ссылка поддерживается начиная с iOS 17.4.\n"
         "На Android возможность зависит от модели телефона и поставщика eSIM.\n\n"
         "Если ссылка не открывается или её нет, используйте QR-код.\n\n"
+        "Установите eSIM заранее, пока есть стабильный интернет.\n\n"
+        "✈️ После прилёта откройте Настройки → Сотовая связь / Мобильная сеть → "
+        "Передача данных / Мобильные данные и выберите установленную eSIMLime eSIM для интернета. "
+        "Названия пунктов могут отличаться на iPhone и Android.\n\n"
+        "Основную SIM можно оставить для звонков и SMS. Включите роуминг данных для туристической eSIM, "
+        "если это указано в полученной инструкции.\n\n"
         "⚠️ Не удаляйте установленную eSIM: повторная установка может быть недоступна."
     )
+
+
+def save_esim_delivery(order_id: int, user_id: int, message) -> None:
+    install_url, esim_file_id = delivery_data(message)
+    now = int(time.time())
+    cursor.execute(
+        """
+        UPDATE orders
+        SET esim_sent_at=?,
+            install_url=CASE WHEN ?!='' THEN ? ELSE COALESCE(install_url, '') END,
+            esim_file_id=CASE WHEN ?!='' THEN ? ELSE COALESCE(esim_file_id, '') END
+        WHERE id=? AND user_id=?
+        """,
+        (now, install_url or "", install_url or "", esim_file_id or "", esim_file_id or "", order_id, user_id)
+    )
+    conn.commit()
 
 def schedule_reminder(user_id: int, order_id: int, reminder_type: str, scheduled_at: int, db_cursor=None, db_conn=None, commit: bool = True) -> None:
     db_cursor = db_cursor or cursor
@@ -2625,6 +2652,14 @@ def show_main(chat_id: int, user_id: int, add_to_history: bool = True):
         )
 
     bot.send_message(chat_id, text, reply_markup=main_keyboard(user_id))
+    if MINI_APP_URL:
+        cabinet_url = MINI_APP_URL.split("#", 1)[0]
+        cabinet_url += ("&" if "?" in cabinet_url else "?") + "view=esims"
+        cabinet_keyboard = types.InlineKeyboardMarkup()
+        cabinet_keyboard.add(types.InlineKeyboardButton(
+            "📱 Мои eSIM и профиль", web_app=types.WebAppInfo(url=cabinet_url)
+        ))
+        bot.send_message(chat_id, "Ваши eSIM, установка и бонусы:", reply_markup=cabinet_keyboard)
 
 def show_referral_link_screen(chat_id: int, user_id: int, add_to_history: bool = True):
     search_mode[user_id] = False
@@ -4123,12 +4158,11 @@ def admin_send_esim_message(message):
         )
         bot.send_message(target_user_id, install_instruction_text())
 
-        now = int(time.time())
         cursor.execute("SELECT COALESCE(esim_sent_at, 0) FROM orders WHERE id=? AND user_id=?", (order_id, target_user_id))
         row = cursor.fetchone()
         already_sent = bool(row and row[0])
-        cursor.execute("UPDATE orders SET esim_sent_at=? WHERE id=? AND user_id=?", (now, order_id, target_user_id))
-        conn.commit()
+        save_esim_delivery(order_id, target_user_id, message)
+        now = int(time.time())
         cancel_reminders_by_type(order_id, "admin_esim_15m")
         if not already_sent:
             schedule_reminder(target_user_id, order_id, "install_2h", now + 2 * 60 * 60)
@@ -4452,12 +4486,11 @@ def photo_handler(message):
                 message_id=message.message_id
             )
             bot.send_message(target_user_id, install_instruction_text())
-            now = int(time.time())
             cursor.execute("SELECT COALESCE(esim_sent_at, 0) FROM orders WHERE id=? AND user_id=?", (order_id, target_user_id))
             row = cursor.fetchone()
             already_sent = bool(row and row[0])
-            cursor.execute("UPDATE orders SET esim_sent_at=? WHERE id=? AND user_id=?", (now, order_id, target_user_id))
-            conn.commit()
+            save_esim_delivery(order_id, target_user_id, message)
+            now = int(time.time())
             cancel_reminders_by_type(order_id, "admin_esim_15m")
             if not already_sent:
                 schedule_reminder(target_user_id, order_id, "install_2h", now + 2 * 60 * 60)
@@ -5184,7 +5217,49 @@ def callback_handler(call):
         bot.answer_callback_query(call.id, "Заказ отклонен")
         return
 
+def read_mini_app_account(telegram_user: Dict[str, Any]) -> Dict[str, Any]:
+    return read_account(
+        DB_PATH,
+        telegram_user,
+        referral_link,
+        referral_share_url,
+        referral_program_text,
+        SUPPORT_URL,
+    )
+
+
+def read_mini_app_esim_image(user_id: int, order_id: int):
+    db_conn = sqlite3.connect(DB_PATH, timeout=5)
+    try:
+        row = db_conn.execute(
+            """
+            SELECT esim_file_id
+            FROM orders
+            WHERE id=? AND user_id=? AND status='paid'
+              AND COALESCE(esim_sent_at, 0)>0 AND COALESCE(esim_file_id, '')!=''
+            """,
+            (order_id, user_id),
+        ).fetchone()
+    finally:
+        db_conn.close()
+    if not row:
+        return None
+    telegram_file = bot.get_file(row[0])
+    content = bot.download_file(telegram_file.file_path)
+    content_type = mimetypes.guess_type(telegram_file.file_path)[0] or "image/jpeg"
+    if content_type not in ("image/jpeg", "image/png"):
+        content_type = "image/jpeg"
+    return content, content_type
+
+
 threading.Thread(target=reminder_worker, daemon=True).start()
+start_account_api(
+    os.getenv("ACCOUNT_API_HOST", "0.0.0.0"),
+    int(os.getenv("PORT", os.getenv("ACCOUNT_API_PORT", "8080"))),
+    TOKEN,
+    read_mini_app_account,
+    read_mini_app_esim_image,
+)
 bot.remove_webhook()
 time.sleep(1)
 bot.polling(none_stop=True)
