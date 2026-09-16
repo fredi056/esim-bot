@@ -12,6 +12,13 @@ from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
 
 
+class ApiError(RuntimeError):
+    def __init__(self, status, code):
+        super().__init__(code)
+        self.status = status
+        self.code = code
+
+
 def validate_init_data(raw, token, now=None):
     if not isinstance(raw, str) or not raw or len(raw) > 16384:
         raise ValueError("invalid_init_data")
@@ -101,7 +108,8 @@ def read_account(db_path, user, referral_link, referral_share_url, referral_text
     }}
 
 
-def create_account_server(host, port, token, read, read_image):
+def create_account_server(host, port, token, read, read_image, create_payment=None,
+                          read_payment=None, accept_webhook=None):
     class Handler(BaseHTTPRequestHandler):
         def setup(self):
             super().setup()
@@ -125,8 +133,29 @@ def create_account_server(host, port, token, read, read_image):
 
         def do_POST(self):
             image_match = re.fullmatch(r"/api/account/image/([1-9][0-9]*)", self.path)
-            if self.path != "/api/account" and not image_match:
+            payment_match = re.fullmatch(r"/api/payments/status/([1-9][0-9]*)", self.path)
+            is_payment_create = self.path == "/api/payments/create"
+            is_webhook = self.path == "/api/payments/tochka/webhook"
+            if self.path != "/api/account" and not image_match and not payment_match and not is_payment_create and not is_webhook:
                 return self.reply(404, {"error": "not_found"})
+
+            if is_webhook:
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if not 0 < length <= 50000 or self.headers.get("Transfer-Encoding"):
+                        return self.reply(413, {"error": "invalid_body_size"})
+                    token_body = self.rfile.read(length).decode("ascii").strip()
+                    if accept_webhook is None:
+                        raise ApiError(503, "payments_unavailable")
+                    accept_webhook(token_body)
+                    return self.reply(200, {"ok": True})
+                except ApiError as exc:
+                    return self.reply(exc.status, {"error": exc.code})
+                except (UnicodeError, ValueError):
+                    return self.reply(401, {"error": "invalid_webhook"})
+                except Exception:
+                    return self.reply(503, {"error": "webhook_unavailable"})
+
             try:
                 length = int(self.headers.get("Content-Length", "0"))
                 if not 0 < length <= 20000 or self.headers.get("Transfer-Encoding"):
@@ -141,14 +170,27 @@ def create_account_server(host, port, token, read, read_image):
                     if image is None:
                         return self.reply(404, {"error": "not_found"})
                     return self.reply(200, image[0], image[1])
+                if is_payment_create:
+                    if create_payment is None:
+                        raise ApiError(503, "payments_unavailable")
+                    return self.reply(200, create_payment(user, body))
+                if payment_match:
+                    if read_payment is None:
+                        raise ApiError(503, "payments_unavailable")
+                    return self.reply(200, read_payment(user, int(payment_match[1])))
                 self.reply(200, read(user))
+            except ApiError as exc:
+                self.reply(exc.status, {"error": exc.code})
             except Exception:
-                self.reply(503, {"error": "account_unavailable"})
+                self.reply(503, {"error": "payments_unavailable" if is_payment_create or payment_match else "account_unavailable"})
 
     return ThreadingHTTPServer((host, port), Handler)
 
 
-def start_account_api(host, port, token, read, read_image):
-    server = create_account_server(host, port, token, read, read_image)
+def start_account_api(host, port, token, read, read_image, create_payment=None,
+                      read_payment=None, accept_webhook=None):
+    server = create_account_server(
+        host, port, token, read, read_image, create_payment, read_payment, accept_webhook
+    )
     threading.Thread(target=server.serve_forever, daemon=True, name="account-api").start()
     return server

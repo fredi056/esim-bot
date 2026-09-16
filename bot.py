@@ -6,6 +6,7 @@ import re
 import secrets
 import sqlite3
 import threading
+from contextlib import closing
 from pathlib import Path
 import time
 from urllib.parse import urlencode
@@ -14,12 +15,17 @@ from typing import Any, Optional, Dict, List, Tuple
 import telebot
 from telebot import types
 
-from account_api import delivery_data, read_account, start_account_api
+from account_api import ApiError, delivery_data, read_account, start_account_api
+from tochka_api import TochkaClient, TochkaError
 
 TOKEN = os.getenv("TOKEN")
 ADMIN_ID_RAW = os.getenv("ADMIN_ID")
 MINI_APP_URL = os.getenv("MINI_APP_URL", "").strip()
 AVITO_REVIEW_URL = os.getenv("AVITO_REVIEW_URL", "").strip()
+TOCHKA_PAYMENTS_ENABLED = os.getenv("TOCHKA_PAYMENTS_ENABLED", "true").strip().lower() in ("1", "true", "yes")
+TOCHKA_WEBHOOK_URL = os.getenv(
+    "TOCHKA_WEBHOOK_URL", "https://esimlime.ru/api/payments/tochka/webhook"
+).strip()
 
 if not TOKEN:
     raise ValueError("TOKEN not found")
@@ -84,12 +90,22 @@ add_column_if_not_exists("orders", "post_limit_speed", "TEXT DEFAULT ''")
 add_column_if_not_exists("orders", "daily_high_speed_gb", "INTEGER DEFAULT 0")
 add_column_if_not_exists("orders", "install_url", "TEXT DEFAULT ''")
 add_column_if_not_exists("orders", "esim_file_id", "TEXT DEFAULT ''")
+add_column_if_not_exists("orders", "customer_email", "TEXT DEFAULT ''")
+add_column_if_not_exists("orders", "legal_acceptance", "TEXT DEFAULT ''")
+add_column_if_not_exists("orders", "payment_provider", "TEXT DEFAULT ''")
+add_column_if_not_exists("orders", "payment_operation_id", "TEXT DEFAULT ''")
+add_column_if_not_exists("orders", "payment_link_id", "TEXT DEFAULT ''")
+add_column_if_not_exists("orders", "payment_url", "TEXT DEFAULT ''")
+add_column_if_not_exists("orders", "payment_status", "TEXT DEFAULT ''")
+add_column_if_not_exists("orders", "payment_created_at", "INTEGER DEFAULT 0")
 add_column_if_not_exists("users", "username", "TEXT DEFAULT ''")
 add_column_if_not_exists("users", "first_name", "TEXT DEFAULT ''")
 add_column_if_not_exists("users", "first_source", "TEXT DEFAULT ''")
 add_column_if_not_exists("users", "first_source_at", "INTEGER DEFAULT 0")
 add_column_if_not_exists("users", "active_partner_code", "TEXT DEFAULT ''")
 add_column_if_not_exists("users", "active_partner_until", "INTEGER DEFAULT 0")
+
+tochka = TochkaClient()
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS reminder_jobs (
@@ -5252,6 +5268,322 @@ def read_mini_app_esim_image(user_id: int, order_id: int):
     return content, content_type
 
 
+def _payment_db():
+    db = sqlite3.connect(DB_PATH, timeout=10)
+    db.execute("PRAGMA busy_timeout = 10000")
+    return db
+
+
+def _valid_checkout_email(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    email = value.strip().lower()
+    if len(email) > 254 or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+        return None
+    return email
+
+
+def _validated_api_order(body: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    plan_type = body.get("plan_type", "")
+    if plan_type == "unlimited":
+        return validate_unlimited_order_payload(body)
+    if plan_type not in ("", None):
+        return None
+    country = body.get("country")
+    tariff = body.get("tariff")
+    displayed_price = body.get("displayed_price")
+    if not isinstance(country, str) or not isinstance(tariff, str):
+        return None
+    country, tariff = country.strip(), tariff.strip()
+    if isinstance(displayed_price, bool) or not isinstance(displayed_price, int):
+        return None
+    price = get_valid_plan_price(country, tariff)
+    if price is None or displayed_price != price or country == "Russia":
+        return None
+    return {
+        "country": country, "tariff": tariff, "price": price, "plan": None,
+        "days": 0, "unlimited_key": "", "supplier_tariff": "",
+        "post_limit_speed": "", "daily_high_speed_gb": 0,
+    }
+
+
+def create_mini_app_payment(telegram_user: Dict[str, Any], body: Dict[str, Any]) -> Dict[str, Any]:
+    if not TOCHKA_PAYMENTS_ENABLED:
+        raise ApiError(503, "payments_not_enabled")
+    if not tochka.configured:
+        raise ApiError(503, "payments_not_configured")
+    email = _valid_checkout_email(body.get("customer_email"))
+    legal = body.get("legal_acceptance")
+    if not email or not isinstance(legal, dict):
+        raise ApiError(400, "invalid_checkout_data")
+    if not all(isinstance(legal.get(key), str) and legal[key] for key in (
+        "offer_version", "personal_data_consent_version", "accepted_at"
+    )):
+        raise ApiError(400, "legal_acceptance_required")
+    order = _validated_api_order(body)
+    if not order:
+        raise ApiError(409, "tariff_changed")
+
+    user_id = telegram_user["id"]
+    now = int(time.time())
+    db = _payment_db()
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        db.execute(
+            "INSERT OR IGNORE INTO users (user_id, balance, ref, username, first_name) VALUES (?, 0, NULL, ?, ?)",
+            (user_id, telegram_user.get("username", ""), telegram_user.get("first_name", ""))
+        )
+        duplicate = db.execute(
+            """
+            SELECT id, payment_url FROM orders
+            WHERE user_id=? AND country=? AND tariff=? AND status='payment_pending'
+              AND payment_provider='tochka' AND created_at>=?
+            ORDER BY id DESC LIMIT 1
+            """,
+            (user_id, order["country"], order["tariff"], now - 20 * 60)
+        ).fetchone()
+        if duplicate and duplicate[1]:
+            db.commit()
+            return {"order_id": duplicate[0], "payment_url": duplicate[1], "status": "CREATED"}
+
+        user_row = db.execute(
+            "SELECT COALESCE(first_source, ''), COALESCE(active_partner_code, ''), COALESCE(active_partner_until, 0) FROM users WHERE user_id=?",
+            (user_id,)
+        ).fetchone() or ("", "", 0)
+        source_code, partner_code, partner_until = user_row
+        partner_rate = 0
+        if partner_code and partner_until > now:
+            partner = db.execute(
+                "SELECT commission_rate FROM partners WHERE code=? AND is_active=1", (partner_code,)
+            ).fetchone()
+            if partner:
+                partner_rate = int(partner[0] or DEFAULT_PARTNER_RATE)
+            else:
+                partner_code = ""
+        else:
+            partner_code = ""
+        if partner_code:
+            source_code = ""
+        partner_commission = int(round(order["price"] * partner_rate / 100)) if partner_code else 0
+        text = f"{order['country']} | {order['tariff']} — {order['price']}₽"
+        db.execute(
+            """
+            INSERT INTO orders (
+                user_id, text, price, pay_amount, discount_used, status, country, tariff, created_at,
+                source_code, partner_code, partner_rate, partner_commission, plan_type, supplier_key,
+                supplier_tariff, duration_days, post_limit_speed, daily_high_speed_gb, customer_email,
+                legal_acceptance, payment_provider, payment_link_id, payment_status, payment_created_at
+            ) VALUES (?, ?, ?, ?, 0, 'payment_pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                      'tochka', '', 'CREATING', ?)
+            """,
+            (
+                user_id, text, order["price"], order["price"], order["country"], order["tariff"], now,
+                source_code, partner_code, partner_rate, partner_commission,
+                "unlimited" if order["plan"] else "", order["unlimited_key"], order["supplier_tariff"],
+                order["days"], order["post_limit_speed"], order["daily_high_speed_gb"], email,
+                json.dumps({**legal, "recorded_at": now}, ensure_ascii=False), now,
+            )
+        )
+        order_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+        db.execute("UPDATE orders SET payment_link_id=? WHERE id=?", (f"esimlime-{order_id}", order_id))
+        db.commit()
+    finally:
+        db.close()
+
+    redirect_base = os.getenv("TOCHKA_REDIRECT_URL", "https://esimlime.ru/?payment=success").strip()
+    fail_redirect = os.getenv("TOCHKA_FAIL_REDIRECT_URL", "https://esimlime.ru/?payment=failed").strip()
+    redirect_url = f"{redirect_base}{'&' if '?' in redirect_base else '?'}order_id={order_id}"
+    fail_redirect_url = f"{fail_redirect}{'&' if '?' in fail_redirect else '?'}order_id={order_id}"
+    try:
+        payment = tochka.create_payment(
+            order_id, order["price"], f"Оплата eSIM, заказ №{order_id}", redirect_url, fail_redirect_url
+        )
+    except TochkaError as exc:
+        with closing(_payment_db()) as db:
+            db.execute(
+                "UPDATE orders SET status='payment_error', payment_status=? WHERE id=? AND status='payment_pending'",
+                (str(exc)[:100], order_id)
+            )
+        raise ApiError(503, "bank_payment_unavailable") from exc
+
+    with closing(_payment_db()) as db:
+        db.execute(
+            """
+            UPDATE orders SET payment_operation_id=?, payment_url=?, payment_status=?
+            WHERE id=? AND user_id=? AND status='payment_pending'
+            """,
+            (payment["operationId"], payment["paymentLink"], payment.get("status", "CREATED"), order_id, user_id)
+        )
+        schedule_reminder(user_id, order_id, "payment_30m", now + 30 * 60, db_cursor=db.cursor(), db_conn=db, commit=False)
+        schedule_reminder(user_id, order_id, "payment_24h", now + 24 * 60 * 60, db_cursor=db.cursor(), db_conn=db, commit=False)
+        db.commit()
+    return {"order_id": order_id, "payment_url": payment["paymentLink"], "status": payment.get("status", "CREATED")}
+
+
+def _mark_bank_order_paid(order_id: int, operation_id: str, amount: Any) -> bool:
+    now = int(time.time())
+    db = _payment_db()
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute(
+            """
+            SELECT user_id, status, country, tariff, price, pay_amount, partner_code, partner_rate,
+                   partner_commission, ref_bonus_given, plan_type, supplier_key, supplier_tariff,
+                   duration_days, post_limit_speed, daily_high_speed_gb, payment_operation_id
+            FROM orders WHERE id=? AND payment_provider='tochka'
+            """,
+            (order_id,)
+        ).fetchone()
+        if not row:
+            db.rollback()
+            return False
+        if row[1] == "paid":
+            db.rollback()
+            return True
+        if row[1] != "payment_pending" or row[16] != operation_id or float(row[5]) != float(amount):
+            db.rollback()
+            return False
+        user_id = row[0]
+        already_paid = db.execute(
+            "SELECT COUNT(*) FROM orders WHERE user_id=? AND status='paid' AND id!=?", (user_id, order_id)
+        ).fetchone()[0] > 0
+        updated = db.execute(
+            "UPDATE orders SET status='paid', paid_at=?, payment_status='APPROVED' WHERE id=? AND status='payment_pending'",
+            (now, order_id)
+        ).rowcount
+        if updated != 1:
+            db.rollback()
+            return False
+        db.execute(
+            "UPDATE reminder_jobs SET status='cancelled' WHERE order_id=? AND status IN ('pending','processing')",
+            (order_id,)
+        )
+        schedule_reminder(ADMIN_ID, order_id, "admin_esim_15m", now + ADMIN_ESIM_15M_DELAY,
+                          db_cursor=db.cursor(), db_conn=db, commit=False)
+        partner_code, partner_rate, partner_commission, ref_bonus_given = row[6], row[7], row[8], row[9]
+        if partner_code and partner_commission > 0:
+            db.execute(
+                """
+                INSERT OR IGNORE INTO partner_commissions
+                    (order_id, partner_code, user_id, sale_amount, commission_rate, commission_amount, status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'available', ?)
+                """,
+                (order_id, partner_code, user_id, row[5], partner_rate, partner_commission, now)
+            )
+            schedule_partner_sale_job(order_id, now, db_cursor=db.cursor(), db_conn=db, commit=False)
+        elif not already_paid and not ref_bonus_given:
+            ref = db.execute("SELECT ref FROM users WHERE user_id=?", (user_id,)).fetchone()
+            if ref and ref[0]:
+                if db.execute("UPDATE users SET balance=balance+? WHERE user_id=?", (REF_BONUS, ref[0])).rowcount:
+                    db.execute("UPDATE orders SET ref_bonus_given=1 WHERE id=?", (order_id,))
+                    schedule_referral_bonus_awarded_job(order_id, now, db_cursor=db.cursor(), db_conn=db, commit=False)
+        db.commit()
+    finally:
+        db.close()
+
+    bot.send_message(
+        user_id,
+        "✅ Оплата получена\n\nПодготовим eSIM, ссылку или QR-код и инструкцию. "
+        "Они придут сюда и сохранятся в личном кабинете. Обычно это занимает 5–15 минут.",
+        reply_markup=main_keyboard(user_id)
+    )
+    unlimited_details = format_unlimited_admin_details(row[10], row[11], row[12], row[13], row[14], row[15])
+    bot.send_message(
+        ADMIN_ID,
+        f"✅ Оплата через Точку подтверждена\n\nЗаказ #{order_id}\n"
+        f"Покупатель: {format_user_for_admin(user_id)}\nСтрана: {row[2]}\nТариф: {row[3]}\n"
+        f"Сумма: {row[4]}₽{unlimited_details}\n\n/sendqr {user_id} {order_id}"
+    )
+    return True
+
+
+def read_mini_app_payment(telegram_user: Dict[str, Any], order_id: int) -> Dict[str, Any]:
+    with closing(_payment_db()) as db:
+        row = db.execute(
+            "SELECT status, payment_status, payment_operation_id, pay_amount FROM orders WHERE id=? AND user_id=? AND payment_provider='tochka'",
+            (order_id, telegram_user["id"])
+        ).fetchone()
+    if not row:
+        raise ApiError(404, "order_not_found")
+    status, bank_status, operation_id, amount = row
+    if status == "payment_pending" and operation_id:
+        try:
+            info = tochka.get_payment(operation_id)
+            bank_status = info.get("status", bank_status)
+            if bank_status == "APPROVED":
+                _mark_bank_order_paid(order_id, operation_id, info.get("amount"))
+                status = "paid"
+        except TochkaError:
+            pass
+    return {"order_id": order_id, "status": status, "payment_status": bank_status}
+
+
+def _deep_value(data: Any, key: str):
+    if isinstance(data, dict):
+        if key in data:
+            return data[key]
+        for value in data.values():
+            found = _deep_value(value, key)
+            if found is not None:
+                return found
+    elif isinstance(data, list):
+        for value in data:
+            found = _deep_value(value, key)
+            if found is not None:
+                return found
+    return None
+
+
+def accept_tochka_webhook(raw_token: str) -> None:
+    try:
+        payload = tochka.decode_webhook(raw_token)
+    except TochkaError as exc:
+        status = 503 if str(exc) == "tochka_public_key_unavailable" else 401
+        raise ApiError(status, str(exc)) from exc
+    status = _deep_value(payload, "status")
+    webhook_type = _deep_value(payload, "webhookType")
+    if webhook_type not in (None, "acquiringInternetPayment"):
+        return
+    if status != "APPROVED":
+        return
+    operation_id = _deep_value(payload, "operationId")
+    payment_link_id = _deep_value(payload, "paymentLinkId")
+    amount = _deep_value(payload, "amount")
+    match = re.fullmatch(r"esimlime-([1-9][0-9]*)", str(payment_link_id or ""))
+    if not match or not isinstance(operation_id, str) or amount is None:
+        raise ApiError(400, "invalid_payment_webhook")
+    if not _mark_bank_order_paid(int(match.group(1)), operation_id, amount):
+        raise ApiError(409, "payment_mismatch")
+
+
+def tochka_webhook_worker() -> None:
+    if not TOCHKA_PAYMENTS_ENABLED or not tochka.configured:
+        return
+    time.sleep(45)
+    notified = False
+    while True:
+        try:
+            tochka.ensure_webhook(TOCHKA_WEBHOOK_URL)
+            if not notified:
+                try:
+                    bot.send_message(ADMIN_ID, "✅ Уведомления об оплатах Точки подключены")
+                except Exception:
+                    pass
+            return
+        except TochkaError as exc:
+            if not notified:
+                try:
+                    bot.send_message(
+                        ADMIN_ID,
+                        "⚠️ Не удалось автоматически подключить уведомления Точки. "
+                        f"Код ошибки: {str(exc)[:100]}"
+                    )
+                except Exception:
+                    pass
+                notified = True
+            time.sleep(5 * 60)
+
+
 threading.Thread(target=reminder_worker, daemon=True).start()
 start_account_api(
     os.getenv("ACCOUNT_API_HOST", "0.0.0.0"),
@@ -5259,7 +5591,11 @@ start_account_api(
     TOKEN,
     read_mini_app_account,
     read_mini_app_esim_image,
+    create_mini_app_payment,
+    read_mini_app_payment,
+    accept_tochka_webhook,
 )
+threading.Thread(target=tochka_webhook_worker, daemon=True, name="tochka-webhook").start()
 bot.remove_webhook()
 time.sleep(1)
 bot.polling(none_stop=True)
