@@ -1,12 +1,14 @@
 """Small server-side client for Tochka internet acquiring."""
 import json
 import os
+import ssl
 import threading
 import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+import certifi
 import jwt
 
 
@@ -23,6 +25,7 @@ class TochkaClient:
         self.merchant_id = os.getenv("TOCHKA_MERCHANT_ID", "").strip()
         self.payment_modes = None
         self._lock = threading.Lock()
+        self._ssl_context = ssl.create_default_context(cafile=certifi.where())
         self._public_key = None
         self._public_key_loaded_at = 0
 
@@ -43,7 +46,7 @@ class TochkaClient:
         if body is not None:
             request.add_header("Content-Type", "application/json")
         try:
-            with urlopen(request, timeout=12) as response:
+            with urlopen(request, timeout=12, context=self._ssl_context) as response:
                 result = json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
             # Do not propagate a response that could contain credentials or personal data.
@@ -146,7 +149,7 @@ class TochkaClient:
         request = Request("https://enter.tochka.com/doc/openapi/static/keys/public", method="GET")
         request.add_header("Accept", "application/json")
         try:
-            with urlopen(request, timeout=10) as response:
+            with urlopen(request, timeout=10, context=self._ssl_context) as response:
                 jwk = json.loads(response.read().decode("utf-8"))
             key = jwt.PyJWK.from_dict(jwk).key
         except Exception as exc:
