@@ -4,6 +4,7 @@ import os
 import ssl
 import threading
 import time
+from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -36,6 +37,9 @@ class TochkaClient:
         self.payment_modes = None
         self._lock = threading.Lock()
         self._ssl_context = ssl.create_default_context(cafile=certifi.where())
+        self._ssl_context.load_verify_locations(
+            cafile=str(Path(__file__).with_name("certs") / "russian_trusted_root_ca.pem")
+        )
         self._public_key = None
         self._public_key_loaded_at = 0
 
