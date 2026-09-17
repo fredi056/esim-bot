@@ -119,7 +119,25 @@ class TochkaClient:
                 if item.get("status") == "REG" and item.get("isActive") is True and item.get("merchantId")
             ]
             if len(active) != 1:
-                raise TochkaError("tochka_retailer_ambiguous")
+                candidates = active or [item for item in retailers if item.get("merchantId")]
+                labels = []
+                for item in candidates[:8]:
+                    merchant_id = str(item.get("merchantId") or "").strip()
+                    name = str(
+                        item.get("name") or item.get("retailerName")
+                        or item.get("brandName") or ""
+                    ).strip()
+                    modes = ",".join(item.get("paymentModes") or [])
+                    suffix = "; ".join(value for value in (name, modes) if value)
+                    labels.append(f"{merchant_id}{f' ({suffix})' if suffix else ''}")
+                if labels:
+                    detail = (
+                        "Укажите в Railway переменную TOCHKA_MERCHANT_ID: "
+                        + " | ".join(labels)
+                    )
+                else:
+                    detail = "Активная торговая точка интернет-эквайринга не найдена"
+                raise TochkaError("tochka_retailer_ambiguous", detail)
             self.merchant_id = active[0]["merchantId"]
             available_modes = active[0].get("paymentModes") or []
             self.payment_modes = [mode for mode in ("sbp", "card") if mode in available_modes]
