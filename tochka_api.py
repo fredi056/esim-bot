@@ -128,7 +128,20 @@ class TochkaClient:
                         or item.get("brandName") or ""
                     ).strip()
                     modes = ",".join(item.get("paymentModes") or [])
-                    suffix = "; ".join(value for value in (name, modes) if value)
+                    terminal_id = str(item.get("terminalId") or "").strip()
+                    site_url = str(item.get("url") or "").strip()
+                    mcc = str(item.get("mcc") or "").strip()
+                    rate = str(item.get("rate") or "").strip()
+                    cashbox = "касса: да" if item.get("cashbox") else "касса: нет"
+                    suffix = "; ".join(value for value in (
+                        name,
+                        modes,
+                        f"terminalId: {terminal_id}" if terminal_id else "",
+                        f"сайт: {site_url}" if site_url else "",
+                        f"MCC: {mcc}" if mcc else "",
+                        f"комиссия: {rate}" if rate else "",
+                        cashbox,
+                    ) if value)
                     labels.append(f"{merchant_id}{f' ({suffix})' if suffix else ''}")
                 if labels:
                     detail = (
