@@ -220,6 +220,13 @@ class TochkaClient:
         now = time.time()
         if self._public_key is not None and now - self._public_key_loaded_at < 6 * 60 * 60:
             return self._public_key
+        if self._public_key is None:
+            try:
+                self._public_key = jwt.PyJWK.from_dict(TOCHKA_WEBHOOK_JWK).key
+                self._public_key_loaded_at = now
+                return self._public_key
+            except Exception:
+                pass
         request = Request("https://enter.tochka.com/doc/openapi/static/keys/public", method="GET")
         request.add_header("Accept", "application/json")
         try:
