@@ -1329,23 +1329,14 @@ def nav_keyboard():
     kb.add("🔙 Назад", "🏠 В начало")
     return kb
 
-def mini_app_button() -> types.KeyboardButton:
-    return types.KeyboardButton(
-        text="🚀 Открыть eSIMLime",
-        web_app=types.WebAppInfo(url=MINI_APP_URL)
-    )
-
 def mini_app_receipt_keyboard():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add("📸 Отправить чек")
-    if MINI_APP_URL:
-        kb.add(mini_app_button())
     return kb
 
 def main_keyboard(user_id: Optional[int] = None):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     if MINI_APP_URL:
-        kb.add(mini_app_button())
         kb.add("🎁 Пригласить друга — 100 ₽")
         if user_id == ADMIN_ID:
             kb.add("📊 Статистика", "📦 Заказы")
@@ -2653,7 +2644,8 @@ def show_main(chat_id: int, user_id: int, add_to_history: bool = True):
             "🌍 eSIMLime\n\n"
             "Интернет для путешествий без дорогого роуминга.\n\n"
             "Выберите страну и тариф в приложении.\n"
-            "Оплата по СБП. После проверки оплаты мы отправим ссылку установки и QR-код.\n\n"
+            "Оплата проходит на защищённой странице Точки и подтверждается автоматически.\n"
+            "Отправлять чек или скриншот не нужно.\n\n"
             "Нажмите кнопку ниже 👇"
         )
     else:
@@ -2671,11 +2663,14 @@ def show_main(chat_id: int, user_id: int, add_to_history: bool = True):
     if MINI_APP_URL:
         cabinet_url = MINI_APP_URL.split("#", 1)[0]
         cabinet_url += ("&" if "?" in cabinet_url else "?") + "view=esims"
-        cabinet_keyboard = types.InlineKeyboardMarkup()
+        cabinet_keyboard = types.InlineKeyboardMarkup(row_width=1)
+        cabinet_keyboard.add(types.InlineKeyboardButton(
+            "🚀 Открыть eSIMLime", web_app=types.WebAppInfo(url=MINI_APP_URL)
+        ))
         cabinet_keyboard.add(types.InlineKeyboardButton(
             "📱 Мои eSIM и профиль", web_app=types.WebAppInfo(url=cabinet_url)
         ))
-        bot.send_message(chat_id, "Ваши eSIM, установка и бонусы:", reply_markup=cabinet_keyboard)
+        bot.send_message(chat_id, "Каталог, ваши eSIM, установка и бонусы:", reply_markup=cabinet_keyboard)
 
 def show_referral_link_screen(chat_id: int, user_id: int, add_to_history: bool = True):
     search_mode[user_id] = False
@@ -2778,8 +2773,8 @@ def show_how_it_works(chat_id: int, user_id: int, add_to_history: bool = True):
         chat_id,
         "❓ Как работает eSIM\n\n"
         "1. Вы выбираете страну или тариф\n"
-        "2. Оплачиваете заказ\n"
-        "3. Отправляете чек\n"
+        "2. Переходите на защищённую страницу Точки и оплачиваете заказ\n"
+        "3. Банк подтверждает оплату автоматически — чек отправлять не нужно\n"
         "4. Получаете ссылку установки и/или QR-код\n"
         "5. Открываете ссылку на телефоне и следуете подсказкам\n"
         "6. Если ссылка не поддерживается, устанавливаете eSIM через QR-код\n"
@@ -3731,7 +3726,7 @@ def show_travel_instruction(chat_id: int, user_id: int, add_to_history: bool = T
         "✈️ Инструкция для путешествий\n\n"
         "1. Выберите страну и тариф.\n"
         "2. Проверьте, что телефон поддерживает eSIM.\n"
-        "3. После оплаты отправьте чек.\n"
+        "3. Оплатите заказ на странице Точки — подтверждение придёт автоматически.\n"
         "4. Получите ссылку установки и/или QR-код.\n"
         "5. Если пришла ссылка и телефон её поддерживает, откройте её на нужном устройстве.\n"
         "6. Если ссылка не работает или её нет, используйте QR-код.\n"
@@ -5307,6 +5302,30 @@ def _validated_api_order(body: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     }
 
 
+def _notify_admin_safe(text: str) -> None:
+    try:
+        bot.send_message(ADMIN_ID, text)
+    except Exception:
+        pass
+
+
+def _payment_api_error(exc: TochkaError) -> str:
+    code = str(exc)
+    if code in ("tochka_http_401", "tochka_http_403"):
+        return "bank_access_denied"
+    if code in (
+        "tochka_customer_ambiguous", "tochka_retailer_ambiguous",
+        "tochka_payment_modes_unavailable", "tochka_http_404"
+    ):
+        return "bank_setup_required"
+    return "bank_payment_unavailable"
+
+
+def _format_tochka_error(exc: TochkaError) -> str:
+    detail = re.sub(r"[\r\n]+", " ", getattr(exc, "detail", "") or "").strip()
+    return f"{str(exc)}{f' — {detail}' if detail else ''}"[:450]
+
+
 def create_mini_app_payment(telegram_user: Dict[str, Any], body: Dict[str, Any]) -> Dict[str, Any]:
     if not TOCHKA_PAYMENTS_ENABLED:
         raise ApiError(503, "payments_not_enabled")
@@ -5404,7 +5423,12 @@ def create_mini_app_payment(telegram_user: Dict[str, Any], body: Dict[str, Any])
                 "UPDATE orders SET status='payment_error', payment_status=? WHERE id=? AND status='payment_pending'",
                 (str(exc)[:100], order_id)
             )
-        raise ApiError(503, "bank_payment_unavailable") from exc
+            db.commit()
+        _notify_admin_safe(
+            f"⚠️ Точка не создала ссылку оплаты\n\nЗаказ #{order_id}\n"
+            f"Код: {_format_tochka_error(exc)}"
+        )
+        raise ApiError(503, _payment_api_error(exc)) from exc
 
     with closing(_payment_db()) as db:
         db.execute(
@@ -5556,32 +5580,73 @@ def accept_tochka_webhook(raw_token: str) -> None:
         raise ApiError(409, "payment_mismatch")
 
 
-def tochka_webhook_worker() -> None:
+def tochka_setup_worker() -> None:
     if not TOCHKA_PAYMENTS_ENABLED or not tochka.configured:
         return
-    time.sleep(45)
-    notified = False
+    time.sleep(20)
+    api_failure_notified = False
+    while True:
+        try:
+            customer_code = tochka.resolve_customer_code()
+            merchant_id = tochka.resolve_merchant_id(customer_code)
+            _notify_admin_safe(
+                "✅ API оплаты Точки доступен\n\n"
+                f"Клиент: {customer_code}\nТорговая точка: {merchant_id}\n"
+                f"Способы: {', '.join(tochka.payment_modes or ['sbp'])}"
+            )
+            break
+        except TochkaError as exc:
+            if not api_failure_notified:
+                _notify_admin_safe(
+                    "⚠️ API оплаты Точки недоступен\n"
+                    f"Код: {_format_tochka_error(exc)}"
+                )
+                api_failure_notified = True
+            time.sleep(5 * 60)
+
+    webhook_failure_notified = False
     while True:
         try:
             tochka.ensure_webhook(TOCHKA_WEBHOOK_URL)
-            if not notified:
-                try:
-                    bot.send_message(ADMIN_ID, "✅ Уведомления об оплатах Точки подключены")
-                except Exception:
-                    pass
+            _notify_admin_safe("✅ Уведомления об оплатах Точки подключены")
             return
         except TochkaError as exc:
-            if not notified:
-                try:
-                    bot.send_message(
-                        ADMIN_ID,
-                        "⚠️ Не удалось автоматически подключить уведомления Точки. "
-                        f"Код ошибки: {str(exc)[:100]}"
-                    )
-                except Exception:
-                    pass
-                notified = True
+            if not webhook_failure_notified:
+                _notify_admin_safe(
+                    "⚠️ Не удалось подключить уведомления Точки\n"
+                    f"Код: {_format_tochka_error(exc)}"
+                )
+                webhook_failure_notified = True
             time.sleep(5 * 60)
+
+
+def tochka_payment_reconciliation_worker() -> None:
+    if not TOCHKA_PAYMENTS_ENABLED or not tochka.configured:
+        return
+    time.sleep(60)
+    while True:
+        try:
+            with closing(_payment_db()) as db:
+                rows = db.execute(
+                    """
+                    SELECT id, payment_operation_id
+                    FROM orders
+                    WHERE status='payment_pending' AND payment_provider='tochka'
+                      AND COALESCE(payment_operation_id, '')!='' AND created_at>=?
+                    ORDER BY id ASC LIMIT 20
+                    """,
+                    (int(time.time()) - 3 * 24 * 60 * 60,)
+                ).fetchall()
+            for order_id, operation_id in rows:
+                try:
+                    info = tochka.get_payment(operation_id)
+                    if info.get("status") == "APPROVED":
+                        _mark_bank_order_paid(order_id, operation_id, info.get("amount"))
+                except TochkaError:
+                    continue
+        except Exception:
+            pass
+        time.sleep(60)
 
 
 threading.Thread(target=reminder_worker, daemon=True).start()
@@ -5595,7 +5660,10 @@ start_account_api(
     read_mini_app_payment,
     accept_tochka_webhook,
 )
-threading.Thread(target=tochka_webhook_worker, daemon=True, name="tochka-webhook").start()
+threading.Thread(target=tochka_setup_worker, daemon=True, name="tochka-setup").start()
+threading.Thread(
+    target=tochka_payment_reconciliation_worker, daemon=True, name="tochka-reconciliation"
+).start()
 bot.remove_webhook()
 time.sleep(1)
 bot.polling(none_stop=True)

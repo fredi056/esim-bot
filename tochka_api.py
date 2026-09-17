@@ -24,7 +24,10 @@ TOCHKA_WEBHOOK_JWK = {
 
 
 class TochkaError(RuntimeError):
-    pass
+    def __init__(self, code, detail=""):
+        super().__init__(code)
+        self.code = code
+        self.detail = detail
 
 
 class TochkaClient:
@@ -63,8 +66,24 @@ class TochkaClient:
             with urlopen(request, timeout=12, context=self._ssl_context) as response:
                 result = json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
-            # Do not propagate a response that could contain credentials or personal data.
-            raise TochkaError(f"tochka_http_{exc.code}") from exc
+            detail = ""
+            try:
+                error_data = json.loads(exc.read(8192).decode("utf-8"))
+                if isinstance(error_data, dict):
+                    detail = str(
+                        error_data.get("message") or error_data.get("Message")
+                        or error_data.get("code") or error_data.get("Code") or ""
+                    )
+                    errors = error_data.get("Errors") or error_data.get("errors") or []
+                    if not detail and isinstance(errors, list) and errors and isinstance(errors[0], dict):
+                        detail = str(
+                            errors[0].get("message") or errors[0].get("Message")
+                            or errors[0].get("errorCode") or errors[0].get("ErrorCode") or ""
+                        )
+                    detail = detail[:300]
+            except Exception:
+                pass
+            raise TochkaError(f"tochka_http_{exc.code}", detail) from exc
         except (URLError, TimeoutError, UnicodeError, json.JSONDecodeError) as exc:
             raise TochkaError("tochka_unavailable") from exc
         if not isinstance(result, dict):
@@ -148,10 +167,8 @@ class TochkaClient:
             current = None
         if current:
             current_url = current.get("url")
-            if current_url != url:
-                raise TochkaError("tochka_webhook_url_conflict")
             events = list(dict.fromkeys((current.get("webhooksList") or []) + ["acquiringInternetPayment"]))
-            if events != (current.get("webhooksList") or []):
+            if current_url != url or events != (current.get("webhooksList") or []):
                 self._request("POST", path, {"webhooksList": events, "url": url})
             return
         self._request("PUT", path, {"webhooksList": ["acquiringInternetPayment"], "url": url})
