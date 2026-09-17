@@ -16,6 +16,7 @@ import telebot
 from telebot import types
 
 from account_api import ApiError, delivery_data, read_account, start_account_api
+from banana_api import BananaClient, BananaError
 from tochka_api import TochkaClient, TochkaError
 
 TOKEN = os.getenv("TOKEN")
@@ -106,6 +107,7 @@ add_column_if_not_exists("users", "active_partner_code", "TEXT DEFAULT ''")
 add_column_if_not_exists("users", "active_partner_until", "INTEGER DEFAULT 0")
 
 tochka = TochkaClient()
+banana = BananaClient()
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS reminder_jobs (
@@ -5326,6 +5328,11 @@ def _format_tochka_error(exc: TochkaError) -> str:
     return f"{str(exc)}{f' — {detail}' if detail else ''}"[:450]
 
 
+def _format_banana_error(exc: BananaError) -> str:
+    detail = re.sub(r"[\r\n]+", " ", getattr(exc, "detail", "") or "").strip()
+    return f"{str(exc)}{f' — {detail}' if detail else ''}"[:450]
+
+
 def create_mini_app_payment(telegram_user: Dict[str, Any], body: Dict[str, Any]) -> Dict[str, Any]:
     if not TOCHKA_PAYMENTS_ENABLED:
         raise ApiError(503, "payments_not_enabled")
@@ -5658,6 +5665,28 @@ def tochka_payment_reconciliation_worker() -> None:
         time.sleep(60)
 
 
+def banana_setup_worker() -> None:
+    if not banana.configured:
+        _notify_admin_safe(
+            "⚠️ API поставщика Banana не настроен\n"
+            "Добавьте BANANA_PARTNER_KEY в Railway для сервиса esim-bot."
+        )
+        return
+    time.sleep(30)
+    try:
+        banana.health()
+    except BananaError as exc:
+        _notify_admin_safe(
+            "⚠️ API поставщика Banana недоступен\n"
+            f"Код: {_format_banana_error(exc)}"
+        )
+        return
+    _notify_admin_safe(
+        "✅ API поставщика Banana доступен\n\n"
+        "Проверка подключения выполнена без создания eSIM."
+    )
+
+
 threading.Thread(target=reminder_worker, daemon=True).start()
 start_account_api(
     os.getenv("ACCOUNT_API_HOST", "0.0.0.0"),
@@ -5673,6 +5702,7 @@ threading.Thread(target=tochka_setup_worker, daemon=True, name="tochka-setup").s
 threading.Thread(
     target=tochka_payment_reconciliation_worker, daemon=True, name="tochka-reconciliation"
 ).start()
+threading.Thread(target=banana_setup_worker, daemon=True, name="banana-setup").start()
 bot.remove_webhook()
 time.sleep(1)
 bot.polling(none_stop=True)
