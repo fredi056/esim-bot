@@ -5617,7 +5617,7 @@ def tochka_setup_worker() -> None:
                     f"Код: {_format_tochka_error(exc)}"
                 )
                 webhook_failure_notified = True
-            time.sleep(5 * 60)
+            time.sleep(60)
 
 
 def tochka_payment_reconciliation_worker() -> None:
