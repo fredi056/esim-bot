@@ -5611,6 +5611,15 @@ def tochka_setup_worker() -> None:
             _notify_admin_safe("✅ Уведомления об оплатах Точки подключены")
             return
         except TochkaError as exc:
+            if (
+                str(exc) == "tochka_http_400"
+                and "Failed to test webhook url accessibility" in (getattr(exc, "detail", "") or "")
+            ):
+                _notify_admin_safe(
+                    "ℹ️ Точка не может открыть webhook на Railway. "
+                    "Включена автоматическая проверка оплат через API раз в минуту."
+                )
+                return
             if not webhook_failure_notified:
                 _notify_admin_safe(
                     "⚠️ Не удалось подключить уведомления Точки\n"
