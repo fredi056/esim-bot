@@ -142,6 +142,8 @@ def create_account_server(host, port, token, read, read_image, create_payment=No
             if is_webhook:
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
+                    if length == 0 and not self.headers.get("Transfer-Encoding"):
+                        return self.reply(200, {"ok": True})
                     if not 0 < length <= 50000 or self.headers.get("Transfer-Encoding"):
                         return self.reply(413, {"error": "invalid_body_size"})
                     token_body = self.rfile.read(length).decode("ascii").strip()
@@ -150,9 +152,14 @@ def create_account_server(host, port, token, read, read_image, create_payment=No
                     accept_webhook(token_body)
                     return self.reply(200, {"ok": True})
                 except ApiError as exc:
+                    # Tochka checks URL accessibility with a test POST while creating
+                    # a webhook. Acknowledge non-payment probes, but process no order
+                    # unless accept_webhook verifies the signature and payload.
+                    if exc.status in (400, 401):
+                        return self.reply(200, {"ok": True})
                     return self.reply(exc.status, {"error": exc.code})
                 except (UnicodeError, ValueError):
-                    return self.reply(401, {"error": "invalid_webhook"})
+                    return self.reply(200, {"ok": True})
                 except Exception:
                     return self.reply(503, {"error": "webhook_unavailable"})
 

@@ -38,6 +38,7 @@ class TochkaClient:
         self.customer_code = os.getenv("TOCHKA_CUSTOMER_CODE", "").strip()
         self.merchant_id = os.getenv("TOCHKA_MERCHANT_ID", "").strip()
         self.payment_modes = None
+        self._merchant_details_loaded = False
         self._lock = threading.Lock()
         self._ssl_context = ssl.create_default_context(cafile=certifi.where())
         self._ssl_context.load_verify_locations(
@@ -70,16 +71,20 @@ class TochkaClient:
             try:
                 error_data = json.loads(exc.read(8192).decode("utf-8"))
                 if isinstance(error_data, dict):
-                    detail = str(
+                    general_detail = str(
                         error_data.get("message") or error_data.get("Message")
                         or error_data.get("code") or error_data.get("Code") or ""
                     )
                     errors = error_data.get("Errors") or error_data.get("errors") or []
-                    if not detail and isinstance(errors, list) and errors and isinstance(errors[0], dict):
-                        detail = str(
+                    specific_detail = ""
+                    if isinstance(errors, list) and errors and isinstance(errors[0], dict):
+                        specific_detail = str(
                             errors[0].get("message") or errors[0].get("Message")
                             or errors[0].get("errorCode") or errors[0].get("ErrorCode") or ""
                         )
+                    detail = specific_detail or general_detail
+                    if general_detail and specific_detail and general_detail != specific_detail:
+                        detail = f"{general_detail}: {specific_detail}"
                     detail = detail[:300]
             except Exception:
                 pass
@@ -105,10 +110,8 @@ class TochkaClient:
             return self.customer_code
 
     def resolve_merchant_id(self, customer_code):
-        if self.merchant_id:
-            return self.merchant_id
         with self._lock:
-            if self.merchant_id:
+            if self.merchant_id and self._merchant_details_loaded:
                 return self.merchant_id
             response = self._request(
                 "GET", "/acquiring/v1.0/retailers", query={"customerCode": customer_code}
@@ -118,7 +121,15 @@ class TochkaClient:
                 item for item in retailers
                 if item.get("status") == "REG" and item.get("isActive") is True and item.get("merchantId")
             ]
-            if len(active) != 1:
+            if self.merchant_id:
+                selected = [item for item in active if str(item.get("merchantId")) == self.merchant_id]
+                if len(selected) != 1:
+                    raise TochkaError(
+                        "tochka_retailer_unavailable",
+                        f"Торговая точка {self.merchant_id} не найдена или не активна",
+                    )
+                active = selected
+            elif len(active) != 1:
                 candidates = active or [item for item in retailers if item.get("merchantId")]
                 labels = []
                 for item in candidates[:8]:
@@ -156,6 +167,7 @@ class TochkaClient:
             self.payment_modes = [mode for mode in ("sbp", "card") if mode in available_modes]
             if not self.payment_modes:
                 raise TochkaError("tochka_payment_modes_unavailable")
+            self._merchant_details_loaded = True
             return self.merchant_id
 
     def create_payment(self, order_id, amount, purpose, redirect_url, fail_redirect_url):

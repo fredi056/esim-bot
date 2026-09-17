@@ -5315,7 +5315,7 @@ def _payment_api_error(exc: TochkaError) -> str:
         return "bank_access_denied"
     if code in (
         "tochka_customer_ambiguous", "tochka_retailer_ambiguous",
-        "tochka_payment_modes_unavailable", "tochka_http_404"
+        "tochka_retailer_unavailable", "tochka_payment_modes_unavailable", "tochka_http_404"
     ):
         return "bank_setup_required"
     return "bank_payment_unavailable"
