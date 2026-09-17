@@ -1339,6 +1339,10 @@ def mini_app_receipt_keyboard():
 def main_keyboard(user_id: Optional[int] = None):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     if MINI_APP_URL:
+        kb.add(types.KeyboardButton(
+            "🚀 Открыть eSIMLime",
+            web_app=types.WebAppInfo(url=MINI_APP_URL)
+        ))
         kb.add("🎁 Пригласить друга — 100 ₽")
         if user_id == ADMIN_ID:
             kb.add("📊 Статистика", "📦 Заказы")
@@ -2663,14 +2667,9 @@ def show_main(chat_id: int, user_id: int, add_to_history: bool = True):
 
     bot.send_message(chat_id, text, reply_markup=main_keyboard(user_id))
     if MINI_APP_URL:
-        cabinet_url = MINI_APP_URL.split("#", 1)[0]
-        cabinet_url += ("&" if "?" in cabinet_url else "?") + "view=esims"
         cabinet_keyboard = types.InlineKeyboardMarkup(row_width=1)
         cabinet_keyboard.add(types.InlineKeyboardButton(
             "🚀 Открыть eSIMLime", web_app=types.WebAppInfo(url=MINI_APP_URL)
-        ))
-        cabinet_keyboard.add(types.InlineKeyboardButton(
-            "📱 Мои eSIM и профиль", web_app=types.WebAppInfo(url=cabinet_url)
         ))
         bot.send_message(chat_id, "Каталог, ваши eSIM, установка и бонусы:", reply_markup=cabinet_keyboard)
 
