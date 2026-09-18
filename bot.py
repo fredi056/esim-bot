@@ -4104,6 +4104,70 @@ def banana_resolve_handler(message):
         "\n".join(f"{label}: {value}" for label, value in details if value is not None)
     )
 
+
+@bot.message_handler(commands=["banana_issue_test"])
+def banana_issue_test_handler(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    parts = (message.text or "").split()
+    if len(parts) != 4 or parts[3].upper() != "CONFIRM":
+        bot.send_message(
+            message.chat.id,
+            "⚠️ Эта команда выпускает eSIM у поставщика и может списать стоимость товара.\n\n"
+            "Для подтверждения используйте:\n"
+            "/banana_issue_test PRODUCT_ID VARIATION_ID CONFIRM"
+        )
+        return
+    try:
+        product_id = int(parts[1])
+        variation_id = int(parts[2])
+    except ValueError:
+        bot.send_message(message.chat.id, "ID товара и вариации должны быть числами.")
+        return
+    if not banana.configured:
+        bot.send_message(message.chat.id, "API Banana не настроен.")
+        return
+    try:
+        product = banana.resolve_product(product_id, variation_id)
+        if not isinstance(product, dict):
+            raise BananaError("banana_invalid_product_response")
+        if product.get("unlimited") is True or product.get("partner_provider") != "supplier_standard":
+            raise BananaError("banana_test_product_not_standard")
+        # This stable key makes retries idempotent: the same command must return
+        # the original test eSIM instead of issuing another one.
+        test_order_id = f"banana-test-{product_id}-{variation_id}-v1"
+        result = banana.create_line(test_order_id, product_id, variation_id)
+    except BananaError as exc:
+        bot.send_message(
+            message.chat.id,
+            "⚠️ Banana не выпустил тестовую eSIM\n"
+            f"Код: {_format_banana_error(exc)}"
+        )
+        return
+    sim_card = result.get("sim_card") if isinstance(result, dict) else None
+    if not isinstance(sim_card, dict):
+        bot.send_message(message.chat.id, "⚠️ Banana выпустил товар, но вернул неизвестный формат eSIM.")
+        return
+    iccid = str(sim_card.get("iccid") or "").strip()
+    lpa_code = str(sim_card.get("lpa_code") or "").strip()
+    if not iccid or not lpa_code.startswith("LPA:1$"):
+        bot.send_message(message.chat.id, "⚠️ В ответе Banana отсутствует ICCID или LPA-код.")
+        return
+    install_url = (
+        "https://esimsetup.apple.com/esim_qrcode_provisioning?" +
+        urlencode({"carddata": lpa_code})
+    )
+    bot.send_message(
+        message.chat.id,
+        "✅ Тестовая eSIM выпущена\n\n"
+        f"ICCID: {iccid}\n"
+        f"Статус: {sim_card.get('status') or 'не указан'}\n"
+        f"Остаток: {sim_card.get('remaining_usage_kb', 0)} КБ\n"
+        f"Срок: {sim_card.get('remaining_days', 0)} дн.\n\n"
+        f"Ссылка установки:\n{install_url}\n\n"
+        f"LPA-код:\n{lpa_code}"
+    )
+
 @bot.message_handler(commands=["sendqr"])
 def sendqr_handler(message):
     global admin_send_qr_target, admin_send_qr_order_id
