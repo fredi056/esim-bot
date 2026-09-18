@@ -1,5 +1,6 @@
 import json
 import hashlib
+import html
 import mimetypes
 import os
 import re
@@ -4182,116 +4183,6 @@ def banana_issue_test_handler(message):
     )
 
 
-@bot.message_handler(commands=["banana_test_sale"])
-def banana_test_sale_handler(message):
-    """Create a hidden 14-ruble end-to-end payment test for the admin."""
-    if message.from_user.id != ADMIN_ID:
-        return
-    parts = (message.text or "").split()
-    if len(parts) != 2 or parts[1].upper() != "CONFIRM":
-        bot.send_message(
-            message.chat.id,
-            "⚠️ Команда создаст настоящую оплату на 14 ₽ в Точке. После оплаты "
-            "бот автоматически запросит техническую eSIM у Banana.\n\n"
-            "Для подтверждения используйте:\n/banana_test_sale CONFIRM"
-        )
-        return
-    if not TOCHKA_PAYMENTS_ENABLED or not tochka.configured:
-        bot.send_message(message.chat.id, "Оплата через Точку не настроена.")
-        return
-    if not banana.configured:
-        bot.send_message(message.chat.id, "API Banana не настроен.")
-        return
-
-    remember_user_from_message(message)
-    now = int(time.time())
-    with closing(_payment_db()) as db:
-        existing = db.execute(
-            """
-            SELECT id, payment_url FROM orders
-            WHERE user_id=? AND status='payment_pending' AND payment_provider='tochka'
-              AND plan_type='supplier_test' AND created_at>=?
-            ORDER BY id DESC LIMIT 1
-            """,
-            (message.from_user.id, now - 20 * 60),
-        ).fetchone()
-    if existing and existing[1]:
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("💳 Оплатить 14 ₽", url=existing[1]))
-        bot.send_message(
-            message.chat.id,
-            f"Повторно использую уже созданный тестовый заказ #{existing[0]}.",
-            reply_markup=markup,
-        )
-        return
-
-    with closing(_payment_db()) as db:
-        db.execute(
-            """
-            INSERT INTO orders (
-                user_id, text, price, pay_amount, discount_used, status, country, tariff,
-                created_at, plan_type, supplier_key, supplier_tariff,
-                supplier_product_id, supplier_variation_id, supplier_status,
-                payment_provider, payment_link_id, payment_status, payment_created_at,
-                legal_acceptance
-            ) VALUES (?, ?, 14, 14, 0, 'payment_pending', ?, ?, ?, 'supplier_test',
-                      'banana', '40', 40, 0, '', 'tochka', '', 'CREATING', ?, ?)
-            """,
-            (
-                message.from_user.id,
-                "Техническая eSIM Banana, товар 40",
-                "Технический тест",
-                "Тех тариф",
-                now,
-                now,
-                json.dumps({"test_sale": True, "recorded_at": now}, ensure_ascii=False),
-            ),
-        )
-        order_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-        db.execute("UPDATE orders SET payment_link_id=? WHERE id=?", (f"esimlime-{order_id}", order_id))
-        db.commit()
-
-    redirect_base = os.getenv("TOCHKA_REDIRECT_URL", "https://esimlime.ru/?payment=success").strip()
-    fail_redirect = os.getenv("TOCHKA_FAIL_REDIRECT_URL", "https://esimlime.ru/?payment=failed").strip()
-    redirect_url = f"{redirect_base}{'&' if '?' in redirect_base else '?'}order_id={order_id}"
-    fail_redirect_url = f"{fail_redirect}{'&' if '?' in fail_redirect else '?'}order_id={order_id}"
-    try:
-        payment = tochka.create_payment(
-            order_id, 14, f"Техническая eSIM, заказ №{order_id}", redirect_url, fail_redirect_url
-        )
-    except TochkaError as exc:
-        with closing(_payment_db()) as db:
-            db.execute(
-                "UPDATE orders SET status='payment_error', payment_status=? WHERE id=?",
-                (str(exc)[:100], order_id),
-            )
-            db.commit()
-        bot.send_message(
-            message.chat.id,
-            "⚠️ Точка не создала ссылку оплаты\n" f"Код: {_format_tochka_error(exc)}",
-        )
-        return
-
-    with closing(_payment_db()) as db:
-        db.execute(
-            """
-            UPDATE orders SET payment_operation_id=?, payment_url=?, payment_status=?
-            WHERE id=? AND status='payment_pending'
-            """,
-            (payment["operationId"], payment["paymentLink"], payment.get("status", "CREATED"), order_id),
-        )
-        db.commit()
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("💳 Оплатить 14 ₽", url=payment["paymentLink"]))
-    bot.send_message(
-        message.chat.id,
-        f"🧪 Тестовый заказ #{order_id} создан.\n\n"
-        "После подтверждения оплаты бот сам выпустит eSIM, пришлёт данные сюда "
-        "и сохранит их в «Мои eSIM». Техническую eSIM устанавливать не нужно.",
-        reply_markup=markup,
-    )
-
-
 @bot.message_handler(commands=["sendqr"])
 def sendqr_handler(message):
     global admin_send_qr_target, admin_send_qr_order_id
@@ -5516,10 +5407,31 @@ def _valid_checkout_email(value: Any) -> Optional[str]:
     return email
 
 
-def _validated_api_order(body: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _validated_api_order(body: Dict[str, Any], user_id: int) -> Optional[Dict[str, Any]]:
     plan_type = body.get("plan_type", "")
+    if plan_type == "supplier_test":
+        if (
+            user_id != ADMIN_ID
+            or body.get("country") != "Технический тест"
+            or body.get("tariff") != "Тех тариф"
+            or body.get("displayed_price") != 14
+        ):
+            return None
+        return {
+            "country": "Технический тест", "tariff": "Тех тариф", "price": 14,
+            "plan": None, "plan_type": "supplier_test", "days": 0,
+            "unlimited_key": "banana", "supplier_tariff": "40",
+            "post_limit_speed": "", "daily_high_speed_gb": 0,
+            "supplier_product_id": 40, "supplier_variation_id": 0,
+        }
     if plan_type == "unlimited":
-        return validate_unlimited_order_payload(body)
+        order = validate_unlimited_order_payload(body)
+        if order:
+            order.update({
+                "plan_type": "unlimited", "supplier_product_id": 0,
+                "supplier_variation_id": 0,
+            })
+        return order
     if plan_type not in ("", None):
         return None
     country = body.get("country")
@@ -5535,8 +5447,10 @@ def _validated_api_order(body: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
     return {
         "country": country, "tariff": tariff, "price": price, "plan": None,
+        "plan_type": "",
         "days": 0, "unlimited_key": "", "supplier_tariff": "",
         "post_limit_speed": "", "daily_high_speed_gb": 0,
+        "supplier_product_id": 0, "supplier_variation_id": 0,
     }
 
 
@@ -5574,19 +5488,20 @@ def create_mini_app_payment(telegram_user: Dict[str, Any], body: Dict[str, Any])
         raise ApiError(503, "payments_not_enabled")
     if not tochka.configured:
         raise ApiError(503, "payments_not_configured")
-    email = _valid_checkout_email(body.get("customer_email"))
+    email_value = body.get("customer_email")
+    email = _valid_checkout_email(email_value) if email_value not in (None, "") else ""
     legal = body.get("legal_acceptance")
-    if not email or not isinstance(legal, dict):
+    if (email_value not in (None, "") and not email) or not isinstance(legal, dict):
         raise ApiError(400, "invalid_checkout_data")
     if not all(isinstance(legal.get(key), str) and legal[key] for key in (
         "offer_version", "personal_data_consent_version", "accepted_at"
     )):
         raise ApiError(400, "legal_acceptance_required")
-    order = _validated_api_order(body)
+    user_id = telegram_user["id"]
+    order = _validated_api_order(body, user_id)
     if not order:
         raise ApiError(409, "tariff_changed")
 
-    user_id = telegram_user["id"]
     now = int(time.time())
     db = _payment_db()
     try:
@@ -5634,16 +5549,18 @@ def create_mini_app_payment(telegram_user: Dict[str, Any], body: Dict[str, Any])
                 user_id, text, price, pay_amount, discount_used, status, country, tariff, created_at,
                 source_code, partner_code, partner_rate, partner_commission, plan_type, supplier_key,
                 supplier_tariff, duration_days, post_limit_speed, daily_high_speed_gb, customer_email,
-                legal_acceptance, payment_provider, payment_link_id, payment_status, payment_created_at
+                legal_acceptance, payment_provider, payment_link_id, payment_status, payment_created_at,
+                supplier_product_id, supplier_variation_id, supplier_status
             ) VALUES (?, ?, ?, ?, 0, 'payment_pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                      'tochka', '', 'CREATING', ?)
+                      'tochka', '', 'CREATING', ?, ?, ?, '')
             """,
             (
                 user_id, text, order["price"], order["price"], order["country"], order["tariff"], now,
                 source_code, partner_code, partner_rate, partner_commission,
-                "unlimited" if order["plan"] else "", order["unlimited_key"], order["supplier_tariff"],
+                order["plan_type"], order["unlimited_key"], order["supplier_tariff"],
                 order["days"], order["post_limit_speed"], order["daily_high_speed_gb"], email,
                 json.dumps({**legal, "recorded_at": now}, ensure_ascii=False), now,
+                order["supplier_product_id"], order["supplier_variation_id"],
             )
         )
         order_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -5793,16 +5710,70 @@ def provision_paid_supplier_order(order_id: int) -> bool:
         )
         return False
 
-    test_note = (
-        "\n\n⚠️ Это техническая тестовая eSIM. Не устанавливайте её на телефон."
-        if plan_type == "supplier_test" else ""
+    lpa_parts = lpa_code.split("$", 2)
+    smdp_address = lpa_parts[1] if len(lpa_parts) == 3 else ""
+    activation_code = lpa_parts[2] if len(lpa_parts) == 3 else ""
+    android_install_url = (
+        "https://esimsetup.android.com/esim_qrcode_provisioning?" +
+        urlencode({"carddata": lpa_code})
     )
+    qr_url = (
+        "https://api.qrserver.com/v1/create-qr-code/?" +
+        urlencode({"size": "300x300", "data": lpa_code})
+    )
+    traffic_kb = (
+        _supplier_int(sim_card.get("allowed_usage_kb"))
+        or _supplier_int(sim_card.get("remaining_usage_kb"))
+    )
+    traffic_mb = traffic_kb // 1024
+    remaining_days = _supplier_int(sim_card.get("remaining_days"))
+    plan_summary = f"{remaining_days} дн / {traffic_mb} МБ" if remaining_days or traffic_mb else ""
+    title = f"Ваши eSIM по заказу #{order_id}\n\n<b>eSIM #1</b>\n{html.escape(country)} — {html.escape(tariff)}"
+    if plan_summary:
+        title += f"\n{html.escape(plan_summary)}"
+    title += "\n\n<b>📱 Установка через QR:</b>"
+
+    qr_file_id = ""
+    try:
+        qr_message = bot.send_photo(user_id, qr_url, caption=title, parse_mode="HTML")
+        if getattr(qr_message, "photo", None):
+            qr_file_id = qr_message.photo[-1].file_id
+    except Exception:
+        bot.send_message(user_id, title, parse_mode="HTML")
+
+    if qr_file_id:
+        with closing(_payment_db()) as db:
+            db.execute("UPDATE orders SET esim_file_id=? WHERE id=?", (qr_file_id, order_id))
+            db.commit()
+
+    details = (
+        "Если QR не отображается, откройте ссылку:\n"
+        f'<a href="{html.escape(qr_url, quote=True)}">Открыть QR-код</a>\n\n'
+        "<b>⚡ Автоматическая установка:</b>\n"
+        f'<a href="{html.escape(install_url, quote=True)}"><b>🍏 Автоустановка iPhone</b></a>  '
+        f'<a href="{html.escape(android_install_url, quote=True)}"><b>🤖 Автоустановка Android</b></a>\n\n'
+        "<b>📲 Android — ручной ввод:</b>\n"
+        f"<code>{html.escape(lpa_code)}</code>\n\n"
+        "<b>🍏 iPhone — ввести вручную:</b>\n"
+        f"SM-DP+ Address: <code>{html.escape(smdp_address)}</code>\n"
+        f"Код активации: <code>{html.escape(activation_code)}</code>\n\n"
+        f"<b>ICCID:</b> <code>{html.escape(iccid)}</code>\n\n"
+        "──────────\n\n"
+        "<b>📌 После установки:</b>\n\n"
+        "1. Включите роуминг в настройках eSIM.\n"
+        "2. По прилёте выберите eSIM для передачи данных.\n\n"
+        "⚠️ QR-код одноразовый — не удаляйте eSIM с устройства: восстановить её может быть невозможно.\n\n"
+        "──────────\n\n"
+        "<b>💳 Остаток и управление:</b>\n"
+        '<a href="https://t.me/esimlimebot?startapp=account">Открыть «Мои eSIM»</a>'
+    )
+    if plan_type == "supplier_test":
+        details += "\n\n⚠️ Это техническая тестовая eSIM. Не устанавливайте её на телефон."
     bot.send_message(
         user_id,
-        f"✅ Ваша eSIM готова\n\nЗаказ #{order_id}\n{country} — {tariff}\n"
-        f"ICCID: {iccid}\nСтатус: {provider_status or 'active'}\n\n"
-        f"Ссылка для установки:\n{install_url}\n\nLPA-код:\n{lpa_code}"
-        f"{test_note}\n\nДанные также сохранены в разделе «Мои eSIM».",
+        details,
+        parse_mode="HTML",
+        disable_web_page_preview=True,
         reply_markup=main_keyboard(user_id),
     )
     _notify_admin_safe(
