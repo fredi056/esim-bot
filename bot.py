@@ -112,6 +112,7 @@ add_column_if_not_exists("orders", "supplier_remaining_days", "INTEGER DEFAULT 0
 add_column_if_not_exists("orders", "supplier_expire_at", "TEXT DEFAULT ''")
 add_column_if_not_exists("orders", "supplier_requested_at", "INTEGER DEFAULT 0")
 add_column_if_not_exists("orders", "supplier_issued_at", "INTEGER DEFAULT 0")
+add_column_if_not_exists("orders", "supplier_delivered_at", "INTEGER DEFAULT 0")
 add_column_if_not_exists("orders", "supplier_last_error", "TEXT DEFAULT ''")
 add_column_if_not_exists("users", "username", "TEXT DEFAULT ''")
 add_column_if_not_exists("users", "first_name", "TEXT DEFAULT ''")
@@ -5631,6 +5632,114 @@ def _supplier_int(value: Any) -> int:
         return 0
 
 
+def deliver_supplier_order(order_id: int) -> bool:
+    with closing(_payment_db()) as db:
+        row = db.execute(
+            """
+            SELECT user_id, country, tariff, plan_type, supplier_iccid, supplier_lpa_code,
+                   supplier_provider_status, supplier_remaining_usage_kb,
+                   supplier_allowed_usage_kb, supplier_remaining_days, install_url,
+                   esim_file_id, supplier_delivered_at
+            FROM orders
+            WHERE id=? AND status='paid' AND supplier_status='issued'
+            """,
+            (order_id,),
+        ).fetchone()
+    if not row:
+        return False
+    if _supplier_int(row[12]) > 0:
+        return True
+
+    user_id, country, tariff, plan_type = row[0], row[1], row[2], row[3]
+    iccid, lpa_code, provider_status = row[4], row[5], row[6]
+    install_url, existing_qr_file_id = row[10], row[11]
+    if not iccid or not str(lpa_code or "").startswith("LPA:1$") or not install_url:
+        _notify_admin_safe(
+            f"⚠️ eSIM заказа #{order_id} выпущена, но данные установки неполные."
+        )
+        return False
+
+    lpa_parts = lpa_code.split("$", 2)
+    smdp_address = lpa_parts[1] if len(lpa_parts) == 3 else ""
+    activation_code = lpa_parts[2] if len(lpa_parts) == 3 else ""
+    android_install_url = (
+        "https://esimsetup.android.com/esim_qrcode_provisioning?" +
+        urlencode({"carddata": lpa_code})
+    )
+    qr_url = (
+        "https://api.qrserver.com/v1/create-qr-code/?" +
+        urlencode({"size": "300x300", "data": lpa_code})
+    )
+    traffic_kb = _supplier_int(row[8]) or _supplier_int(row[7])
+    traffic_mb = traffic_kb // 1024
+    remaining_days = _supplier_int(row[9])
+    plan_summary = f"{remaining_days} дн / {traffic_mb} МБ" if remaining_days or traffic_mb else ""
+    title = f"Ваши eSIM по заказу #{order_id}\n\n<b>eSIM #1</b>\n{html.escape(country)} — {html.escape(tariff)}"
+    if plan_summary:
+        title += f"\n{html.escape(plan_summary)}"
+    title += "\n\n<b>📱 Установка через QR:</b>"
+
+    try:
+        qr_message = bot.send_photo(
+            user_id, existing_qr_file_id or qr_url, caption=title, parse_mode="HTML"
+        )
+        qr_file_id = existing_qr_file_id
+        if getattr(qr_message, "photo", None):
+            qr_file_id = qr_message.photo[-1].file_id
+        if qr_file_id and qr_file_id != existing_qr_file_id:
+            with closing(_payment_db()) as db:
+                db.execute("UPDATE orders SET esim_file_id=? WHERE id=?", (qr_file_id, order_id))
+                db.commit()
+
+        details = (
+            "Если QR не отображается, откройте ссылку:\n"
+            f'<a href="{html.escape(qr_url, quote=True)}">Открыть QR-код</a>\n\n'
+            "<b>⚡ Автоматическая установка:</b>\n"
+            f'<a href="{html.escape(install_url, quote=True)}">🍏 Автоустановка iPhone</a>  '
+            f'<a href="{html.escape(android_install_url, quote=True)}">🤖 Автоустановка Android</a>\n\n'
+            "<b>📲 Android — ручной ввод:</b>\n"
+            f"<code>{html.escape(lpa_code)}</code>\n\n"
+            "<b>🍏 iPhone — ввести вручную:</b>\n"
+            f"SM-DP+ Address: <code>{html.escape(smdp_address)}</code>\n"
+            f"Код активации: <code>{html.escape(activation_code)}</code>\n\n"
+            f"<b>ICCID:</b> <code>{html.escape(iccid)}</code>\n\n"
+            "──────────\n\n"
+            "<b>📌 После установки:</b>\n\n"
+            "1. Включите роуминг в настройках eSIM.\n"
+            "2. По прилёте выберите eSIM для передачи данных.\n\n"
+            "⚠️ QR-код одноразовый — не удаляйте eSIM с устройства: восстановить её может быть невозможно.\n\n"
+            "──────────\n\n"
+            "<b>💳 Остаток и управление:</b>\n"
+            '<a href="https://t.me/esimlimebot?startapp=account">Открыть «Мои eSIM»</a>'
+        )
+        if plan_type == "supplier_test":
+            details += "\n\n⚠️ Это техническая тестовая eSIM. Не устанавливайте её на телефон."
+        bot.send_message(
+            user_id, details, parse_mode="HTML", disable_web_page_preview=True,
+            reply_markup=main_keyboard(user_id),
+        )
+    except Exception as exc:
+        _notify_admin_safe(
+            f"⚠️ eSIM заказа #{order_id} выпущена, но сообщение не доставлено\n"
+            f"Код: telegram_delivery_{type(exc).__name__}\n"
+            "Доставка будет повторена автоматически."
+        )
+        return False
+
+    delivered_at = int(time.time())
+    with closing(_payment_db()) as db:
+        db.execute(
+            "UPDATE orders SET supplier_delivered_at=? WHERE id=? AND supplier_delivered_at=0",
+            (delivered_at, order_id),
+        )
+        db.commit()
+    _notify_admin_safe(
+        f"✅ Banana автоматически выдал eSIM\n\nЗаказ #{order_id}\n"
+        f"Покупатель: {format_user_for_admin(user_id)}\nICCID: {iccid}"
+    )
+    return True
+
+
 def provision_paid_supplier_order(order_id: int) -> bool:
     """Issue and persist an eSIM for a paid supplier-backed order."""
     now = int(time.time())
@@ -5730,77 +5839,7 @@ def provision_paid_supplier_order(order_id: int) -> bool:
         )
         return False
 
-    lpa_parts = lpa_code.split("$", 2)
-    smdp_address = lpa_parts[1] if len(lpa_parts) == 3 else ""
-    activation_code = lpa_parts[2] if len(lpa_parts) == 3 else ""
-    android_install_url = (
-        "https://esimsetup.android.com/esim_qrcode_provisioning?" +
-        urlencode({"carddata": lpa_code})
-    )
-    qr_url = (
-        "https://api.qrserver.com/v1/create-qr-code/?" +
-        urlencode({"size": "300x300", "data": lpa_code})
-    )
-    traffic_kb = (
-        _supplier_int(sim_card.get("allowed_usage_kb"))
-        or _supplier_int(sim_card.get("remaining_usage_kb"))
-    )
-    traffic_mb = traffic_kb // 1024
-    remaining_days = _supplier_int(sim_card.get("remaining_days"))
-    plan_summary = f"{remaining_days} дн / {traffic_mb} МБ" if remaining_days or traffic_mb else ""
-    title = f"Ваши eSIM по заказу #{order_id}\n\n<b>eSIM #1</b>\n{html.escape(country)} — {html.escape(tariff)}"
-    if plan_summary:
-        title += f"\n{html.escape(plan_summary)}"
-    title += "\n\n<b>📱 Установка через QR:</b>"
-
-    qr_file_id = ""
-    try:
-        qr_message = bot.send_photo(user_id, qr_url, caption=title, parse_mode="HTML")
-        if getattr(qr_message, "photo", None):
-            qr_file_id = qr_message.photo[-1].file_id
-    except Exception:
-        bot.send_message(user_id, title, parse_mode="HTML")
-
-    if qr_file_id:
-        with closing(_payment_db()) as db:
-            db.execute("UPDATE orders SET esim_file_id=? WHERE id=?", (qr_file_id, order_id))
-            db.commit()
-
-    details = (
-        "Если QR не отображается, откройте ссылку:\n"
-        f'<a href="{html.escape(qr_url, quote=True)}">Открыть QR-код</a>\n\n'
-        "<b>⚡ Автоматическая установка:</b>\n"
-        f'<a href="{html.escape(install_url, quote=True)}"><b>🍏 Автоустановка iPhone</b></a>  '
-        f'<a href="{html.escape(android_install_url, quote=True)}"><b>🤖 Автоустановка Android</b></a>\n\n'
-        "<b>📲 Android — ручной ввод:</b>\n"
-        f"<code>{html.escape(lpa_code)}</code>\n\n"
-        "<b>🍏 iPhone — ввести вручную:</b>\n"
-        f"SM-DP+ Address: <code>{html.escape(smdp_address)}</code>\n"
-        f"Код активации: <code>{html.escape(activation_code)}</code>\n\n"
-        f"<b>ICCID:</b> <code>{html.escape(iccid)}</code>\n\n"
-        "──────────\n\n"
-        "<b>📌 После установки:</b>\n\n"
-        "1. Включите роуминг в настройках eSIM.\n"
-        "2. По прилёте выберите eSIM для передачи данных.\n\n"
-        "⚠️ QR-код одноразовый — не удаляйте eSIM с устройства: восстановить её может быть невозможно.\n\n"
-        "──────────\n\n"
-        "<b>💳 Остаток и управление:</b>\n"
-        '<a href="https://t.me/esimlimebot?startapp=account">Открыть «Мои eSIM»</a>'
-    )
-    if plan_type == "supplier_test":
-        details += "\n\n⚠️ Это техническая тестовая eSIM. Не устанавливайте её на телефон."
-    bot.send_message(
-        user_id,
-        details,
-        parse_mode="HTML",
-        disable_web_page_preview=True,
-        reply_markup=main_keyboard(user_id),
-    )
-    _notify_admin_safe(
-        f"✅ Banana автоматически выдал eSIM\n\nЗаказ #{order_id}\n"
-        f"Покупатель: {format_user_for_admin(user_id)}\nICCID: {iccid}"
-    )
-    return True
+    return deliver_supplier_order(order_id)
 
 
 def _mark_bank_order_paid(order_id: int, operation_id: str, amount: Any) -> bool:
@@ -6016,12 +6055,13 @@ def tochka_payment_reconciliation_worker() -> None:
         return
     time.sleep(10)
     reported_errors = set()
+    reported_statuses = set()
     while True:
         try:
             with closing(_payment_db()) as db:
                 rows = db.execute(
                     """
-                    SELECT id, payment_operation_id
+                    SELECT id, payment_operation_id, created_at
                     FROM orders
                     WHERE status='payment_pending' AND payment_provider='tochka'
                       AND COALESCE(payment_operation_id, '')!='' AND created_at>=?
@@ -6029,11 +6069,21 @@ def tochka_payment_reconciliation_worker() -> None:
                     """,
                     (int(time.time()) - 3 * 24 * 60 * 60,)
                 ).fetchall()
-            for order_id, operation_id in rows:
+            for order_id, operation_id, created_at in rows:
                 try:
                     info = tochka.get_payment(operation_id)
-                    if info.get("status") == "APPROVED":
+                    bank_status = str(info.get("status") or "UNKNOWN").upper()
+                    if bank_status == "APPROVED":
                         _mark_bank_order_paid(order_id, operation_id, info.get("amount"))
+                    elif int(created_at or 0) < int(time.time()) - 2 * 60:
+                        status_key = (order_id, bank_status)
+                        if status_key not in reported_statuses:
+                            reported_statuses.add(status_key)
+                            _notify_admin_safe(
+                                f"ℹ️ Заказ #{order_id} ещё не подтверждён Точкой\n"
+                                f"Статус банка: {bank_status}\n\n"
+                                "Повторно оплачивать заказ не нужно. Проверка продолжится автоматически."
+                            )
                 except TochkaError as exc:
                     error_key = (str(exc), getattr(exc, "detail", "") or "")
                     if error_key not in reported_errors:
@@ -6069,16 +6119,22 @@ def supplier_fulfillment_worker() -> None:
             with closing(_payment_db()) as db:
                 rows = db.execute(
                     """
-                    SELECT id FROM orders
+                    SELECT id, supplier_status FROM orders
                     WHERE status='paid' AND COALESCE(supplier_product_id, 0)>0
-                      AND COALESCE(supplier_status, '')!='issued'
-                      AND (COALESCE(supplier_status, '')='' OR COALESCE(supplier_requested_at, 0)<=?)
+                      AND (
+                        (COALESCE(supplier_status, '')!='issued'
+                         AND (COALESCE(supplier_status, '')='' OR COALESCE(supplier_requested_at, 0)<=?))
+                        OR (supplier_status='issued' AND COALESCE(supplier_delivered_at, 0)=0)
+                      )
                     ORDER BY id ASC LIMIT 10
                     """,
                     (retry_before,),
                 ).fetchall()
-            for (order_id,) in rows:
-                provision_paid_supplier_order(order_id)
+            for order_id, supplier_status in rows:
+                if supplier_status == "issued":
+                    deliver_supplier_order(order_id)
+                else:
+                    provision_paid_supplier_order(order_id)
         except Exception:
             pass
         time.sleep(60)
