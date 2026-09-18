@@ -99,6 +99,19 @@ add_column_if_not_exists("orders", "payment_link_id", "TEXT DEFAULT ''")
 add_column_if_not_exists("orders", "payment_url", "TEXT DEFAULT ''")
 add_column_if_not_exists("orders", "payment_status", "TEXT DEFAULT ''")
 add_column_if_not_exists("orders", "payment_created_at", "INTEGER DEFAULT 0")
+add_column_if_not_exists("orders", "supplier_product_id", "INTEGER DEFAULT 0")
+add_column_if_not_exists("orders", "supplier_variation_id", "INTEGER DEFAULT 0")
+add_column_if_not_exists("orders", "supplier_status", "TEXT DEFAULT ''")
+add_column_if_not_exists("orders", "supplier_iccid", "TEXT DEFAULT ''")
+add_column_if_not_exists("orders", "supplier_lpa_code", "TEXT DEFAULT ''")
+add_column_if_not_exists("orders", "supplier_provider_status", "TEXT DEFAULT ''")
+add_column_if_not_exists("orders", "supplier_remaining_usage_kb", "INTEGER DEFAULT 0")
+add_column_if_not_exists("orders", "supplier_allowed_usage_kb", "INTEGER DEFAULT 0")
+add_column_if_not_exists("orders", "supplier_remaining_days", "INTEGER DEFAULT 0")
+add_column_if_not_exists("orders", "supplier_expire_at", "TEXT DEFAULT ''")
+add_column_if_not_exists("orders", "supplier_requested_at", "INTEGER DEFAULT 0")
+add_column_if_not_exists("orders", "supplier_issued_at", "INTEGER DEFAULT 0")
+add_column_if_not_exists("orders", "supplier_last_error", "TEXT DEFAULT ''")
 add_column_if_not_exists("users", "username", "TEXT DEFAULT ''")
 add_column_if_not_exists("users", "first_name", "TEXT DEFAULT ''")
 add_column_if_not_exists("users", "first_source", "TEXT DEFAULT ''")
@@ -4168,6 +4181,117 @@ def banana_issue_test_handler(message):
         f"LPA-код:\n{lpa_code}"
     )
 
+
+@bot.message_handler(commands=["banana_test_sale"])
+def banana_test_sale_handler(message):
+    """Create a hidden 14-ruble end-to-end payment test for the admin."""
+    if message.from_user.id != ADMIN_ID:
+        return
+    parts = (message.text or "").split()
+    if len(parts) != 2 or parts[1].upper() != "CONFIRM":
+        bot.send_message(
+            message.chat.id,
+            "⚠️ Команда создаст настоящую оплату на 14 ₽ в Точке. После оплаты "
+            "бот автоматически запросит техническую eSIM у Banana.\n\n"
+            "Для подтверждения используйте:\n/banana_test_sale CONFIRM"
+        )
+        return
+    if not TOCHKA_PAYMENTS_ENABLED or not tochka.configured:
+        bot.send_message(message.chat.id, "Оплата через Точку не настроена.")
+        return
+    if not banana.configured:
+        bot.send_message(message.chat.id, "API Banana не настроен.")
+        return
+
+    remember_user_from_message(message)
+    now = int(time.time())
+    with closing(_payment_db()) as db:
+        existing = db.execute(
+            """
+            SELECT id, payment_url FROM orders
+            WHERE user_id=? AND status='payment_pending' AND payment_provider='tochka'
+              AND plan_type='supplier_test' AND created_at>=?
+            ORDER BY id DESC LIMIT 1
+            """,
+            (message.from_user.id, now - 20 * 60),
+        ).fetchone()
+    if existing and existing[1]:
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("💳 Оплатить 14 ₽", url=existing[1]))
+        bot.send_message(
+            message.chat.id,
+            f"Повторно использую уже созданный тестовый заказ #{existing[0]}.",
+            reply_markup=markup,
+        )
+        return
+
+    with closing(_payment_db()) as db:
+        db.execute(
+            """
+            INSERT INTO orders (
+                user_id, text, price, pay_amount, discount_used, status, country, tariff,
+                created_at, plan_type, supplier_key, supplier_tariff,
+                supplier_product_id, supplier_variation_id, supplier_status,
+                payment_provider, payment_link_id, payment_status, payment_created_at,
+                legal_acceptance
+            ) VALUES (?, ?, 14, 14, 0, 'payment_pending', ?, ?, ?, 'supplier_test',
+                      'banana', '40', 40, 0, '', 'tochka', '', 'CREATING', ?, ?)
+            """,
+            (
+                message.from_user.id,
+                "Техническая eSIM Banana, товар 40",
+                "Технический тест",
+                "Тех тариф",
+                now,
+                now,
+                json.dumps({"test_sale": True, "recorded_at": now}, ensure_ascii=False),
+            ),
+        )
+        order_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+        db.execute("UPDATE orders SET payment_link_id=? WHERE id=?", (f"esimlime-{order_id}", order_id))
+        db.commit()
+
+    redirect_base = os.getenv("TOCHKA_REDIRECT_URL", "https://esimlime.ru/?payment=success").strip()
+    fail_redirect = os.getenv("TOCHKA_FAIL_REDIRECT_URL", "https://esimlime.ru/?payment=failed").strip()
+    redirect_url = f"{redirect_base}{'&' if '?' in redirect_base else '?'}order_id={order_id}"
+    fail_redirect_url = f"{fail_redirect}{'&' if '?' in fail_redirect else '?'}order_id={order_id}"
+    try:
+        payment = tochka.create_payment(
+            order_id, 14, f"Техническая eSIM, заказ №{order_id}", redirect_url, fail_redirect_url
+        )
+    except TochkaError as exc:
+        with closing(_payment_db()) as db:
+            db.execute(
+                "UPDATE orders SET status='payment_error', payment_status=? WHERE id=?",
+                (str(exc)[:100], order_id),
+            )
+            db.commit()
+        bot.send_message(
+            message.chat.id,
+            "⚠️ Точка не создала ссылку оплаты\n" f"Код: {_format_tochka_error(exc)}",
+        )
+        return
+
+    with closing(_payment_db()) as db:
+        db.execute(
+            """
+            UPDATE orders SET payment_operation_id=?, payment_url=?, payment_status=?
+            WHERE id=? AND status='payment_pending'
+            """,
+            (payment["operationId"], payment["paymentLink"], payment.get("status", "CREATED"), order_id),
+        )
+        db.commit()
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("💳 Оплатить 14 ₽", url=payment["paymentLink"]))
+    bot.send_message(
+        message.chat.id,
+        f"🧪 Тестовый заказ #{order_id} создан.\n\n"
+        "После подтверждения оплаты бот сам выпустит eSIM, пришлёт данные сюда "
+        "и сохранит их в «Мои eSIM». Техническую eSIM устанавливать не нужно.",
+        reply_markup=markup,
+    )
+
+
 @bot.message_handler(commands=["sendqr"])
 def sendqr_handler(message):
     global admin_send_qr_target, admin_send_qr_order_id
@@ -5563,6 +5687,131 @@ def create_mini_app_payment(telegram_user: Dict[str, Any], body: Dict[str, Any])
     return {"order_id": order_id, "payment_url": payment["paymentLink"], "status": payment.get("status", "CREATED")}
 
 
+def _supplier_int(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def provision_paid_supplier_order(order_id: int) -> bool:
+    """Issue and persist an eSIM for a paid supplier-backed order."""
+    now = int(time.time())
+    with closing(_payment_db()) as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute(
+            """
+            SELECT user_id, status, country, tariff, plan_type, supplier_product_id,
+                   supplier_variation_id, supplier_status, supplier_requested_at
+            FROM orders WHERE id=?
+            """,
+            (order_id,),
+        ).fetchone()
+        if not row or row[1] != "paid" or _supplier_int(row[5]) <= 0:
+            db.rollback()
+            return False
+        if row[7] == "issued":
+            db.rollback()
+            return True
+        if row[7] == "processing" and _supplier_int(row[8]) > now - 5 * 60:
+            db.rollback()
+            return False
+        updated = db.execute(
+            """
+            UPDATE orders
+            SET supplier_status='processing', supplier_requested_at=?, supplier_last_error=''
+            WHERE id=? AND supplier_status!='issued'
+            """,
+            (now, order_id),
+        ).rowcount
+        if updated != 1:
+            db.rollback()
+            return False
+        db.commit()
+
+    user_id, country, tariff, plan_type = row[0], row[2], row[3], row[4]
+    product_id, variation_id = _supplier_int(row[5]), _supplier_int(row[6])
+    try:
+        product = banana.resolve_product(product_id, variation_id)
+        if not isinstance(product, dict):
+            raise BananaError("banana_invalid_product_response")
+        if product.get("unlimited") is True or product.get("partner_provider") != "supplier_standard":
+            raise BananaError("banana_product_not_standard")
+        # A stable request ID is derived from this database order ID, so retries
+        # return the same line rather than buying a second eSIM.
+        result = banana.create_line(order_id, product_id, variation_id)
+        sim_card = result.get("sim_card") if isinstance(result, dict) else None
+        if not isinstance(sim_card, dict):
+            raise BananaError("banana_invalid_line_response")
+        iccid = str(sim_card.get("iccid") or "").strip()
+        lpa_code = str(sim_card.get("lpa_code") or "").strip()
+        if not iccid or not lpa_code.startswith("LPA:1$"):
+            raise BananaError("banana_missing_installation_data")
+        install_url = (
+            "https://esimsetup.apple.com/esim_qrcode_provisioning?" +
+            urlencode({"carddata": lpa_code})
+        )
+        provider_status = str(sim_card.get("status") or "").strip()[:80]
+        expire_at = str(sim_card.get("expire_at") or sim_card.get("expires_at") or "").strip()[:100]
+        issued_at = int(time.time())
+        with closing(_payment_db()) as db:
+            db.execute(
+                """
+                UPDATE orders SET supplier_status='issued', supplier_iccid=?, supplier_lpa_code=?,
+                    supplier_provider_status=?, supplier_remaining_usage_kb=?,
+                    supplier_allowed_usage_kb=?, supplier_remaining_days=?, supplier_expire_at=?,
+                    supplier_issued_at=?, supplier_last_error='', install_url=?, esim_sent_at=?
+                WHERE id=? AND supplier_status!='issued'
+                """,
+                (
+                    iccid, lpa_code, provider_status,
+                    _supplier_int(sim_card.get("remaining_usage_kb")),
+                    _supplier_int(sim_card.get("allowed_usage_kb")),
+                    _supplier_int(sim_card.get("remaining_days")),
+                    expire_at, issued_at, install_url, issued_at, order_id,
+                ),
+            )
+            db.execute(
+                "UPDATE reminder_jobs SET status='cancelled' WHERE order_id=? AND reminder_type='admin_esim_15m'",
+                (order_id,),
+            )
+            db.commit()
+    except Exception as exc:
+        error = _format_banana_error(exc) if isinstance(exc, BananaError) else "supplier_internal_error"
+        with closing(_payment_db()) as db:
+            db.execute(
+                """
+                UPDATE orders SET supplier_status='error', supplier_last_error=?
+                WHERE id=? AND supplier_status!='issued'
+                """,
+                (error[:300], order_id),
+            )
+            db.commit()
+        _notify_admin_safe(
+            f"⚠️ Оплата заказа #{order_id} получена, но Banana не выдал eSIM\n"
+            f"Код: {error}\nПовторная проверка выполнится автоматически."
+        )
+        return False
+
+    test_note = (
+        "\n\n⚠️ Это техническая тестовая eSIM. Не устанавливайте её на телефон."
+        if plan_type == "supplier_test" else ""
+    )
+    bot.send_message(
+        user_id,
+        f"✅ Ваша eSIM готова\n\nЗаказ #{order_id}\n{country} — {tariff}\n"
+        f"ICCID: {iccid}\nСтатус: {provider_status or 'active'}\n\n"
+        f"Ссылка для установки:\n{install_url}\n\nLPA-код:\n{lpa_code}"
+        f"{test_note}\n\nДанные также сохранены в разделе «Мои eSIM».",
+        reply_markup=main_keyboard(user_id),
+    )
+    _notify_admin_safe(
+        f"✅ Banana автоматически выдал eSIM\n\nЗаказ #{order_id}\n"
+        f"Покупатель: {format_user_for_admin(user_id)}\nICCID: {iccid}"
+    )
+    return True
+
+
 def _mark_bank_order_paid(order_id: int, operation_id: str, amount: Any) -> bool:
     now = int(time.time())
     db = _payment_db()
@@ -5572,7 +5821,8 @@ def _mark_bank_order_paid(order_id: int, operation_id: str, amount: Any) -> bool
             """
             SELECT user_id, status, country, tariff, price, pay_amount, partner_code, partner_rate,
                    partner_commission, ref_bonus_given, plan_type, supplier_key, supplier_tariff,
-                   duration_days, post_limit_speed, daily_high_speed_gb, payment_operation_id
+                   duration_days, post_limit_speed, daily_high_speed_gb, payment_operation_id,
+                   supplier_product_id, supplier_variation_id, supplier_status
             FROM orders WHERE id=? AND payment_provider='tochka'
             """,
             (order_id,)
@@ -5582,6 +5832,11 @@ def _mark_bank_order_paid(order_id: int, operation_id: str, amount: Any) -> bool
             return False
         if row[1] == "paid":
             db.rollback()
+            if _supplier_int(row[17]) > 0 and row[19] != "issued":
+                threading.Thread(
+                    target=provision_paid_supplier_order, args=(order_id,), daemon=True,
+                    name=f"supplier-order-{order_id}",
+                ).start()
             return True
         if row[1] != "payment_pending" or row[16] != operation_id or float(row[5]) != float(amount):
             db.rollback()
@@ -5601,8 +5856,10 @@ def _mark_bank_order_paid(order_id: int, operation_id: str, amount: Any) -> bool
             "UPDATE reminder_jobs SET status='cancelled' WHERE order_id=? AND status IN ('pending','processing')",
             (order_id,)
         )
-        schedule_reminder(ADMIN_ID, order_id, "admin_esim_15m", now + ADMIN_ESIM_15M_DELAY,
-                          db_cursor=db.cursor(), db_conn=db, commit=False)
+        supplier_order = _supplier_int(row[17]) > 0
+        if not supplier_order:
+            schedule_reminder(ADMIN_ID, order_id, "admin_esim_15m", now + ADMIN_ESIM_15M_DELAY,
+                              db_cursor=db.cursor(), db_conn=db, commit=False)
         partner_code, partner_rate, partner_commission, ref_bonus_given = row[6], row[7], row[8], row[9]
         if partner_code and partner_commission > 0:
             db.execute(
@@ -5624,19 +5881,34 @@ def _mark_bank_order_paid(order_id: int, operation_id: str, amount: Any) -> bool
     finally:
         db.close()
 
-    bot.send_message(
-        user_id,
-        "✅ Оплата получена\n\nПодготовим eSIM, ссылку или QR-код и инструкцию. "
-        "Они придут сюда и сохранятся в личном кабинете. Обычно это занимает 5–15 минут.",
-        reply_markup=main_keyboard(user_id)
-    )
+    if supplier_order:
+        bot.send_message(
+            user_id,
+            "✅ Оплата получена\n\nАвтоматически выпускаем eSIM у поставщика. "
+            "Данные установки придут сюда и сохранятся в разделе «Мои eSIM».",
+            reply_markup=main_keyboard(user_id),
+        )
+    else:
+        bot.send_message(
+            user_id,
+            "✅ Оплата получена\n\nПодготовим eSIM, ссылку или QR-код и инструкцию. "
+            "Они придут сюда и сохранятся в личном кабинете. Обычно это занимает 5–15 минут.",
+            reply_markup=main_keyboard(user_id)
+        )
     unlimited_details = format_unlimited_admin_details(row[10], row[11], row[12], row[13], row[14], row[15])
     bot.send_message(
         ADMIN_ID,
         f"✅ Оплата через Точку подтверждена\n\nЗаказ #{order_id}\n"
         f"Покупатель: {format_user_for_admin(user_id)}\nСтрана: {row[2]}\nТариф: {row[3]}\n"
-        f"Сумма: {row[4]}₽{unlimited_details}\n\n/sendqr {user_id} {order_id}"
+        f"Сумма: {row[4]}₽{unlimited_details}" +
+        ("\n\nЗапущена автоматическая выдача Banana." if supplier_order
+         else f"\n\n/sendqr {user_id} {order_id}")
     )
+    if supplier_order:
+        threading.Thread(
+            target=provision_paid_supplier_order, args=(order_id,), daemon=True,
+            name=f"supplier-order-{order_id}",
+        ).start()
     return True
 
 
@@ -5777,6 +6049,32 @@ def tochka_payment_reconciliation_worker() -> None:
         time.sleep(60)
 
 
+def supplier_fulfillment_worker() -> None:
+    """Recover paid supplier orders after temporary API errors or process restarts."""
+    if not banana.configured:
+        return
+    time.sleep(20)
+    while True:
+        try:
+            retry_before = int(time.time()) - 5 * 60
+            with closing(_payment_db()) as db:
+                rows = db.execute(
+                    """
+                    SELECT id FROM orders
+                    WHERE status='paid' AND COALESCE(supplier_product_id, 0)>0
+                      AND COALESCE(supplier_status, '')!='issued'
+                      AND (COALESCE(supplier_status, '')='' OR COALESCE(supplier_requested_at, 0)<=?)
+                    ORDER BY id ASC LIMIT 10
+                    """,
+                    (retry_before,),
+                ).fetchall()
+            for (order_id,) in rows:
+                provision_paid_supplier_order(order_id)
+        except Exception:
+            pass
+        time.sleep(60)
+
+
 def banana_setup_worker() -> None:
     if not banana.configured:
         _notify_admin_safe(
@@ -5815,6 +6113,9 @@ threading.Thread(
     target=tochka_payment_reconciliation_worker, daemon=True, name="tochka-reconciliation"
 ).start()
 threading.Thread(target=banana_setup_worker, daemon=True, name="banana-setup").start()
+threading.Thread(
+    target=supplier_fulfillment_worker, daemon=True, name="supplier-fulfillment"
+).start()
 bot.remove_webhook()
 time.sleep(1)
 bot.polling(none_stop=True)

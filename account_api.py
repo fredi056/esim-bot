@@ -81,21 +81,33 @@ def read_account(db_path, user, referral_link, referral_share_url, referral_text
         profile = db.execute("SELECT balance, username, first_name FROM users WHERE user_id=?", (user["id"],)).fetchone()
         referrals = db.execute("SELECT COUNT(*) FROM users WHERE ref=?", (user["id"],)).fetchone()[0]
         rows = db.execute("""
-            SELECT id, country, tariff, esim_sent_at, install_confirmed, install_url, esim_file_id
+            SELECT id, country, tariff, esim_sent_at, install_confirmed, install_url, esim_file_id,
+                   supplier_iccid, supplier_provider_status, supplier_remaining_usage_kb,
+                   supplier_allowed_usage_kb, supplier_remaining_days, supplier_expire_at
             FROM orders WHERE user_id=? AND status='paid'
             ORDER BY CASE WHEN COALESCE(esim_sent_at, 0)>0 THEN 0 ELSE 1 END, id DESC
         """, (user["id"],)).fetchall()
     esims = []
     for row in rows:
         sent = bool(row["esim_sent_at"])
+        remaining_kb = max(0, int(row["supplier_remaining_usage_kb"] or 0))
+        if remaining_kb >= 1024 * 1024:
+            traffic_remaining = f"{remaining_kb / (1024 * 1024):g} ГБ"
+        elif remaining_kb:
+            traffic_remaining = f"{remaining_kb / 1024:g} МБ"
+        else:
+            traffic_remaining = None
         esims.append({
             "id": row["id"], "country": row["country"], "plan_name": row["tariff"],
             "status": "issued" if sent else "preparing",
             "install_confirmed": bool(row["install_confirmed"]) if sent else False,
             "install_url": safe_install_url(row["install_url"]) if sent else None,
             "has_install_image": bool(sent and row["esim_file_id"]),
-            "iccid": None, "provider_status": None, "traffic_remaining": None,
-            "activated_at": None, "expires_at": None,
+            "iccid": row["supplier_iccid"] or None,
+            "provider_status": row["supplier_provider_status"] or None,
+            "traffic_remaining": traffic_remaining,
+            "remaining_days": int(row["supplier_remaining_days"] or 0) or None,
+            "activated_at": None, "expires_at": row["supplier_expire_at"] or None,
             "can_check_traffic": False, "can_top_up": False, "top_up_url": None,
         })
     return {"esims": esims, "profile": {
