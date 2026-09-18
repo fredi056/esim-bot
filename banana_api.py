@@ -99,8 +99,9 @@ class BananaClient:
 
     @staticmethod
     def _product_reference(product_id, variation_id):
-        values = (product_id, variation_id)
-        if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in values):
+        if isinstance(product_id, bool) or not isinstance(product_id, int) or product_id <= 0:
+            raise BananaError("banana_invalid_product_reference")
+        if isinstance(variation_id, bool) or not isinstance(variation_id, int) or variation_id < 0:
             raise BananaError("banana_invalid_product_reference")
         return {"product_id": product_id, "variation_id": variation_id}
 

@@ -4055,6 +4055,55 @@ def partner_payout_handler(message):
         return
     show_partner_payout_confirmation(message.chat.id, message.from_user.id, parts[1])
 
+
+@bot.message_handler(commands=["banana_resolve"])
+def banana_resolve_handler(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    parts = (message.text or "").split()
+    if len(parts) != 3:
+        bot.send_message(
+            message.chat.id,
+            "Используйте: /banana_resolve PRODUCT_ID VARIATION_ID\n"
+            "Для простого товара без вариации укажите 0."
+        )
+        return
+    try:
+        product_id = int(parts[1])
+        variation_id = int(parts[2])
+    except ValueError:
+        bot.send_message(message.chat.id, "ID товара и вариации должны быть числами.")
+        return
+    if not banana.configured:
+        bot.send_message(message.chat.id, "API Banana не настроен.")
+        return
+    try:
+        product = banana.resolve_product(product_id, variation_id)
+    except BananaError as exc:
+        bot.send_message(
+            message.chat.id,
+            "⚠️ Banana не подтвердил товар\n"
+            f"Код: {_format_banana_error(exc)}"
+        )
+        return
+    if not isinstance(product, dict):
+        bot.send_message(message.chat.id, "⚠️ Banana вернул неизвестный формат товара.")
+        return
+    details = [
+        ("Товар", product.get("product_id")),
+        ("Вариация", product.get("variation_id")),
+        ("Поставщик", product.get("partner_provider")),
+        ("Объём", f"{product.get('refill_mb')} МБ" if product.get("refill_mb") is not None else None),
+        ("Срок", f"{product.get('refill_days')} дн." if product.get("refill_days") is not None else None),
+        ("Пополнение", "да" if product.get("refillable") is True else "нет"),
+        ("Безлимит", "да" if product.get("unlimited") is True else "нет"),
+    ]
+    bot.send_message(
+        message.chat.id,
+        "✅ Banana подтвердил товар\n\n" +
+        "\n".join(f"{label}: {value}" for label, value in details if value is not None)
+    )
+
 @bot.message_handler(commands=["sendqr"])
 def sendqr_handler(message):
     global admin_send_qr_target, admin_send_qr_order_id
