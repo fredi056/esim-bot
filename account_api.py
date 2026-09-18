@@ -141,7 +141,15 @@ def create_account_server(host, port, token, read, read_image, create_payment=No
             self.wfile.write(body)
 
         def do_GET(self):
-            self.reply(200 if self.path == "/health" else 404, {"ok": self.path == "/health"})
+            available = self.path in ("/health", "/api/payments/tochka/webhook")
+            self.reply(200 if available else 404, {"ok": available})
+
+        def do_HEAD(self):
+            available = self.path in ("/health", "/api/payments/tochka/webhook")
+            self.send_response(200 if available else 404)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
 
         def do_POST(self):
             image_match = re.fullmatch(r"/api/account/image/([1-9][0-9]*)", self.path)

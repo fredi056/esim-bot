@@ -196,7 +196,52 @@ class TochkaClient:
     def get_payment(self, operation_id):
         if not isinstance(operation_id, str) or not operation_id:
             raise TochkaError("invalid_operation_id")
-        return self._request("GET", f"/acquiring/v1.0/payments/{operation_id}").get("Data", {})
+        response = self._request("GET", f"/acquiring/v1.0/payments/{operation_id}")
+        candidates = []
+
+        def collect(value):
+            if isinstance(value, dict):
+                candidates.append(value)
+                for nested in value.values():
+                    collect(nested)
+            elif isinstance(value, list):
+                for nested in value:
+                    collect(nested)
+
+        collect(response.get("Data", response))
+        known_statuses = {
+            "CREATED", "PENDING", "PROCESSING", "AUTHORIZED", "APPROVED",
+            "DECLINED", "REJECTED", "CANCELED", "CANCELLED", "EXPIRED",
+            "ON-REFUND", "REFUNDED", "FAILED",
+        }
+        matching = [
+            item for item in candidates
+            if str(item.get("operationId") or item.get("operation_id") or "") == operation_id
+        ]
+        for item in matching + candidates:
+            raw_status = item.get("status") or item.get("operationStatus") or item.get("paymentStatus")
+            status = str(raw_status or "").upper()
+            if status not in known_statuses:
+                continue
+            amount = item.get("amount")
+            if amount is None:
+                for nested in candidates:
+                    nested_operation = str(
+                        nested.get("operationId") or nested.get("operation_id") or ""
+                    )
+                    if nested_operation in ("", operation_id) and nested.get("amount") is not None:
+                        amount = nested["amount"]
+                        break
+            result = dict(item)
+            result["operationId"] = operation_id
+            result["status"] = status
+            if amount is not None:
+                result["amount"] = amount
+            return result
+        shape = ", ".join(
+            sorted({"/".join(sorted(map(str, item.keys())))[:160] for item in candidates if item})
+        )[:300]
+        raise TochkaError("tochka_invalid_payment_response", shape or "Data is empty")
 
     def ensure_webhook(self, url):
         if not isinstance(url, str) or not url.startswith("https://"):

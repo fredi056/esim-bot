@@ -25,9 +25,10 @@ ADMIN_ID_RAW = os.getenv("ADMIN_ID")
 MINI_APP_URL = os.getenv("MINI_APP_URL", "").strip()
 AVITO_REVIEW_URL = os.getenv("AVITO_REVIEW_URL", "").strip()
 TOCHKA_PAYMENTS_ENABLED = os.getenv("TOCHKA_PAYMENTS_ENABLED", "true").strip().lower() in ("1", "true", "yes")
-TOCHKA_WEBHOOK_URL = os.getenv(
-    "TOCHKA_WEBHOOK_URL", "https://esimlime.ru/api/payments/tochka/webhook"
-).strip()
+RAILWAY_PUBLIC_DOMAIN = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip().strip("/")
+TOCHKA_WEBHOOK_URL = os.getenv("TOCHKA_WEBHOOK_URL", "").strip()
+if not TOCHKA_WEBHOOK_URL and RAILWAY_PUBLIC_DOMAIN:
+    TOCHKA_WEBHOOK_URL = f"https://{RAILWAY_PUBLIC_DOMAIN}/api/payments/tochka/webhook"
 
 if not TOKEN:
     raise ValueError("TOKEN not found")
@@ -2906,6 +2907,7 @@ def show_admin_orders(chat_id: int, user_id: int):
         SELECT o.id, o.user_id, u.username, u.first_name, o.country, o.tariff, o.pay_amount, o.status
         FROM orders o
         LEFT JOIN users u ON u.user_id = o.user_id
+        WHERE o.status='paid'
         ORDER BY o.id DESC
         LIMIT 15
     """)
@@ -6024,6 +6026,13 @@ def tochka_setup_worker() -> None:
                 )
                 api_failure_notified = True
             time.sleep(5 * 60)
+
+    if not TOCHKA_WEBHOOK_URL:
+        _notify_admin_safe(
+            "⚠️ Для мгновенного подтверждения оплат нужен публичный домен сервиса esim-bot в Railway. "
+            "Пока включена автоматическая проверка оплат через API раз в минуту."
+        )
+        return
 
     webhook_failure_notified = False
     while True:
