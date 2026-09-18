@@ -5358,7 +5358,7 @@ def callback_handler(call):
         return
 
 def read_mini_app_account(telegram_user: Dict[str, Any]) -> Dict[str, Any]:
-    return read_account(
+    result = read_account(
         DB_PATH,
         telegram_user,
         referral_link,
@@ -5366,6 +5366,8 @@ def read_mini_app_account(telegram_user: Dict[str, Any]) -> Dict[str, Any]:
         referral_program_text,
         SUPPORT_URL,
     )
+    result["profile"]["is_admin"] = telegram_user["id"] == ADMIN_ID
+    return result
 
 
 def read_mini_app_esim_image(user_id: int, order_id: int):
@@ -5510,6 +5512,18 @@ def create_mini_app_payment(telegram_user: Dict[str, Any], body: Dict[str, Any])
             "INSERT OR IGNORE INTO users (user_id, balance, ref, username, first_name) VALUES (?, 0, NULL, ?, ?)",
             (user_id, telegram_user.get("username", ""), telegram_user.get("first_name", ""))
         )
+        recent_paid = db.execute(
+            """
+            SELECT id FROM orders
+            WHERE user_id=? AND country=? AND tariff=? AND status='paid'
+              AND payment_provider='tochka' AND created_at>=?
+            ORDER BY id DESC LIMIT 1
+            """,
+            (user_id, order["country"], order["tariff"], now - 30 * 60),
+        ).fetchone()
+        if recent_paid:
+            db.commit()
+            return {"order_id": recent_paid[0], "payment_url": "", "status": "paid"}
         duplicate = db.execute(
             """
             SELECT id, payment_url FROM orders
@@ -5995,6 +6009,7 @@ def tochka_payment_reconciliation_worker() -> None:
     if not TOCHKA_PAYMENTS_ENABLED or not tochka.configured:
         return
     time.sleep(60)
+    reported_errors = set()
     while True:
         try:
             with closing(_payment_db()) as db:
@@ -6013,8 +6028,25 @@ def tochka_payment_reconciliation_worker() -> None:
                     info = tochka.get_payment(operation_id)
                     if info.get("status") == "APPROVED":
                         _mark_bank_order_paid(order_id, operation_id, info.get("amount"))
-                except TochkaError:
+                except TochkaError as exc:
+                    error_key = (str(exc), getattr(exc, "detail", "") or "")
+                    if error_key not in reported_errors:
+                        reported_errors.add(error_key)
+                        _notify_admin_safe(
+                            f"⚠️ Не удалось проверить оплату заказа #{order_id} через Точку\n"
+                            f"Код: {_format_tochka_error(exc)}\n\n"
+                            "Повторно оплачивать заказ не нужно. Проверка продолжится автоматически."
+                        )
                     continue
+                except Exception as exc:
+                    error_key = ("internal", type(exc).__name__)
+                    if error_key not in reported_errors:
+                        reported_errors.add(error_key)
+                        _notify_admin_safe(
+                            f"⚠️ Ошибка обработки оплаченного заказа #{order_id}\n"
+                            f"Код: payment_reconciliation_internal — {type(exc).__name__}\n\n"
+                            "Повторно оплачивать заказ не нужно."
+                        )
         except Exception:
             pass
         time.sleep(60)
