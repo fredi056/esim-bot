@@ -18,6 +18,7 @@ from telebot import types
 
 from account_api import ApiError, delivery_data, read_account, start_account_api
 from banana_api import BananaClient, BananaError
+from maintenance import reset_order_data_once
 from tochka_api import TochkaClient, TochkaError
 
 TOKEN = os.getenv("TOKEN")
@@ -29,6 +30,7 @@ RAILWAY_PUBLIC_DOMAIN = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip().strip("/"
 TOCHKA_WEBHOOK_URL = os.getenv("TOCHKA_WEBHOOK_URL", "").strip()
 if not TOCHKA_WEBHOOK_URL and RAILWAY_PUBLIC_DOMAIN:
     TOCHKA_WEBHOOK_URL = f"https://{RAILWAY_PUBLIC_DOMAIN}/api/payments/tochka/webhook"
+ORDER_DATA_RESET_ID = os.getenv("ORDER_DATA_RESET_ID", "").strip()
 
 if not TOKEN:
     raise ValueError("TOKEN not found")
@@ -248,6 +250,8 @@ cursor.execute("CREATE INDEX IF NOT EXISTS idx_partner_commissions_user ON partn
 cursor.execute("CREATE INDEX IF NOT EXISTS idx_partner_payouts_code ON partner_payouts(partner_code)")
 cursor.execute("CREATE INDEX IF NOT EXISTS idx_external_sales_user_status ON external_sales(telegram_user_id, status)")
 conn.commit()
+
+ORDER_DATA_RESET_RESULT = reset_order_data_once(conn, DB_PATH, ORDER_DATA_RESET_ID)
 
 REF_BONUS = 100
 DEFAULT_PARTNER_RATE = 20
@@ -6172,6 +6176,14 @@ def banana_setup_worker() -> None:
 
 
 threading.Thread(target=reminder_worker, daemon=True).start()
+if ORDER_DATA_RESET_RESULT:
+    _notify_admin_safe(
+        "✅ История заказов очищена\n\n"
+        f"Удалено заказов: {ORDER_DATA_RESET_RESULT['orders']}\n"
+        f"Удалено напоминаний по заказам: {ORDER_DATA_RESET_RESULT['reminders']}\n"
+        f"Удалено служебных заданий по заказам: {ORDER_DATA_RESET_RESULT['order_jobs']}\n\n"
+        "Пользователи, партнёры, реклама и продажи с Авито сохранены."
+    )
 start_account_api(
     os.getenv("ACCOUNT_API_HOST", "0.0.0.0"),
     int(os.getenv("PORT", os.getenv("ACCOUNT_API_PORT", "8080"))),
