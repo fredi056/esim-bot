@@ -5583,10 +5583,16 @@ def create_mini_app_payment(telegram_user: Dict[str, Any], body: Dict[str, Any])
     finally:
         db.close()
 
-    redirect_base = os.getenv("TOCHKA_REDIRECT_URL", "https://esimlime.ru/?payment=success").strip()
-    fail_redirect = os.getenv("TOCHKA_FAIL_REDIRECT_URL", "https://esimlime.ru/?payment=failed").strip()
-    redirect_url = f"{redirect_base}{'&' if '?' in redirect_base else '?'}order_id={order_id}"
-    fail_redirect_url = f"{fail_redirect}{'&' if '?' in fail_redirect else '?'}order_id={order_id}"
+    redirect_base = "https://t.me/esimlimebot?startapp=account"
+    fail_redirect = "https://t.me/esimlimebot?startapp=purchase"
+    redirect_url = (
+        redirect_base if redirect_base.startswith("https://t.me/")
+        else f"{redirect_base}{'&' if '?' in redirect_base else '?'}order_id={order_id}"
+    )
+    fail_redirect_url = (
+        fail_redirect if fail_redirect.startswith("https://t.me/")
+        else f"{fail_redirect}{'&' if '?' in fail_redirect else '?'}order_id={order_id}"
+    )
     try:
         payment = tochka.create_payment(
             order_id, order["price"], f"Оплата eSIM, заказ №{order_id}", redirect_url, fail_redirect_url
@@ -6008,7 +6014,7 @@ def tochka_setup_worker() -> None:
 def tochka_payment_reconciliation_worker() -> None:
     if not TOCHKA_PAYMENTS_ENABLED or not tochka.configured:
         return
-    time.sleep(60)
+    time.sleep(10)
     reported_errors = set()
     while True:
         try:
