@@ -97,19 +97,29 @@ class BananaClient:
         source = f"{order_id}/{item_id}/{provider}".encode("utf-8")
         return hashlib.sha256(source).hexdigest()
 
-    def create_line(self, order_id, bundle_id, refill_mb, refill_days, count=1, item_id=1):
-        values = (bundle_id, refill_mb, refill_days, count)
+    @staticmethod
+    def _product_reference(product_id, variation_id):
+        values = (product_id, variation_id)
         if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in values):
+            raise BananaError("banana_invalid_product_reference")
+        return {"product_id": product_id, "variation_id": variation_id}
+
+    def resolve_product(self, product_id, variation_id):
+        return self._request(
+            "POST",
+            "/product/resolve",
+            self._product_reference(product_id, variation_id),
+        )
+
+    def create_line(self, order_id, product_id, variation_id, count=1, item_id=1):
+        if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
             raise BananaError("banana_invalid_order")
+        payload = self._product_reference(product_id, variation_id)
+        payload["count"] = count
         return self._request(
             "POST",
             "/line/create",
-            {
-                "bundle_id": bundle_id,
-                "refill_mb": refill_mb,
-                "refill_days": refill_days,
-                "count": count,
-            },
+            payload,
             {
                 "X-Partner-Request-ID": self.request_id(order_id, item_id),
                 "X-Partner-Order-ID": str(order_id),
@@ -122,17 +132,24 @@ class BananaClient:
             raise BananaError("banana_invalid_iccid")
         return self._request("GET", f"/line/{quote(value, safe='')}/get_details")
 
-    def refill(self, iccid, amount_mb, amount_days):
+    def refill(
+        self, order_id, iccid, product_id, variation_id,
+        line_provider="supplier_standard", item_id=1,
+    ):
         value = str(iccid or "").strip()
         if not value.isdigit() or not 15 <= len(value) <= 22:
             raise BananaError("banana_invalid_iccid")
-        if any(
-            isinstance(item, bool) or not isinstance(item, int) or item <= 0
-            for item in (amount_mb, amount_days)
-        ):
-            raise BananaError("banana_invalid_refill")
+        if line_provider != "supplier_standard":
+            raise BananaError("banana_invalid_line_provider")
+        payload = self._product_reference(product_id, variation_id)
+        payload["line_provider"] = line_provider
         return self._request(
             "POST",
             f"/line/{quote(value, safe='')}/refill",
-            {"amount_mb": amount_mb, "amount_days": amount_days},
+            payload,
+            {
+                "X-Partner-Request-ID": self.request_id(
+                    order_id, item_id, f"topup-{value}-{variation_id}"
+                )
+            },
         )
