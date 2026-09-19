@@ -85,6 +85,7 @@ def read_account(db_path, user, referral_link, referral_share_url, referral_text
                    supplier_iccid, supplier_provider_status, supplier_remaining_usage_kb,
                    supplier_allowed_usage_kb, supplier_remaining_days, supplier_expire_at
             FROM orders WHERE user_id=? AND status='paid'
+              AND COALESCE(order_kind, 'esim')='esim'
             ORDER BY CASE WHEN COALESCE(esim_sent_at, 0)>0 THEN 0 ELSE 1 END, id DESC
         """, (user["id"],)).fetchall()
     esims = []
@@ -95,6 +96,8 @@ def read_account(db_path, user, referral_link, referral_share_url, referral_text
             traffic_remaining = f"{remaining_kb / (1024 * 1024):g} ГБ"
         elif remaining_kb:
             traffic_remaining = f"{remaining_kb / 1024:g} МБ"
+        elif row["supplier_iccid"] and int(row["supplier_allowed_usage_kb"] or 0) > 0:
+            traffic_remaining = "0 МБ"
         else:
             traffic_remaining = None
         esims.append({
@@ -108,7 +111,8 @@ def read_account(db_path, user, referral_link, referral_share_url, referral_text
             "traffic_remaining": traffic_remaining,
             "remaining_days": int(row["supplier_remaining_days"] or 0) or None,
             "activated_at": None, "expires_at": row["supplier_expire_at"] or None,
-            "can_check_traffic": False, "can_top_up": False, "top_up_url": None,
+            "can_check_traffic": bool(sent and row["supplier_iccid"]),
+            "can_top_up": False, "top_up_options": [],
         })
     return {"esims": esims, "profile": {
         "telegram_id": user["id"],
@@ -121,7 +125,8 @@ def read_account(db_path, user, referral_link, referral_share_url, referral_text
 
 
 def create_account_server(host, port, token, read, read_image, create_payment=None,
-                          read_payment=None, accept_webhook=None):
+                          read_payment=None, accept_webhook=None, refresh_esim=None,
+                          create_topup=None):
     class Handler(BaseHTTPRequestHandler):
         def setup(self):
             super().setup()
@@ -153,10 +158,13 @@ def create_account_server(host, port, token, read, read_image, create_payment=No
 
         def do_POST(self):
             image_match = re.fullmatch(r"/api/account/image/([1-9][0-9]*)", self.path)
+            refresh_match = re.fullmatch(r"/api/account/esim/([1-9][0-9]*)/refresh", self.path)
+            topup_match = re.fullmatch(r"/api/account/esim/([1-9][0-9]*)/topup", self.path)
             payment_match = re.fullmatch(r"/api/payments/status/([1-9][0-9]*)", self.path)
             is_payment_create = self.path == "/api/payments/create"
             is_webhook = self.path == "/api/payments/tochka/webhook"
-            if self.path != "/api/account" and not image_match and not payment_match and not is_payment_create and not is_webhook:
+            if (self.path != "/api/account" and not image_match and not refresh_match
+                    and not topup_match and not payment_match and not is_payment_create and not is_webhook):
                 return self.reply(404, {"error": "not_found"})
 
             if is_webhook:
@@ -197,6 +205,14 @@ def create_account_server(host, port, token, read, read_image, create_payment=No
                     if image is None:
                         return self.reply(404, {"error": "not_found"})
                     return self.reply(200, image[0], image[1])
+                if refresh_match:
+                    if refresh_esim is None:
+                        raise ApiError(503, "supplier_unavailable")
+                    return self.reply(200, refresh_esim(user, int(refresh_match[1])))
+                if topup_match:
+                    if create_topup is None:
+                        raise ApiError(503, "topup_unavailable")
+                    return self.reply(200, create_topup(user, int(topup_match[1]), body))
                 if is_payment_create:
                     if create_payment is None:
                         raise ApiError(503, "payments_unavailable")
@@ -215,9 +231,11 @@ def create_account_server(host, port, token, read, read_image, create_payment=No
 
 
 def start_account_api(host, port, token, read, read_image, create_payment=None,
-                      read_payment=None, accept_webhook=None):
+                      read_payment=None, accept_webhook=None, refresh_esim=None,
+                      create_topup=None):
     server = create_account_server(
-        host, port, token, read, read_image, create_payment, read_payment, accept_webhook
+        host, port, token, read, read_image, create_payment, read_payment, accept_webhook,
+        refresh_esim, create_topup
     )
     threading.Thread(target=server.serve_forever, daemon=True, name="account-api").start()
     return server

@@ -1,0 +1,4522 @@
+[
+  {
+    "country": "Технический тест",
+    "tariff": "Тех тариф",
+    "product_id": 40,
+    "variation_id": 0,
+    "refill_mb": 1024,
+    "refill_days": 30
+  },
+  {
+    "country": "Afghanistan",
+    "tariff": "1GB / 7 дней",
+    "product_id": 1276,
+    "variation_id": 1280,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Afghanistan",
+    "tariff": "3GB / 30 дней",
+    "product_id": 1276,
+    "variation_id": 1281,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Afghanistan",
+    "tariff": "5GB / 30 дней",
+    "product_id": 1276,
+    "variation_id": 1282,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Afghanistan",
+    "tariff": "10GB / 30 дней",
+    "product_id": 1276,
+    "variation_id": 1283,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Afghanistan",
+    "tariff": "20GB / 30 дней",
+    "product_id": 1276,
+    "variation_id": 1284,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Afghanistan",
+    "tariff": "50GB / 90 дней",
+    "product_id": 1276,
+    "variation_id": 1285,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Albania",
+    "tariff": "1GB / 7 дней",
+    "product_id": 1105,
+    "variation_id": 1109,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Albania",
+    "tariff": "3GB / 30 дней",
+    "product_id": 1105,
+    "variation_id": 1110,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Albania",
+    "tariff": "5GB / 30 дней",
+    "product_id": 1105,
+    "variation_id": 1111,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Albania",
+    "tariff": "10GB / 30 дней",
+    "product_id": 1105,
+    "variation_id": 1112,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Albania",
+    "tariff": "20GB / 30 дней",
+    "product_id": 1105,
+    "variation_id": 1113,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Albania",
+    "tariff": "50GB / 90 дней",
+    "product_id": 1105,
+    "variation_id": 1114,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Algeria",
+    "tariff": "1GB / 7 дней",
+    "product_id": 2079,
+    "variation_id": 2084,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Algeria",
+    "tariff": "3GB / 30 дней",
+    "product_id": 2079,
+    "variation_id": 2085,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Algeria",
+    "tariff": "5GB / 30 дней",
+    "product_id": 2079,
+    "variation_id": 2086,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Algeria",
+    "tariff": "10GB / 30 дней",
+    "product_id": 2079,
+    "variation_id": 2087,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Algeria",
+    "tariff": "20GB / 30 дней",
+    "product_id": 2079,
+    "variation_id": 2088,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Andorra",
+    "tariff": "1GB / 7 дней",
+    "product_id": 2080,
+    "variation_id": 2089,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Andorra",
+    "tariff": "3GB / 30 дней",
+    "product_id": 2080,
+    "variation_id": 2090,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Andorra",
+    "tariff": "5GB / 30 дней",
+    "product_id": 2080,
+    "variation_id": 2091,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Andorra",
+    "tariff": "10GB / 30 дней",
+    "product_id": 2080,
+    "variation_id": 2092,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Andorra",
+    "tariff": "20GB / 30 дней",
+    "product_id": 2080,
+    "variation_id": 2093,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Argentina",
+    "tariff": "1GB / 7 дней",
+    "product_id": 1277,
+    "variation_id": 1287,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Argentina",
+    "tariff": "3GB / 30 дней",
+    "product_id": 1277,
+    "variation_id": 1288,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Argentina",
+    "tariff": "5GB / 30 дней",
+    "product_id": 1277,
+    "variation_id": 1289,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Argentina",
+    "tariff": "10GB / 30 дней",
+    "product_id": 1277,
+    "variation_id": 1290,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Argentina",
+    "tariff": "20GB / 30 дней",
+    "product_id": 1277,
+    "variation_id": 1291,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Argentina",
+    "tariff": "50GB / 90 дней",
+    "product_id": 1277,
+    "variation_id": 1292,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Armenia",
+    "tariff": "1GB / 7 дней",
+    "product_id": 1178,
+    "variation_id": 1182,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Armenia",
+    "tariff": "3GB / 30 дней",
+    "product_id": 1178,
+    "variation_id": 1183,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Armenia",
+    "tariff": "5GB / 30 дней",
+    "product_id": 1178,
+    "variation_id": 1184,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Armenia",
+    "tariff": "10GB / 30 дней",
+    "product_id": 1178,
+    "variation_id": 1185,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Armenia",
+    "tariff": "20GB / 30 дней",
+    "product_id": 1178,
+    "variation_id": 1186,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Armenia",
+    "tariff": "50GB / 90 дней",
+    "product_id": 1178,
+    "variation_id": 1187,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Australia",
+    "tariff": "1GB / 7 дней",
+    "product_id": 2081,
+    "variation_id": 2094,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Australia",
+    "tariff": "3GB / 30 дней",
+    "product_id": 2081,
+    "variation_id": 2095,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Australia",
+    "tariff": "5GB / 30 дней",
+    "product_id": 2081,
+    "variation_id": 2096,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Australia",
+    "tariff": "10GB / 30 дней",
+    "product_id": 2081,
+    "variation_id": 2097,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Australia",
+    "tariff": "20GB / 30 дней",
+    "product_id": 2081,
+    "variation_id": 2098,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Austria",
+    "tariff": "1GB / 7 дней",
+    "product_id": 824,
+    "variation_id": 828,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Austria",
+    "tariff": "3GB / 30 дней",
+    "product_id": 824,
+    "variation_id": 829,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Austria",
+    "tariff": "5GB / 30 дней",
+    "product_id": 824,
+    "variation_id": 830,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Austria",
+    "tariff": "10GB / 30 дней",
+    "product_id": 824,
+    "variation_id": 831,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Austria",
+    "tariff": "20GB / 30 дней",
+    "product_id": 824,
+    "variation_id": 832,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Austria",
+    "tariff": "50GB / 90 дней",
+    "product_id": 824,
+    "variation_id": 833,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Azerbaijan",
+    "tariff": "1GB / 7 дней",
+    "product_id": 2082,
+    "variation_id": 2099,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Azerbaijan",
+    "tariff": "3GB / 30 дней",
+    "product_id": 2082,
+    "variation_id": 2100,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Azerbaijan",
+    "tariff": "5GB / 30 дней",
+    "product_id": 2082,
+    "variation_id": 2101,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Azerbaijan",
+    "tariff": "10GB / 30 дней",
+    "product_id": 2082,
+    "variation_id": 2102,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Azerbaijan",
+    "tariff": "20GB / 30 дней",
+    "product_id": 2082,
+    "variation_id": 2103,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Bahrain",
+    "tariff": "1GB / 7 дней",
+    "product_id": 2083,
+    "variation_id": 2104,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Bahrain",
+    "tariff": "3GB / 30 дней",
+    "product_id": 2083,
+    "variation_id": 2105,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Bahrain",
+    "tariff": "5GB / 30 дней",
+    "product_id": 2083,
+    "variation_id": 2106,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Bahrain",
+    "tariff": "10GB / 30 дней",
+    "product_id": 2083,
+    "variation_id": 2107,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Bahrain",
+    "tariff": "20GB / 30 дней",
+    "product_id": 2083,
+    "variation_id": 2108,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Bangladesh",
+    "tariff": "1GB / 7 дней",
+    "product_id": 1179,
+    "variation_id": 1189,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Bangladesh",
+    "tariff": "3GB / 30 дней",
+    "product_id": 1179,
+    "variation_id": 1190,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Bangladesh",
+    "tariff": "5GB / 30 дней",
+    "product_id": 1179,
+    "variation_id": 1191,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Bangladesh",
+    "tariff": "10GB / 30 дней",
+    "product_id": 1179,
+    "variation_id": 1192,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Bangladesh",
+    "tariff": "20GB / 30 дней",
+    "product_id": 1179,
+    "variation_id": 1193,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Bangladesh",
+    "tariff": "50GB / 90 дней",
+    "product_id": 1179,
+    "variation_id": 1194,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Belarus",
+    "tariff": "1GB / 7 дней",
+    "product_id": 2109,
+    "variation_id": 2114,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Belarus",
+    "tariff": "3GB / 30 дней",
+    "product_id": 2109,
+    "variation_id": 2115,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Belarus",
+    "tariff": "5GB / 30 дней",
+    "product_id": 2109,
+    "variation_id": 2116,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Belarus",
+    "tariff": "10GB / 30 дней",
+    "product_id": 2109,
+    "variation_id": 2117,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Belarus",
+    "tariff": "20GB / 30 дней",
+    "product_id": 2109,
+    "variation_id": 2118,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Belgium",
+    "tariff": "1GB / 7 дней",
+    "product_id": 825,
+    "variation_id": 835,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Belgium",
+    "tariff": "3GB / 30 дней",
+    "product_id": 825,
+    "variation_id": 836,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Belgium",
+    "tariff": "5GB / 30 дней",
+    "product_id": 825,
+    "variation_id": 837,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Belgium",
+    "tariff": "10GB / 30 дней",
+    "product_id": 825,
+    "variation_id": 838,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Belgium",
+    "tariff": "20GB / 30 дней",
+    "product_id": 825,
+    "variation_id": 839,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Belgium",
+    "tariff": "50GB / 90 дней",
+    "product_id": 825,
+    "variation_id": 840,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Brazil",
+    "tariff": "1GB / 7 дней",
+    "product_id": 2110,
+    "variation_id": 2119,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Brazil",
+    "tariff": "3GB / 30 дней",
+    "product_id": 2110,
+    "variation_id": 2120,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Brazil",
+    "tariff": "5GB / 30 дней",
+    "product_id": 2110,
+    "variation_id": 2121,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Brazil",
+    "tariff": "10GB / 30 дней",
+    "product_id": 2110,
+    "variation_id": 2122,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Brazil",
+    "tariff": "20GB / 30 дней",
+    "product_id": 2110,
+    "variation_id": 2123,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Bulgaria",
+    "tariff": "1GB / 7 дней",
+    "product_id": 826,
+    "variation_id": 842,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Bulgaria",
+    "tariff": "3GB / 30 дней",
+    "product_id": 826,
+    "variation_id": 843,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Bulgaria",
+    "tariff": "5GB / 30 дней",
+    "product_id": 826,
+    "variation_id": 844,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Bulgaria",
+    "tariff": "10GB / 30 дней",
+    "product_id": 826,
+    "variation_id": 845,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Bulgaria",
+    "tariff": "20GB / 30 дней",
+    "product_id": 826,
+    "variation_id": 846,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Bulgaria",
+    "tariff": "50GB / 90 дней",
+    "product_id": 826,
+    "variation_id": 847,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Cambodia",
+    "tariff": "1GB / 7 дней",
+    "product_id": 2111,
+    "variation_id": 2124,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Cambodia",
+    "tariff": "3GB / 30 дней",
+    "product_id": 2111,
+    "variation_id": 2125,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Cambodia",
+    "tariff": "5GB / 30 дней",
+    "product_id": 2111,
+    "variation_id": 2126,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Cambodia",
+    "tariff": "10GB / 30 дней",
+    "product_id": 2111,
+    "variation_id": 2127,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Cambodia",
+    "tariff": "20GB / 30 дней",
+    "product_id": 2111,
+    "variation_id": 2128,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Canada",
+    "tariff": "1GB / 7 дней",
+    "product_id": 1278,
+    "variation_id": 1294,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Canada",
+    "tariff": "3GB / 30 дней",
+    "product_id": 1278,
+    "variation_id": 1295,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Canada",
+    "tariff": "5GB / 30 дней",
+    "product_id": 1278,
+    "variation_id": 1296,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Canada",
+    "tariff": "10GB / 30 дней",
+    "product_id": 1278,
+    "variation_id": 1297,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Canada",
+    "tariff": "20GB / 30 дней",
+    "product_id": 1278,
+    "variation_id": 1298,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Canada",
+    "tariff": "50GB / 90 дней",
+    "product_id": 1278,
+    "variation_id": 1299,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Chile",
+    "tariff": "1GB / 7 дней",
+    "product_id": 2112,
+    "variation_id": 2129,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Chile",
+    "tariff": "3GB / 30 дней",
+    "product_id": 2112,
+    "variation_id": 2130,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Chile",
+    "tariff": "5GB / 30 дней",
+    "product_id": 2112,
+    "variation_id": 2131,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Chile",
+    "tariff": "10GB / 30 дней",
+    "product_id": 2112,
+    "variation_id": 2132,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Chile",
+    "tariff": "20GB / 30 дней",
+    "product_id": 2112,
+    "variation_id": 2133,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "China",
+    "tariff": "1GB / 7 дней",
+    "product_id": 634,
+    "variation_id": 636,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "China",
+    "tariff": "3GB / 30 дней",
+    "product_id": 634,
+    "variation_id": 637,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "China",
+    "tariff": "5GB / 30 дней",
+    "product_id": 634,
+    "variation_id": 638,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "China",
+    "tariff": "10GB / 30 дней",
+    "product_id": 634,
+    "variation_id": 639,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "China",
+    "tariff": "20GB / 30 дней",
+    "product_id": 634,
+    "variation_id": 640,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Croatia",
+    "tariff": "1GB / 7 дней",
+    "product_id": 827,
+    "variation_id": 849,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Croatia",
+    "tariff": "3GB / 30 дней",
+    "product_id": 827,
+    "variation_id": 850,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Croatia",
+    "tariff": "5GB / 30 дней",
+    "product_id": 827,
+    "variation_id": 851,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Croatia",
+    "tariff": "10GB / 30 дней",
+    "product_id": 827,
+    "variation_id": 852,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Croatia",
+    "tariff": "20GB / 30 дней",
+    "product_id": 827,
+    "variation_id": 853,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Croatia",
+    "tariff": "50GB / 90 дней",
+    "product_id": 827,
+    "variation_id": 858,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Cyprus",
+    "tariff": "1GB / 7 дней",
+    "product_id": 854,
+    "variation_id": 860,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Cyprus",
+    "tariff": "3GB / 30 дней",
+    "product_id": 854,
+    "variation_id": 861,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Cyprus",
+    "tariff": "5GB / 30 дней",
+    "product_id": 854,
+    "variation_id": 862,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Cyprus",
+    "tariff": "10GB / 30 дней",
+    "product_id": 854,
+    "variation_id": 863,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Cyprus",
+    "tariff": "20GB / 30 дней",
+    "product_id": 854,
+    "variation_id": 864,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Cyprus",
+    "tariff": "50GB / 90 дней",
+    "product_id": 854,
+    "variation_id": 865,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Czech Republic",
+    "tariff": "1GB / 7 дней",
+    "product_id": 855,
+    "variation_id": 867,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Czech Republic",
+    "tariff": "3GB / 30 дней",
+    "product_id": 855,
+    "variation_id": 868,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Czech Republic",
+    "tariff": "5GB / 30 дней",
+    "product_id": 855,
+    "variation_id": 869,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Czech Republic",
+    "tariff": "10GB / 30 дней",
+    "product_id": 855,
+    "variation_id": 870,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Czech Republic",
+    "tariff": "20GB / 30 дней",
+    "product_id": 855,
+    "variation_id": 871,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Czech Republic",
+    "tariff": "50GB / 90 дней",
+    "product_id": 855,
+    "variation_id": 872,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Denmark",
+    "tariff": "1GB / 7 дней",
+    "product_id": 856,
+    "variation_id": 874,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Denmark",
+    "tariff": "3GB / 30 дней",
+    "product_id": 856,
+    "variation_id": 875,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Denmark",
+    "tariff": "5GB / 30 дней",
+    "product_id": 856,
+    "variation_id": 876,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Denmark",
+    "tariff": "10GB / 30 дней",
+    "product_id": 856,
+    "variation_id": 877,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Denmark",
+    "tariff": "20GB / 30 дней",
+    "product_id": 856,
+    "variation_id": 878,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Denmark",
+    "tariff": "50GB / 90 дней",
+    "product_id": 856,
+    "variation_id": 879,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Ecuador",
+    "tariff": "1GB / 7 дней",
+    "product_id": 2113,
+    "variation_id": 2134,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Ecuador",
+    "tariff": "3GB / 30 дней",
+    "product_id": 2113,
+    "variation_id": 2135,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Ecuador",
+    "tariff": "5GB / 30 дней",
+    "product_id": 2113,
+    "variation_id": 2136,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Ecuador",
+    "tariff": "10GB / 30 дней",
+    "product_id": 2113,
+    "variation_id": 2137,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Ecuador",
+    "tariff": "20GB / 30 дней",
+    "product_id": 2113,
+    "variation_id": 2138,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Egypt",
+    "tariff": "1GB / 7 дней",
+    "product_id": 766,
+    "variation_id": 767,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Egypt",
+    "tariff": "3GB / 30 дней",
+    "product_id": 766,
+    "variation_id": 768,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Egypt",
+    "tariff": "5GB / 30 дней",
+    "product_id": 766,
+    "variation_id": 769,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Egypt",
+    "tariff": "10GB / 30 дней",
+    "product_id": 766,
+    "variation_id": 770,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Egypt",
+    "tariff": "20GB / 30 дней",
+    "product_id": 766,
+    "variation_id": 771,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "El Salvador",
+    "tariff": "1GB / 7 дней",
+    "product_id": 1306,
+    "variation_id": 1312,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "El Salvador",
+    "tariff": "3GB / 30 дней",
+    "product_id": 1306,
+    "variation_id": 1313,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "El Salvador",
+    "tariff": "5GB / 30 дней",
+    "product_id": 1306,
+    "variation_id": 1314,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "El Salvador",
+    "tariff": "10GB / 30 дней",
+    "product_id": 1306,
+    "variation_id": 1315,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "El Salvador",
+    "tariff": "20GB / 30 дней",
+    "product_id": 1306,
+    "variation_id": 1316,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "El Salvador",
+    "tariff": "50GB / 90 дней",
+    "product_id": 1306,
+    "variation_id": 1317,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Estonia",
+    "tariff": "1GB / 7 дней",
+    "product_id": 857,
+    "variation_id": 881,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Estonia",
+    "tariff": "3GB / 30 дней",
+    "product_id": 857,
+    "variation_id": 882,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Estonia",
+    "tariff": "5GB / 30 дней",
+    "product_id": 857,
+    "variation_id": 883,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Estonia",
+    "tariff": "10GB / 30 дней",
+    "product_id": 857,
+    "variation_id": 888,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Estonia",
+    "tariff": "20GB / 30 дней",
+    "product_id": 857,
+    "variation_id": 889,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Estonia",
+    "tariff": "50GB / 90 дней",
+    "product_id": 857,
+    "variation_id": 890,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Faroe Islands",
+    "tariff": "1GB / 7 дней",
+    "product_id": 2139,
+    "variation_id": 2144,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Faroe Islands",
+    "tariff": "3GB / 30 дней",
+    "product_id": 2139,
+    "variation_id": 2145,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Faroe Islands",
+    "tariff": "5GB / 30 дней",
+    "product_id": 2139,
+    "variation_id": 2146,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Faroe Islands",
+    "tariff": "10GB / 30 дней",
+    "product_id": 2139,
+    "variation_id": 2147,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Faroe Islands",
+    "tariff": "20GB / 30 дней",
+    "product_id": 2139,
+    "variation_id": 2148,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Fiji",
+    "tariff": "1GB / 7 дней",
+    "product_id": 2140,
+    "variation_id": 2149,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Fiji",
+    "tariff": "3GB / 30 дней",
+    "product_id": 2140,
+    "variation_id": 2150,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Fiji",
+    "tariff": "5GB / 30 дней",
+    "product_id": 2140,
+    "variation_id": 2151,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Fiji",
+    "tariff": "10GB / 30 дней",
+    "product_id": 2140,
+    "variation_id": 2152,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Fiji",
+    "tariff": "20GB / 30 дней",
+    "product_id": 2140,
+    "variation_id": 2153,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Finland",
+    "tariff": "1GB / 7 дней",
+    "product_id": 884,
+    "variation_id": 892,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Finland",
+    "tariff": "3GB / 30 дней",
+    "product_id": 884,
+    "variation_id": 893,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Finland",
+    "tariff": "5GB / 30 дней",
+    "product_id": 884,
+    "variation_id": 894,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Finland",
+    "tariff": "10GB / 30 дней",
+    "product_id": 884,
+    "variation_id": 895,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Finland",
+    "tariff": "20GB / 30 дней",
+    "product_id": 884,
+    "variation_id": 896,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Finland",
+    "tariff": "50GB / 90 дней",
+    "product_id": 884,
+    "variation_id": 897,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "France",
+    "tariff": "1GB / 7 дней",
+    "product_id": 885,
+    "variation_id": 899,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "France",
+    "tariff": "3GB / 30 дней",
+    "product_id": 885,
+    "variation_id": 900,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "France",
+    "tariff": "5GB / 30 дней",
+    "product_id": 885,
+    "variation_id": 901,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "France",
+    "tariff": "10GB / 30 дней",
+    "product_id": 885,
+    "variation_id": 902,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "France",
+    "tariff": "20GB / 30 дней",
+    "product_id": 885,
+    "variation_id": 903,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "France",
+    "tariff": "50GB / 90 дней",
+    "product_id": 885,
+    "variation_id": 904,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "French Guiana",
+    "tariff": "1GB / 7 дней",
+    "product_id": 1307,
+    "variation_id": 1319,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "French Guiana",
+    "tariff": "3GB / 30 дней",
+    "product_id": 1307,
+    "variation_id": 1320,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "French Guiana",
+    "tariff": "5GB / 30 дней",
+    "product_id": 1307,
+    "variation_id": 1321,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "French Guiana",
+    "tariff": "10GB / 30 дней",
+    "product_id": 1307,
+    "variation_id": 1322,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "French Guiana",
+    "tariff": "20GB / 30 дней",
+    "product_id": 1307,
+    "variation_id": 1323,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "French Guiana",
+    "tariff": "50GB / 90 дней",
+    "product_id": 1307,
+    "variation_id": 1324,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Georgia",
+    "tariff": "1GB / 7 дней",
+    "product_id": 42,
+    "variation_id": 465,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Georgia",
+    "tariff": "3GB / 30 дней",
+    "product_id": 42,
+    "variation_id": 466,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Georgia",
+    "tariff": "5GB / 30 дней",
+    "product_id": 42,
+    "variation_id": 467,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Georgia",
+    "tariff": "10GB / 30 дней",
+    "product_id": 42,
+    "variation_id": 468,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Georgia",
+    "tariff": "20GB / 30 дней",
+    "product_id": 42,
+    "variation_id": 469,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Georgia",
+    "tariff": "50GB / 90 дней",
+    "product_id": 42,
+    "variation_id": 470,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Germany",
+    "tariff": "1GB / 7 дней",
+    "product_id": 886,
+    "variation_id": 906,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Germany",
+    "tariff": "3GB / 30 дней",
+    "product_id": 886,
+    "variation_id": 907,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Germany",
+    "tariff": "5GB / 30 дней",
+    "product_id": 886,
+    "variation_id": 908,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Germany",
+    "tariff": "10GB / 30 дней",
+    "product_id": 886,
+    "variation_id": 909,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Germany",
+    "tariff": "20GB / 30 дней",
+    "product_id": 886,
+    "variation_id": 910,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Germany",
+    "tariff": "50GB / 90 дней",
+    "product_id": 886,
+    "variation_id": 911,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Ghana",
+    "tariff": "1GB / 7 дней",
+    "product_id": 2141,
+    "variation_id": 2154,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Ghana",
+    "tariff": "3GB / 30 дней",
+    "product_id": 2141,
+    "variation_id": 2155,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Ghana",
+    "tariff": "5GB / 30 дней",
+    "product_id": 2141,
+    "variation_id": 2156,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Ghana",
+    "tariff": "10GB / 30 дней",
+    "product_id": 2141,
+    "variation_id": 2157,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Ghana",
+    "tariff": "20GB / 30 дней",
+    "product_id": 2141,
+    "variation_id": 2158,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Gibraltar",
+    "tariff": "1GB / 7 дней",
+    "product_id": 1308,
+    "variation_id": 1326,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Gibraltar",
+    "tariff": "3GB / 30 дней",
+    "product_id": 1308,
+    "variation_id": 1327,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Gibraltar",
+    "tariff": "5GB / 30 дней",
+    "product_id": 1308,
+    "variation_id": 1328,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Gibraltar",
+    "tariff": "10GB / 30 дней",
+    "product_id": 1308,
+    "variation_id": 1329,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Gibraltar",
+    "tariff": "20GB / 30 дней",
+    "product_id": 1308,
+    "variation_id": 1330,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Gibraltar",
+    "tariff": "50GB / 90 дней",
+    "product_id": 1308,
+    "variation_id": 1331,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Greece",
+    "tariff": "1GB / 7 дней",
+    "product_id": 887,
+    "variation_id": 913,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Greece",
+    "tariff": "3GB / 30 дней",
+    "product_id": 887,
+    "variation_id": 917,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Greece",
+    "tariff": "5GB / 30 дней",
+    "product_id": 887,
+    "variation_id": 918,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Greece",
+    "tariff": "10GB / 30 дней",
+    "product_id": 887,
+    "variation_id": 919,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Greece",
+    "tariff": "20GB / 30 дней",
+    "product_id": 887,
+    "variation_id": 920,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Greece",
+    "tariff": "50GB / 90 дней",
+    "product_id": 887,
+    "variation_id": 921,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Guernsey",
+    "tariff": "1GB / 7 дней",
+    "product_id": 2142,
+    "variation_id": 2159,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Guernsey",
+    "tariff": "3GB / 30 дней",
+    "product_id": 2142,
+    "variation_id": 2160,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Guernsey",
+    "tariff": "5GB / 30 дней",
+    "product_id": 2142,
+    "variation_id": 2161,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Guernsey",
+    "tariff": "10GB / 30 дней",
+    "product_id": 2142,
+    "variation_id": 2162,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Guernsey",
+    "tariff": "20GB / 30 дней",
+    "product_id": 2142,
+    "variation_id": 2163,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Hong Kong",
+    "tariff": "1GB / 7 дней",
+    "product_id": 2143,
+    "variation_id": 2164,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Hong Kong",
+    "tariff": "3GB / 30 дней",
+    "product_id": 2143,
+    "variation_id": 2165,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Hong Kong",
+    "tariff": "5GB / 30 дней",
+    "product_id": 2143,
+    "variation_id": 2166,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Hong Kong",
+    "tariff": "10GB / 30 дней",
+    "product_id": 2143,
+    "variation_id": 2167,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Hong Kong",
+    "tariff": "20GB / 30 дней",
+    "product_id": 2143,
+    "variation_id": 2168,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Hungary",
+    "tariff": "1GB / 7 дней",
+    "product_id": 914,
+    "variation_id": 923,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Hungary",
+    "tariff": "3GB / 30 дней",
+    "product_id": 914,
+    "variation_id": 924,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Hungary",
+    "tariff": "5GB / 30 дней",
+    "product_id": 914,
+    "variation_id": 925,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Hungary",
+    "tariff": "10GB / 30 дней",
+    "product_id": 914,
+    "variation_id": 926,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Hungary",
+    "tariff": "20GB / 30 дней",
+    "product_id": 914,
+    "variation_id": 927,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Hungary",
+    "tariff": "50GB / 90 дней",
+    "product_id": 914,
+    "variation_id": 928,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Iceland",
+    "tariff": "1GB / 7 дней",
+    "product_id": 1181,
+    "variation_id": 1203,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Iceland",
+    "tariff": "3GB / 30 дней",
+    "product_id": 1181,
+    "variation_id": 1204,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Iceland",
+    "tariff": "5GB / 30 дней",
+    "product_id": 1181,
+    "variation_id": 1205,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Iceland",
+    "tariff": "10GB / 30 дней",
+    "product_id": 1181,
+    "variation_id": 1206,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Iceland",
+    "tariff": "20GB / 30 дней",
+    "product_id": 1181,
+    "variation_id": 1207,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Iceland",
+    "tariff": "50GB / 90 дней",
+    "product_id": 1181,
+    "variation_id": 1212,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "India",
+    "tariff": "1GB / 7 дней",
+    "product_id": 794,
+    "variation_id": 797,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "India",
+    "tariff": "3GB / 30 дней",
+    "product_id": 794,
+    "variation_id": 798,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "India",
+    "tariff": "5GB / 30 дней",
+    "product_id": 794,
+    "variation_id": 799,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "India",
+    "tariff": "10GB / 30 дней",
+    "product_id": 794,
+    "variation_id": 800,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "India",
+    "tariff": "20GB / 30 дней",
+    "product_id": 794,
+    "variation_id": 801,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Indonesia",
+    "tariff": "1GB / 7 дней",
+    "product_id": 1208,
+    "variation_id": 1214,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Indonesia",
+    "tariff": "3GB / 30 дней",
+    "product_id": 1208,
+    "variation_id": 1215,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Indonesia",
+    "tariff": "5GB / 30 дней",
+    "product_id": 1208,
+    "variation_id": 1216,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Indonesia",
+    "tariff": "10GB / 30 дней",
+    "product_id": 1208,
+    "variation_id": 1217,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Indonesia",
+    "tariff": "20GB / 30 дней",
+    "product_id": 1208,
+    "variation_id": 1218,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Indonesia",
+    "tariff": "50GB / 90 дней",
+    "product_id": 1208,
+    "variation_id": 1219,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Iraq",
+    "tariff": "1GB / 7 дней",
+    "product_id": 1309,
+    "variation_id": 1333,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Iraq",
+    "tariff": "3GB / 30 дней",
+    "product_id": 1309,
+    "variation_id": 1334,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Iraq",
+    "tariff": "5GB / 30 дней",
+    "product_id": 1309,
+    "variation_id": 1335,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Iraq",
+    "tariff": "10GB / 30 дней",
+    "product_id": 1309,
+    "variation_id": 1340,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Iraq",
+    "tariff": "20GB / 30 дней",
+    "product_id": 1309,
+    "variation_id": 1341,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Iraq",
+    "tariff": "50GB / 90 дней",
+    "product_id": 1309,
+    "variation_id": 1342,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Ireland",
+    "tariff": "1GB / 7 дней",
+    "product_id": 915,
+    "variation_id": 930,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Ireland",
+    "tariff": "3GB / 30 дней",
+    "product_id": 915,
+    "variation_id": 931,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Ireland",
+    "tariff": "5GB / 30 дней",
+    "product_id": 915,
+    "variation_id": 932,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Ireland",
+    "tariff": "10GB / 30 дней",
+    "product_id": 915,
+    "variation_id": 933,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Ireland",
+    "tariff": "20GB / 30 дней",
+    "product_id": 915,
+    "variation_id": 934,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Ireland",
+    "tariff": "50GB / 90 дней",
+    "product_id": 915,
+    "variation_id": 935,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Israel",
+    "tariff": "1GB / 7 дней",
+    "product_id": 1106,
+    "variation_id": 1116,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Israel",
+    "tariff": "3GB / 30 дней",
+    "product_id": 1106,
+    "variation_id": 1117,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Israel",
+    "tariff": "5GB / 30 дней",
+    "product_id": 1106,
+    "variation_id": 1118,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Israel",
+    "tariff": "10GB / 30 дней",
+    "product_id": 1106,
+    "variation_id": 1119,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Israel",
+    "tariff": "20GB / 30 дней",
+    "product_id": 1106,
+    "variation_id": 1120,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Israel",
+    "tariff": "50GB / 90 дней",
+    "product_id": 1106,
+    "variation_id": 1121,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Italy",
+    "tariff": "1GB / 7 дней",
+    "product_id": 916,
+    "variation_id": 937,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Italy",
+    "tariff": "3GB / 30 дней",
+    "product_id": 916,
+    "variation_id": 938,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Italy",
+    "tariff": "5GB / 30 дней",
+    "product_id": 916,
+    "variation_id": 939,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Italy",
+    "tariff": "10GB / 30 дней",
+    "product_id": 916,
+    "variation_id": 940,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Italy",
+    "tariff": "20GB / 30 дней",
+    "product_id": 916,
+    "variation_id": 941,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Italy",
+    "tariff": "50GB / 90 дней",
+    "product_id": 916,
+    "variation_id": 942,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Japan",
+    "tariff": "1GB / 7 дней",
+    "product_id": 795,
+    "variation_id": 802,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Japan",
+    "tariff": "3GB / 30 дней",
+    "product_id": 795,
+    "variation_id": 803,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Japan",
+    "tariff": "5GB / 30 дней",
+    "product_id": 795,
+    "variation_id": 804,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Japan",
+    "tariff": "10GB / 30 дней",
+    "product_id": 795,
+    "variation_id": 805,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Japan",
+    "tariff": "20GB / 30 дней",
+    "product_id": 795,
+    "variation_id": 806,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Kazakhstan",
+    "tariff": "1GB / 7 дней",
+    "product_id": 44,
+    "variation_id": 460,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Kazakhstan",
+    "tariff": "3GB / 30 дней",
+    "product_id": 44,
+    "variation_id": 462,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Kazakhstan",
+    "tariff": "5GB / 30 дней",
+    "product_id": 44,
+    "variation_id": 464,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Kazakhstan",
+    "tariff": "10GB / 30 дней",
+    "product_id": 44,
+    "variation_id": 459,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Kazakhstan",
+    "tariff": "20GB / 30 дней",
+    "product_id": 44,
+    "variation_id": 461,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Kazakhstan",
+    "tariff": "50GB / 90 дней",
+    "product_id": 44,
+    "variation_id": 463,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Kazakhstan",
+    "tariff": "100GB / 180 дней",
+    "product_id": 44,
+    "variation_id": 458,
+    "refill_mb": 102400,
+    "refill_days": 180
+  },
+  {
+    "country": "Kuwait",
+    "tariff": "1GB / 7 дней",
+    "product_id": 1209,
+    "variation_id": 1221,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Kuwait",
+    "tariff": "3GB / 30 дней",
+    "product_id": 1209,
+    "variation_id": 1222,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Kuwait",
+    "tariff": "5GB / 30 дней",
+    "product_id": 1209,
+    "variation_id": 1223,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Kuwait",
+    "tariff": "10GB / 30 дней",
+    "product_id": 1209,
+    "variation_id": 1224,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Kuwait",
+    "tariff": "20GB / 30 дней",
+    "product_id": 1209,
+    "variation_id": 1225,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Kuwait",
+    "tariff": "50GB / 90 дней",
+    "product_id": 1209,
+    "variation_id": 1226,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Kyrgyzstan",
+    "tariff": "1GB / 7 дней",
+    "product_id": 46,
+    "variation_id": 472,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Kyrgyzstan",
+    "tariff": "3GB / 30 дней",
+    "product_id": 46,
+    "variation_id": 473,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Kyrgyzstan",
+    "tariff": "5GB / 30 дней",
+    "product_id": 46,
+    "variation_id": 474,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Kyrgyzstan",
+    "tariff": "10GB / 30 дней",
+    "product_id": 46,
+    "variation_id": 475,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Kyrgyzstan",
+    "tariff": "20GB / 30 дней",
+    "product_id": 46,
+    "variation_id": 476,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Kyrgyzstan",
+    "tariff": "50GB / 90 дней",
+    "product_id": 46,
+    "variation_id": 477,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Laos",
+    "tariff": "1GB / 7 дней",
+    "product_id": 1336,
+    "variation_id": 1344,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Laos",
+    "tariff": "3GB / 30 дней",
+    "product_id": 1336,
+    "variation_id": 1345,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Laos",
+    "tariff": "5GB / 30 дней",
+    "product_id": 1336,
+    "variation_id": 1346,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Laos",
+    "tariff": "10GB / 30 дней",
+    "product_id": 1336,
+    "variation_id": 1347,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Laos",
+    "tariff": "20GB / 30 дней",
+    "product_id": 1336,
+    "variation_id": 1348,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Laos",
+    "tariff": "50GB / 90 дней",
+    "product_id": 1336,
+    "variation_id": 1349,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Latvia",
+    "tariff": "1GB / 7 дней",
+    "product_id": 25,
+    "variation_id": 480,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Latvia",
+    "tariff": "3GB / 30 дней",
+    "product_id": 25,
+    "variation_id": 481,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Latvia",
+    "tariff": "5GB / 30 дней",
+    "product_id": 25,
+    "variation_id": 483,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Latvia",
+    "tariff": "10GB / 30 дней",
+    "product_id": 25,
+    "variation_id": 485,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Latvia",
+    "tariff": "20GB / 30 дней",
+    "product_id": 25,
+    "variation_id": 487,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Latvia",
+    "tariff": "50GB / 90 дней",
+    "product_id": 25,
+    "variation_id": 488,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Liechtenstein",
+    "tariff": "1GB / 7 дней",
+    "product_id": 944,
+    "variation_id": 948,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Liechtenstein",
+    "tariff": "3GB / 30 дней",
+    "product_id": 944,
+    "variation_id": 949,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Liechtenstein",
+    "tariff": "5GB / 30 дней",
+    "product_id": 944,
+    "variation_id": 950,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Liechtenstein",
+    "tariff": "10GB / 30 дней",
+    "product_id": 944,
+    "variation_id": 951,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Liechtenstein",
+    "tariff": "20GB / 30 дней",
+    "product_id": 944,
+    "variation_id": 952,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Liechtenstein",
+    "tariff": "50GB / 90 дней",
+    "product_id": 944,
+    "variation_id": 953,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Lithuania",
+    "tariff": "1GB / 7 дней",
+    "product_id": 945,
+    "variation_id": 955,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Lithuania",
+    "tariff": "3GB / 30 дней",
+    "product_id": 945,
+    "variation_id": 956,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Lithuania",
+    "tariff": "5GB / 30 дней",
+    "product_id": 945,
+    "variation_id": 957,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Lithuania",
+    "tariff": "10GB / 30 дней",
+    "product_id": 945,
+    "variation_id": 958,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Lithuania",
+    "tariff": "20GB / 30 дней",
+    "product_id": 945,
+    "variation_id": 959,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Lithuania",
+    "tariff": "50GB / 90 дней",
+    "product_id": 945,
+    "variation_id": 960,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Luxembourg",
+    "tariff": "1GB / 7 дней",
+    "product_id": 946,
+    "variation_id": 962,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Luxembourg",
+    "tariff": "3GB / 30 дней",
+    "product_id": 946,
+    "variation_id": 963,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Luxembourg",
+    "tariff": "5GB / 30 дней",
+    "product_id": 946,
+    "variation_id": 964,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Luxembourg",
+    "tariff": "10GB / 30 дней",
+    "product_id": 946,
+    "variation_id": 965,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Luxembourg",
+    "tariff": "20GB / 30 дней",
+    "product_id": 946,
+    "variation_id": 966,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Luxembourg",
+    "tariff": "50GB / 90 дней",
+    "product_id": 946,
+    "variation_id": 967,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Malaysia",
+    "tariff": "1GB / 7 дней",
+    "product_id": 1107,
+    "variation_id": 1123,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Malaysia",
+    "tariff": "3GB / 30 дней",
+    "product_id": 1107,
+    "variation_id": 1124,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Malaysia",
+    "tariff": "5GB / 30 дней",
+    "product_id": 1107,
+    "variation_id": 1125,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Malaysia",
+    "tariff": "10GB / 30 дней",
+    "product_id": 1107,
+    "variation_id": 1126,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Malaysia",
+    "tariff": "20GB / 30 дней",
+    "product_id": 1107,
+    "variation_id": 1127,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Malaysia",
+    "tariff": "50GB / 90 дней",
+    "product_id": 1107,
+    "variation_id": 1128,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Malta",
+    "tariff": "1GB / 7 дней",
+    "product_id": 947,
+    "variation_id": 969,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Malta",
+    "tariff": "3GB / 30 дней",
+    "product_id": 947,
+    "variation_id": 970,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Malta",
+    "tariff": "5GB / 30 дней",
+    "product_id": 947,
+    "variation_id": 971,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Malta",
+    "tariff": "10GB / 30 дней",
+    "product_id": 947,
+    "variation_id": 972,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Malta",
+    "tariff": "20GB / 30 дней",
+    "product_id": 947,
+    "variation_id": 973,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Malta",
+    "tariff": "50GB / 90 дней",
+    "product_id": 947,
+    "variation_id": 978,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Mexico",
+    "tariff": "1GB / 7 дней",
+    "product_id": 1337,
+    "variation_id": 1351,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Mexico",
+    "tariff": "3GB / 30 дней",
+    "product_id": 1337,
+    "variation_id": 1352,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Mexico",
+    "tariff": "5GB / 30 дней",
+    "product_id": 1337,
+    "variation_id": 1353,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Mexico",
+    "tariff": "10GB / 30 дней",
+    "product_id": 1337,
+    "variation_id": 1354,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Mexico",
+    "tariff": "20GB / 30 дней",
+    "product_id": 1337,
+    "variation_id": 1355,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Mexico",
+    "tariff": "50GB / 90 дней",
+    "product_id": 1337,
+    "variation_id": 1356,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Moldova",
+    "tariff": "1GB / 7 дней",
+    "product_id": 1108,
+    "variation_id": 1130,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Moldova",
+    "tariff": "3GB / 30 дней",
+    "product_id": 1108,
+    "variation_id": 1131,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Moldova",
+    "tariff": "5GB / 30 дней",
+    "product_id": 1108,
+    "variation_id": 1132,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Moldova",
+    "tariff": "10GB / 30 дней",
+    "product_id": 1108,
+    "variation_id": 1133,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Moldova",
+    "tariff": "20GB / 30 дней",
+    "product_id": 1108,
+    "variation_id": 1134,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Moldova",
+    "tariff": "50GB / 90 дней",
+    "product_id": 1108,
+    "variation_id": 1139,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Montenegro",
+    "tariff": "1GB / 7 дней",
+    "product_id": 1135,
+    "variation_id": 1141,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Montenegro",
+    "tariff": "3GB / 30 дней",
+    "product_id": 1135,
+    "variation_id": 1142,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Montenegro",
+    "tariff": "5GB / 30 дней",
+    "product_id": 1135,
+    "variation_id": 1143,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Montenegro",
+    "tariff": "10GB / 30 дней",
+    "product_id": 1135,
+    "variation_id": 1144,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Montenegro",
+    "tariff": "20GB / 30 дней",
+    "product_id": 1135,
+    "variation_id": 1145,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Montenegro",
+    "tariff": "50GB / 90 дней",
+    "product_id": 1135,
+    "variation_id": 1146,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Morocco",
+    "tariff": "1GB / 7 дней",
+    "product_id": 2171,
+    "variation_id": 2184,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Morocco",
+    "tariff": "3GB / 30 дней",
+    "product_id": 2171,
+    "variation_id": 2185,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Morocco",
+    "tariff": "5GB / 30 дней",
+    "product_id": 2171,
+    "variation_id": 2186,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Morocco",
+    "tariff": "10GB / 30 дней",
+    "product_id": 2171,
+    "variation_id": 2187,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Morocco",
+    "tariff": "20GB / 30 дней",
+    "product_id": 2171,
+    "variation_id": 2188,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Netherlands",
+    "tariff": "1GB / 7 дней",
+    "product_id": 974,
+    "variation_id": 980,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Netherlands",
+    "tariff": "3GB / 30 дней",
+    "product_id": 974,
+    "variation_id": 981,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Netherlands",
+    "tariff": "5GB / 30 дней",
+    "product_id": 974,
+    "variation_id": 982,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Netherlands",
+    "tariff": "10GB / 30 дней",
+    "product_id": 974,
+    "variation_id": 983,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Netherlands",
+    "tariff": "20GB / 30 дней",
+    "product_id": 974,
+    "variation_id": 984,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Netherlands",
+    "tariff": "50GB / 90 дней",
+    "product_id": 974,
+    "variation_id": 985,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "New Zealand",
+    "tariff": "1GB / 7 дней",
+    "product_id": 1136,
+    "variation_id": 1148,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "New Zealand",
+    "tariff": "3GB / 30 дней",
+    "product_id": 1136,
+    "variation_id": 1149,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "New Zealand",
+    "tariff": "5GB / 30 дней",
+    "product_id": 1136,
+    "variation_id": 1150,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "New Zealand",
+    "tariff": "10GB / 30 дней",
+    "product_id": 1136,
+    "variation_id": 1151,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "New Zealand",
+    "tariff": "20GB / 30 дней",
+    "product_id": 1136,
+    "variation_id": 1152,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "New Zealand",
+    "tariff": "50GB / 90 дней",
+    "product_id": 1136,
+    "variation_id": 1153,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Nigeria",
+    "tariff": "1GB / 7 дней",
+    "product_id": 1338,
+    "variation_id": 1358,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Nigeria",
+    "tariff": "3GB / 30 дней",
+    "product_id": 1338,
+    "variation_id": 1359,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Nigeria",
+    "tariff": "5GB / 30 дней",
+    "product_id": 1338,
+    "variation_id": 1360,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Nigeria",
+    "tariff": "10GB / 30 дней",
+    "product_id": 1338,
+    "variation_id": 1361,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Nigeria",
+    "tariff": "20GB / 30 дней",
+    "product_id": 1338,
+    "variation_id": 1362,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Nigeria",
+    "tariff": "50GB / 90 дней",
+    "product_id": 1338,
+    "variation_id": 1363,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "North Macedonia",
+    "tariff": "1GB / 7 дней",
+    "product_id": 2172,
+    "variation_id": 2189,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "North Macedonia",
+    "tariff": "3GB / 30 дней",
+    "product_id": 2172,
+    "variation_id": 2190,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "North Macedonia",
+    "tariff": "5GB / 30 дней",
+    "product_id": 2172,
+    "variation_id": 2191,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "North Macedonia",
+    "tariff": "10GB / 30 дней",
+    "product_id": 2172,
+    "variation_id": 2192,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "North Macedonia",
+    "tariff": "20GB / 30 дней",
+    "product_id": 2172,
+    "variation_id": 2193,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Norway",
+    "tariff": "1GB / 7 дней",
+    "product_id": 975,
+    "variation_id": 987,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Norway",
+    "tariff": "3GB / 30 дней",
+    "product_id": 975,
+    "variation_id": 988,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Norway",
+    "tariff": "5GB / 30 дней",
+    "product_id": 975,
+    "variation_id": 989,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Norway",
+    "tariff": "10GB / 30 дней",
+    "product_id": 975,
+    "variation_id": 990,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Norway",
+    "tariff": "20GB / 30 дней",
+    "product_id": 975,
+    "variation_id": 991,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Norway",
+    "tariff": "50GB / 90 дней",
+    "product_id": 975,
+    "variation_id": 992,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Oman",
+    "tariff": "1GB / 7 дней",
+    "product_id": 2173,
+    "variation_id": 2194,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Oman",
+    "tariff": "3GB / 30 дней",
+    "product_id": 2173,
+    "variation_id": 2195,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Oman",
+    "tariff": "5GB / 30 дней",
+    "product_id": 2173,
+    "variation_id": 2196,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Oman",
+    "tariff": "10GB / 30 дней",
+    "product_id": 2173,
+    "variation_id": 2197,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Oman",
+    "tariff": "20GB / 30 дней",
+    "product_id": 2173,
+    "variation_id": 2198,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Pakistan",
+    "tariff": "1GB / 7 дней",
+    "product_id": 976,
+    "variation_id": 994,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Pakistan",
+    "tariff": "3GB / 30 дней",
+    "product_id": 976,
+    "variation_id": 995,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Pakistan",
+    "tariff": "5GB / 30 дней",
+    "product_id": 976,
+    "variation_id": 996,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Pakistan",
+    "tariff": "10GB / 30 дней",
+    "product_id": 976,
+    "variation_id": 997,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Pakistan",
+    "tariff": "20GB / 30 дней",
+    "product_id": 976,
+    "variation_id": 998,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Pakistan",
+    "tariff": "50GB / 90 дней",
+    "product_id": 976,
+    "variation_id": 999,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Peru",
+    "tariff": "1GB / 7 дней",
+    "product_id": 1339,
+    "variation_id": 1365,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Peru",
+    "tariff": "3GB / 30 дней",
+    "product_id": 1339,
+    "variation_id": 1368,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Peru",
+    "tariff": "5GB / 30 дней",
+    "product_id": 1339,
+    "variation_id": 1369,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Peru",
+    "tariff": "10GB / 30 дней",
+    "product_id": 1339,
+    "variation_id": 1370,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Peru",
+    "tariff": "20GB / 30 дней",
+    "product_id": 1339,
+    "variation_id": 1371,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Peru",
+    "tariff": "50GB / 90 дней",
+    "product_id": 1339,
+    "variation_id": 1372,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Philippines",
+    "tariff": "1GB / 7 дней",
+    "product_id": 2199,
+    "variation_id": 2204,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Philippines",
+    "tariff": "3GB / 30 дней",
+    "product_id": 2199,
+    "variation_id": 2205,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Philippines",
+    "tariff": "5GB / 30 дней",
+    "product_id": 2199,
+    "variation_id": 2206,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Philippines",
+    "tariff": "10GB / 30 дней",
+    "product_id": 2199,
+    "variation_id": 2207,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Philippines",
+    "tariff": "20GB / 30 дней",
+    "product_id": 2199,
+    "variation_id": 2208,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Poland",
+    "tariff": "1GB / 7 дней",
+    "product_id": 977,
+    "variation_id": 1001,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Poland",
+    "tariff": "3GB / 30 дней",
+    "product_id": 977,
+    "variation_id": 1002,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Poland",
+    "tariff": "5GB / 30 дней",
+    "product_id": 977,
+    "variation_id": 1003,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Poland",
+    "tariff": "10GB / 30 дней",
+    "product_id": 977,
+    "variation_id": 1008,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Poland",
+    "tariff": "20GB / 30 дней",
+    "product_id": 977,
+    "variation_id": 1009,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Poland",
+    "tariff": "50GB / 90 дней",
+    "product_id": 977,
+    "variation_id": 1010,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Portugal",
+    "tariff": "1GB / 7 дней",
+    "product_id": 1004,
+    "variation_id": 1012,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Portugal",
+    "tariff": "3GB / 30 дней",
+    "product_id": 1004,
+    "variation_id": 1013,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Portugal",
+    "tariff": "5GB / 30 дней",
+    "product_id": 1004,
+    "variation_id": 1014,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Portugal",
+    "tariff": "10GB / 30 дней",
+    "product_id": 1004,
+    "variation_id": 1015,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Portugal",
+    "tariff": "20GB / 30 дней",
+    "product_id": 1004,
+    "variation_id": 1016,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Portugal",
+    "tariff": "50GB / 90 дней",
+    "product_id": 1004,
+    "variation_id": 1017,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Qatar",
+    "tariff": "1GB / 7 дней",
+    "product_id": 2200,
+    "variation_id": 2209,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Qatar",
+    "tariff": "3GB / 30 дней",
+    "product_id": 2200,
+    "variation_id": 2210,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Qatar",
+    "tariff": "5GB / 30 дней",
+    "product_id": 2200,
+    "variation_id": 2211,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Qatar",
+    "tariff": "10GB / 30 дней",
+    "product_id": 2200,
+    "variation_id": 2212,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Qatar",
+    "tariff": "20GB / 30 дней",
+    "product_id": 2200,
+    "variation_id": 2213,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Reunion",
+    "tariff": "1GB / 7 дней",
+    "product_id": 1210,
+    "variation_id": 1228,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Reunion",
+    "tariff": "3GB / 30 дней",
+    "product_id": 1210,
+    "variation_id": 1229,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Reunion",
+    "tariff": "5GB / 30 дней",
+    "product_id": 1210,
+    "variation_id": 1230,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Reunion",
+    "tariff": "10GB / 30 дней",
+    "product_id": 1210,
+    "variation_id": 1231,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Reunion",
+    "tariff": "20GB / 30 дней",
+    "product_id": 1210,
+    "variation_id": 1232,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Reunion",
+    "tariff": "50GB / 90 дней",
+    "product_id": 1210,
+    "variation_id": 1233,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Romania",
+    "tariff": "1GB / 7 дней",
+    "product_id": 1005,
+    "variation_id": 1019,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Romania",
+    "tariff": "3GB / 30 дней",
+    "product_id": 1005,
+    "variation_id": 1020,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Romania",
+    "tariff": "5GB / 30 дней",
+    "product_id": 1005,
+    "variation_id": 1021,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Romania",
+    "tariff": "10GB / 30 дней",
+    "product_id": 1005,
+    "variation_id": 1022,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Romania",
+    "tariff": "20GB / 30 дней",
+    "product_id": 1005,
+    "variation_id": 1023,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Romania",
+    "tariff": "50GB / 90 дней",
+    "product_id": 1005,
+    "variation_id": 1024,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Saudi Arabia",
+    "tariff": "1GB / 7 дней",
+    "product_id": 2201,
+    "variation_id": 2214,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Saudi Arabia",
+    "tariff": "3GB / 30 дней",
+    "product_id": 2201,
+    "variation_id": 2215,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Saudi Arabia",
+    "tariff": "5GB / 30 дней",
+    "product_id": 2201,
+    "variation_id": 2216,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Saudi Arabia",
+    "tariff": "10GB / 30 дней",
+    "product_id": 2201,
+    "variation_id": 2217,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Saudi Arabia",
+    "tariff": "20GB / 30 дней",
+    "product_id": 2201,
+    "variation_id": 2218,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Serbia",
+    "tariff": "1GB / 7 дней",
+    "product_id": 1137,
+    "variation_id": 1155,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Serbia",
+    "tariff": "3GB / 30 дней",
+    "product_id": 1137,
+    "variation_id": 1156,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Serbia",
+    "tariff": "5GB / 30 дней",
+    "product_id": 1137,
+    "variation_id": 1157,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Serbia",
+    "tariff": "10GB / 30 дней",
+    "product_id": 1137,
+    "variation_id": 1158,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Serbia",
+    "tariff": "20GB / 30 дней",
+    "product_id": 1137,
+    "variation_id": 1159,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Serbia",
+    "tariff": "50GB / 90 дней",
+    "product_id": 1137,
+    "variation_id": 1160,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Singapore",
+    "tariff": "1GB / 7 дней",
+    "product_id": 2202,
+    "variation_id": 2219,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Singapore",
+    "tariff": "3GB / 30 дней",
+    "product_id": 2202,
+    "variation_id": 2220,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Singapore",
+    "tariff": "5GB / 30 дней",
+    "product_id": 2202,
+    "variation_id": 2221,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Singapore",
+    "tariff": "10GB / 30 дней",
+    "product_id": 2202,
+    "variation_id": 2222,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Singapore",
+    "tariff": "20GB / 30 дней",
+    "product_id": 2202,
+    "variation_id": 2223,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Slovakia",
+    "tariff": "1GB / 7 дней",
+    "product_id": 1006,
+    "variation_id": 1026,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Slovakia",
+    "tariff": "3GB / 30 дней",
+    "product_id": 1006,
+    "variation_id": 1027,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Slovakia",
+    "tariff": "5GB / 30 дней",
+    "product_id": 1006,
+    "variation_id": 1028,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Slovakia",
+    "tariff": "10GB / 30 дней",
+    "product_id": 1006,
+    "variation_id": 1029,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Slovakia",
+    "tariff": "20GB / 30 дней",
+    "product_id": 1006,
+    "variation_id": 1030,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Slovakia",
+    "tariff": "50GB / 90 дней",
+    "product_id": 1006,
+    "variation_id": 1031,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Slovenia",
+    "tariff": "1GB / 7 дней",
+    "product_id": 1007,
+    "variation_id": 1033,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Slovenia",
+    "tariff": "3GB / 30 дней",
+    "product_id": 1007,
+    "variation_id": 1036,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Slovenia",
+    "tariff": "5GB / 30 дней",
+    "product_id": 1007,
+    "variation_id": 1037,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Slovenia",
+    "tariff": "10GB / 30 дней",
+    "product_id": 1007,
+    "variation_id": 1038,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Slovenia",
+    "tariff": "20GB / 30 дней",
+    "product_id": 1007,
+    "variation_id": 1039,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Slovenia",
+    "tariff": "50GB / 90 дней",
+    "product_id": 1007,
+    "variation_id": 1040,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "South Africa",
+    "tariff": "1GB / 7 дней",
+    "product_id": 2203,
+    "variation_id": 2224,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "South Africa",
+    "tariff": "3GB / 30 дней",
+    "product_id": 2203,
+    "variation_id": 2225,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "South Africa",
+    "tariff": "5GB / 30 дней",
+    "product_id": 2203,
+    "variation_id": 2226,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "South Africa",
+    "tariff": "10GB / 30 дней",
+    "product_id": 2203,
+    "variation_id": 2227,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "South Africa",
+    "tariff": "20GB / 30 дней",
+    "product_id": 2203,
+    "variation_id": 2228,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "South Korea",
+    "tariff": "1GB / 7 дней",
+    "product_id": 2229,
+    "variation_id": 2233,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "South Korea",
+    "tariff": "3GB / 30 дней",
+    "product_id": 2229,
+    "variation_id": 2234,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "South Korea",
+    "tariff": "5GB / 30 дней",
+    "product_id": 2229,
+    "variation_id": 2235,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "South Korea",
+    "tariff": "10GB / 30 дней",
+    "product_id": 2229,
+    "variation_id": 2236,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "South Korea",
+    "tariff": "20GB / 30 дней",
+    "product_id": 2229,
+    "variation_id": 2237,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Spain",
+    "tariff": "1GB / 7 дней",
+    "product_id": 1138,
+    "variation_id": 1162,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Spain",
+    "tariff": "3GB / 30 дней",
+    "product_id": 1138,
+    "variation_id": 1163,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Spain",
+    "tariff": "5GB / 30 дней",
+    "product_id": 1138,
+    "variation_id": 1164,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Spain",
+    "tariff": "10GB / 30 дней",
+    "product_id": 1138,
+    "variation_id": 1166,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Spain",
+    "tariff": "20GB / 30 дней",
+    "product_id": 1138,
+    "variation_id": 1167,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Spain",
+    "tariff": "50GB / 90 дней",
+    "product_id": 1138,
+    "variation_id": 1168,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Sri Lanka",
+    "tariff": "1GB / 7 дней",
+    "product_id": 2230,
+    "variation_id": 2238,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Sri Lanka",
+    "tariff": "3GB / 30 дней",
+    "product_id": 2230,
+    "variation_id": 2239,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Sri Lanka",
+    "tariff": "5GB / 30 дней",
+    "product_id": 2230,
+    "variation_id": 2240,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Sri Lanka",
+    "tariff": "10GB / 30 дней",
+    "product_id": 2230,
+    "variation_id": 2241,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Sri Lanka",
+    "tariff": "20GB / 30 дней",
+    "product_id": 2230,
+    "variation_id": 2242,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Sweden",
+    "tariff": "1GB / 7 дней",
+    "product_id": 1034,
+    "variation_id": 1042,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Sweden",
+    "tariff": "3GB / 30 дней",
+    "product_id": 1034,
+    "variation_id": 1043,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Sweden",
+    "tariff": "5GB / 30 дней",
+    "product_id": 1034,
+    "variation_id": 1044,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Sweden",
+    "tariff": "10GB / 30 дней",
+    "product_id": 1034,
+    "variation_id": 1045,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Sweden",
+    "tariff": "20GB / 30 дней",
+    "product_id": 1034,
+    "variation_id": 1046,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Sweden",
+    "tariff": "50GB / 90 дней",
+    "product_id": 1034,
+    "variation_id": 1047,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Switzerland",
+    "tariff": "1GB / 7 дней",
+    "product_id": 1165,
+    "variation_id": 1170,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Switzerland",
+    "tariff": "3GB / 30 дней",
+    "product_id": 1165,
+    "variation_id": 1171,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Switzerland",
+    "tariff": "5GB / 30 дней",
+    "product_id": 1165,
+    "variation_id": 1172,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Switzerland",
+    "tariff": "10GB / 30 дней",
+    "product_id": 1165,
+    "variation_id": 1173,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Switzerland",
+    "tariff": "20GB / 30 дней",
+    "product_id": 1165,
+    "variation_id": 1174,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Switzerland",
+    "tariff": "50GB / 90 дней",
+    "product_id": 1165,
+    "variation_id": 1175,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Taiwan",
+    "tariff": "1GB / 7 дней",
+    "product_id": 2231,
+    "variation_id": 2243,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Taiwan",
+    "tariff": "3GB / 30 дней",
+    "product_id": 2231,
+    "variation_id": 2244,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Taiwan",
+    "tariff": "5GB / 30 дней",
+    "product_id": 2231,
+    "variation_id": 2245,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Taiwan",
+    "tariff": "10GB / 30 дней",
+    "product_id": 2231,
+    "variation_id": 2246,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Taiwan",
+    "tariff": "20GB / 30 дней",
+    "product_id": 2231,
+    "variation_id": 2247,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Tajikistan",
+    "tariff": "1GB / 7 дней",
+    "product_id": 1238,
+    "variation_id": 1246,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Tajikistan",
+    "tariff": "3GB / 30 дней",
+    "product_id": 1238,
+    "variation_id": 1247,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Tajikistan",
+    "tariff": "5GB / 30 дней",
+    "product_id": 1238,
+    "variation_id": 1248,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Tajikistan",
+    "tariff": "10GB / 30 дней",
+    "product_id": 1238,
+    "variation_id": 1249,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Tajikistan",
+    "tariff": "20GB / 30 дней",
+    "product_id": 1238,
+    "variation_id": 1250,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Tajikistan",
+    "tariff": "50GB / 90 дней",
+    "product_id": 1238,
+    "variation_id": 1251,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Thailand",
+    "tariff": "1GB / 7 дней",
+    "product_id": 1239,
+    "variation_id": 1253,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Thailand",
+    "tariff": "3GB / 30 дней",
+    "product_id": 1239,
+    "variation_id": 1254,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Thailand",
+    "tariff": "5GB / 30 дней",
+    "product_id": 1239,
+    "variation_id": 1255,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Thailand",
+    "tariff": "10GB / 30 дней",
+    "product_id": 1239,
+    "variation_id": 1256,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Thailand",
+    "tariff": "20GB / 30 дней",
+    "product_id": 1239,
+    "variation_id": 1257,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Thailand",
+    "tariff": "50GB / 90 дней",
+    "product_id": 1239,
+    "variation_id": 1258,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Thailand",
+    "tariff": "100GB / 180 дней",
+    "product_id": 1239,
+    "variation_id": 1259,
+    "refill_mb": 102400,
+    "refill_days": 180
+  },
+  {
+    "country": "Tunisia",
+    "tariff": "1GB / 7 дней",
+    "product_id": 1240,
+    "variation_id": 1260,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Tunisia",
+    "tariff": "3GB / 30 дней",
+    "product_id": 1240,
+    "variation_id": 1261,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Tunisia",
+    "tariff": "5GB / 30 дней",
+    "product_id": 1240,
+    "variation_id": 1262,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Tunisia",
+    "tariff": "10GB / 30 дней",
+    "product_id": 1240,
+    "variation_id": 1263,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Tunisia",
+    "tariff": "20GB / 30 дней",
+    "product_id": 1240,
+    "variation_id": 1264,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Tunisia",
+    "tariff": "50GB / 90 дней",
+    "product_id": 1240,
+    "variation_id": 1265,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Turkey",
+    "tariff": "1GB / 7 дней",
+    "product_id": 317,
+    "variation_id": 330,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Turkey",
+    "tariff": "3GB / 30 дней",
+    "product_id": 317,
+    "variation_id": 331,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Turkey",
+    "tariff": "5GB / 30 дней",
+    "product_id": 317,
+    "variation_id": 333,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Turkey",
+    "tariff": "10GB / 30 дней",
+    "product_id": 317,
+    "variation_id": 335,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Turkey",
+    "tariff": "20GB / 30 дней",
+    "product_id": 317,
+    "variation_id": 337,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Turkey",
+    "tariff": "50GB / 90 дней",
+    "product_id": 317,
+    "variation_id": 338,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Turkey",
+    "tariff": "100GB / 180 дней",
+    "product_id": 317,
+    "variation_id": 339,
+    "refill_mb": 102400,
+    "refill_days": 180
+  },
+  {
+    "country": "Uganda",
+    "tariff": "1GB / 7 дней",
+    "product_id": 1366,
+    "variation_id": 1374,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Uganda",
+    "tariff": "3GB / 30 дней",
+    "product_id": 1366,
+    "variation_id": 1375,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Uganda",
+    "tariff": "5GB / 30 дней",
+    "product_id": 1366,
+    "variation_id": 1376,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Uganda",
+    "tariff": "10GB / 30 дней",
+    "product_id": 1366,
+    "variation_id": 1377,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Uganda",
+    "tariff": "20GB / 30 дней",
+    "product_id": 1366,
+    "variation_id": 1378,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Uganda",
+    "tariff": "50GB / 90 дней",
+    "product_id": 1366,
+    "variation_id": 1379,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "United Arab Emirates",
+    "tariff": "1GB / 7 дней",
+    "product_id": 2232,
+    "variation_id": 2248,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "United Arab Emirates",
+    "tariff": "3GB / 30 дней",
+    "product_id": 2232,
+    "variation_id": 2249,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "United Arab Emirates",
+    "tariff": "5GB / 30 дней",
+    "product_id": 2232,
+    "variation_id": 2250,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "United Arab Emirates",
+    "tariff": "10GB / 30 дней",
+    "product_id": 2232,
+    "variation_id": 2251,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "United Arab Emirates",
+    "tariff": "20GB / 30 дней",
+    "product_id": 2232,
+    "variation_id": 2252,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "United Kingdom",
+    "tariff": "1GB / 7 дней",
+    "product_id": 1035,
+    "variation_id": 1049,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "United Kingdom",
+    "tariff": "3GB / 30 дней",
+    "product_id": 1035,
+    "variation_id": 1050,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "United Kingdom",
+    "tariff": "5GB / 30 дней",
+    "product_id": 1035,
+    "variation_id": 1051,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "United Kingdom",
+    "tariff": "10GB / 30 дней",
+    "product_id": 1035,
+    "variation_id": 1052,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "United Kingdom",
+    "tariff": "20GB / 30 дней",
+    "product_id": 1035,
+    "variation_id": 1053,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "United Kingdom",
+    "tariff": "50GB / 90 дней",
+    "product_id": 1035,
+    "variation_id": 1054,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "United States",
+    "tariff": "1GB / 7 дней",
+    "product_id": 1241,
+    "variation_id": 1267,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "United States",
+    "tariff": "3GB / 30 дней",
+    "product_id": 1241,
+    "variation_id": 1268,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "United States",
+    "tariff": "5GB / 30 дней",
+    "product_id": 1241,
+    "variation_id": 1269,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "United States",
+    "tariff": "10GB / 30 дней",
+    "product_id": 1241,
+    "variation_id": 1270,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "United States",
+    "tariff": "20GB / 30 дней",
+    "product_id": 1241,
+    "variation_id": 1271,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "United States",
+    "tariff": "50GB / 90 дней",
+    "product_id": 1241,
+    "variation_id": 1272,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Uruguay",
+    "tariff": "1GB / 7 дней",
+    "product_id": 1367,
+    "variation_id": 1381,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Uruguay",
+    "tariff": "3GB / 30 дней",
+    "product_id": 1367,
+    "variation_id": 1382,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Uruguay",
+    "tariff": "5GB / 30 дней",
+    "product_id": 1367,
+    "variation_id": 1383,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Uruguay",
+    "tariff": "10GB / 30 дней",
+    "product_id": 1367,
+    "variation_id": 1384,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Uruguay",
+    "tariff": "20GB / 30 дней",
+    "product_id": 1367,
+    "variation_id": 1385,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Uruguay",
+    "tariff": "50GB / 90 дней",
+    "product_id": 1367,
+    "variation_id": 1386,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Uzbekistan",
+    "tariff": "1GB / 7 дней",
+    "product_id": 4114,
+    "variation_id": 4116,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Uzbekistan",
+    "tariff": "5GB / 30 дней",
+    "product_id": 4114,
+    "variation_id": 4119,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Uzbekistan",
+    "tariff": "10GB / 30 дней",
+    "product_id": 4114,
+    "variation_id": 4115,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Uzbekistan",
+    "tariff": "20GB / 30 дней",
+    "product_id": 4114,
+    "variation_id": 4117,
+    "refill_mb": 20480,
+    "refill_days": 30
+  },
+  {
+    "country": "Uzbekistan",
+    "tariff": "50GB / 90 дней",
+    "product_id": 4114,
+    "variation_id": 4118,
+    "refill_mb": 51200,
+    "refill_days": 90
+  },
+  {
+    "country": "Vietnam",
+    "tariff": "1GB / 7 дней",
+    "product_id": 796,
+    "variation_id": 807,
+    "refill_mb": 1024,
+    "refill_days": 7
+  },
+  {
+    "country": "Vietnam",
+    "tariff": "3GB / 30 дней",
+    "product_id": 796,
+    "variation_id": 808,
+    "refill_mb": 3072,
+    "refill_days": 30
+  },
+  {
+    "country": "Vietnam",
+    "tariff": "5GB / 30 дней",
+    "product_id": 796,
+    "variation_id": 809,
+    "refill_mb": 5120,
+    "refill_days": 30
+  },
+  {
+    "country": "Vietnam",
+    "tariff": "10GB / 30 дней",
+    "product_id": 796,
+    "variation_id": 810,
+    "refill_mb": 10240,
+    "refill_days": 30
+  },
+  {
+    "country": "Vietnam",
+    "tariff": "20GB / 30 дней",
+    "product_id": 796,
+    "variation_id": 811,
+    "refill_mb": 20480,
+    "refill_days": 30
+  }
+]

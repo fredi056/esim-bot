@@ -117,6 +117,11 @@ add_column_if_not_exists("orders", "supplier_requested_at", "INTEGER DEFAULT 0")
 add_column_if_not_exists("orders", "supplier_issued_at", "INTEGER DEFAULT 0")
 add_column_if_not_exists("orders", "supplier_delivered_at", "INTEGER DEFAULT 0")
 add_column_if_not_exists("orders", "supplier_last_error", "TEXT DEFAULT ''")
+add_column_if_not_exists("orders", "order_kind", "TEXT DEFAULT 'esim'")
+add_column_if_not_exists("orders", "parent_order_id", "INTEGER DEFAULT 0")
+add_column_if_not_exists("orders", "topup_mb", "INTEGER DEFAULT 0")
+add_column_if_not_exists("orders", "topup_days", "INTEGER DEFAULT 0")
+add_column_if_not_exists("orders", "topup_applied_at", "INTEGER DEFAULT 0")
 add_column_if_not_exists("users", "username", "TEXT DEFAULT ''")
 add_column_if_not_exists("users", "first_name", "TEXT DEFAULT ''")
 add_column_if_not_exists("users", "first_source", "TEXT DEFAULT ''")
@@ -329,6 +334,42 @@ def load_country_prices() -> Dict[str, Dict[str, int]]:
     return normalized
 
 COUNTRY_PRICES = load_country_prices()
+
+SUPPLIER_CATALOG_FILE = Path(__file__).resolve().parent / "supplier_catalog.json"
+
+
+def load_supplier_catalog() -> List[Dict[str, Any]]:
+    """Load server-side supplier IDs. They must never be accepted from the Mini App."""
+    try:
+        data = json.loads(SUPPLIER_CATALOG_FILE.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return []
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"supplier_catalog.json is not valid JSON: {exc}") from exc
+    if not isinstance(data, list):
+        raise RuntimeError("supplier_catalog.json must contain a list")
+    normalized = []
+    for item in data:
+        if not isinstance(item, dict):
+            raise RuntimeError("supplier_catalog.json contains an invalid item")
+        country, tariff = item.get("country"), item.get("tariff")
+        product_id, variation_id = item.get("product_id"), item.get("variation_id", 0)
+        refill_mb, refill_days = item.get("refill_mb"), item.get("refill_days")
+        if (not isinstance(country, str) or not country or not isinstance(tariff, str) or not tariff
+                or isinstance(product_id, bool) or not isinstance(product_id, int) or product_id <= 0
+                or isinstance(variation_id, bool) or not isinstance(variation_id, int) or variation_id < 0
+                or isinstance(refill_mb, bool) or not isinstance(refill_mb, int) or refill_mb <= 0
+                or isinstance(refill_days, bool) or not isinstance(refill_days, int) or refill_days <= 0):
+            raise RuntimeError("supplier_catalog.json contains invalid supplier tariff data")
+        price = 14 if country == "Технический тест" and tariff == "Тех тариф" else get_valid_plan_price(country, tariff)
+        if price is None:
+            raise RuntimeError(f"supplier_catalog.json tariff is absent from sale prices: {country} / {tariff}")
+        normalized.append({
+            "country": country, "tariff": tariff, "price": price,
+            "product_id": product_id, "variation_id": variation_id,
+            "refill_mb": refill_mb, "refill_days": refill_days,
+        })
+    return normalized
 
 UNLIMITED_FILE = Path(__file__).resolve().parent / "unlimited_catalog.json"
 
@@ -1434,6 +1475,9 @@ def parse_order_details(text: str) -> Tuple[str, str]:
 
 def get_valid_plan_price(country: str, tariff: str) -> Optional[int]:
     return COUNTRY_PRICES.get(country, {}).get(tariff)
+
+
+SUPPLIER_CATALOG = load_supplier_catalog()
 
 def validate_unlimited_order_payload(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     country = payload.get("country")
@@ -5374,7 +5418,235 @@ def read_mini_app_account(telegram_user: Dict[str, Any]) -> Dict[str, Any]:
         SUPPORT_URL,
     )
     result["profile"]["is_admin"] = telegram_user["id"] == ADMIN_ID
+    with closing(_payment_db()) as db:
+        for esim in result["esims"]:
+            options = _topup_options_for_order(db, telegram_user["id"], esim["id"])
+            esim["top_up_options"] = options
+            esim["can_top_up"] = bool(options and esim.get("iccid") and esim.get("status") == "issued")
     return result
+
+
+def _format_topup_volume(megabytes: int) -> str:
+    if megabytes % 1024 == 0:
+        return f"{megabytes // 1024} ГБ"
+    return f"{megabytes} МБ"
+
+
+def _topup_option_id(product_id: int, variation_id: int) -> str:
+    return f"p{product_id}v{variation_id}"
+
+
+def _topup_options_for_order(db, user_id: int, order_id: int) -> List[Dict[str, Any]]:
+    row = db.execute(
+        """
+        SELECT country, supplier_iccid, supplier_status
+        FROM orders
+        WHERE id=? AND user_id=? AND status='paid' AND COALESCE(order_kind, 'esim')='esim'
+        """,
+        (order_id, user_id),
+    ).fetchone()
+    if not row or not row[1] or row[2] != "issued":
+        return []
+    options = []
+    for item in SUPPLIER_CATALOG:
+        if item["country"] != row[0]:
+            continue
+        options.append({
+            "id": _topup_option_id(item["product_id"], item["variation_id"]),
+            "label": _format_topup_volume(item["refill_mb"]),
+            "megabytes": item["refill_mb"], "days": item["refill_days"],
+            "price": item["price"],
+        })
+    return sorted(options, key=lambda option: (option["megabytes"], option["days"]))
+
+
+def _supplier_catalog_option(country: str, option_id: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(option_id, str):
+        return None
+    for item in SUPPLIER_CATALOG:
+        if item["country"] == country and option_id == _topup_option_id(item["product_id"], item["variation_id"]):
+            return item
+    return None
+
+
+def _persist_supplier_details(order_id: int, sim_card: Dict[str, Any]) -> None:
+    iccid = str(sim_card.get("iccid") or "").strip()
+    if not iccid:
+        raise BananaError("banana_invalid_line_response")
+    with closing(_payment_db()) as db:
+        db.execute(
+            """
+            UPDATE orders SET supplier_provider_status=?, supplier_remaining_usage_kb=?,
+                supplier_allowed_usage_kb=?, supplier_remaining_days=?, supplier_expire_at=?
+            WHERE id=? AND supplier_iccid=?
+            """,
+            (
+                str(sim_card.get("status") or "").strip()[:80],
+                _supplier_int(sim_card.get("remaining_usage_kb")),
+                _supplier_int(sim_card.get("allowed_usage_kb")),
+                _supplier_int(sim_card.get("remaining_days")),
+                str(sim_card.get("expire_at") or sim_card.get("expires_at") or "").strip()[:100],
+                order_id, iccid,
+            ),
+        )
+        db.commit()
+
+
+def refresh_mini_app_esim(telegram_user: Dict[str, Any], order_id: int) -> Dict[str, Any]:
+    with closing(_payment_db()) as db:
+        row = db.execute(
+            """
+            SELECT supplier_iccid FROM orders
+            WHERE id=? AND user_id=? AND status='paid' AND supplier_status='issued'
+              AND COALESCE(order_kind, 'esim')='esim'
+            """,
+            (order_id, telegram_user["id"]),
+        ).fetchone()
+    if not row:
+        raise ApiError(404, "esim_not_found")
+    if not banana.configured:
+        raise ApiError(503, "supplier_unavailable")
+    try:
+        result = banana.get_details(row[0])
+        sim_card = result.get("sim_card") if isinstance(result, dict) else None
+        if not isinstance(sim_card, dict):
+            raise BananaError("banana_invalid_line_response")
+        _persist_supplier_details(order_id, sim_card)
+    except BananaError as exc:
+        _notify_admin_safe(
+            f"⚠️ Не удалось проверить остаток eSIM заказа #{order_id}\n"
+            f"Код: {_format_banana_error(exc)}"
+        )
+        raise ApiError(503, "balance_check_unavailable") from exc
+    return {"account": read_mini_app_account(telegram_user)}
+
+
+def create_mini_app_topup(telegram_user: Dict[str, Any], parent_order_id: int,
+                          body: Dict[str, Any]) -> Dict[str, Any]:
+    if not TOCHKA_PAYMENTS_ENABLED or not tochka.configured:
+        raise ApiError(503, "payments_not_configured")
+    if not banana.configured:
+        raise ApiError(503, "supplier_unavailable")
+    legal = body.get("legal_acceptance")
+    if not isinstance(legal, dict) or not all(
+        isinstance(legal.get(key), str) and legal[key]
+        for key in ("offer_version", "personal_data_consent_version", "accepted_at")
+    ):
+        raise ApiError(400, "legal_acceptance_required")
+    user_id = telegram_user["id"]
+    now = int(time.time())
+    with closing(_payment_db()) as lookup_db:
+        parent = lookup_db.execute(
+            """
+            SELECT country, supplier_iccid, supplier_status
+            FROM orders
+            WHERE id=? AND user_id=? AND status='paid' AND COALESCE(order_kind, 'esim')='esim'
+            """,
+            (parent_order_id, user_id),
+        ).fetchone()
+    if not parent or not parent[1] or parent[2] != "issued":
+        raise ApiError(404, "esim_not_found")
+    option = _supplier_catalog_option(parent[0], body.get("option_id"))
+    if not option:
+        raise ApiError(409, "topup_option_changed")
+    try:
+        product = banana.resolve_product(option["product_id"], option["variation_id"])
+        if (not isinstance(product, dict) or product.get("partner_provider") != "supplier_standard"
+                or product.get("unlimited") is True or product.get("refillable") is not True
+                or (_supplier_int(product.get("refill_mb")) not in (0, option["refill_mb"]))
+                or (_supplier_int(product.get("refill_days")) not in (0, option["refill_days"]))):
+            raise BananaError("banana_product_not_refillable")
+    except BananaError as exc:
+        _notify_admin_safe(
+            f"⚠️ Пакет пополнения Banana недоступен до оплаты\n"
+            f"Код: {_format_banana_error(exc)}"
+        )
+        raise ApiError(503, "topup_option_unavailable") from exc
+    db = _payment_db()
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        current_parent = db.execute(
+            """
+            SELECT country, supplier_iccid, supplier_status
+            FROM orders
+            WHERE id=? AND user_id=? AND status='paid' AND COALESCE(order_kind, 'esim')='esim'
+            """,
+            (parent_order_id, user_id),
+        ).fetchone()
+        if not current_parent or not current_parent[1] or current_parent[2] != "issued":
+            raise ApiError(404, "esim_not_found")
+        if current_parent[0] != parent[0] or current_parent[1] != parent[1]:
+            raise ApiError(409, "topup_option_changed")
+        duplicate = db.execute(
+            """
+            SELECT id, payment_url FROM orders
+            WHERE user_id=? AND parent_order_id=? AND supplier_product_id=?
+              AND supplier_variation_id=? AND status='payment_pending'
+              AND payment_provider='tochka' AND created_at>=?
+            ORDER BY id DESC LIMIT 1
+            """,
+            (user_id, parent_order_id, option["product_id"], option["variation_id"], now - 20 * 60),
+        ).fetchone()
+        if duplicate and duplicate[1]:
+            db.commit()
+            return {"order_id": duplicate[0], "payment_url": duplicate[1], "status": "CREATED"}
+        label = _format_topup_volume(option["refill_mb"])
+        tariff = f"Пополнение {label} / {option['refill_days']} дн."
+        text = f"{current_parent[0]} | {tariff} — {option['price']}₽"
+        db.execute(
+            """
+            INSERT INTO orders (
+                user_id, text, price, pay_amount, status, country, tariff, created_at,
+                plan_type, customer_email, legal_acceptance, payment_provider, payment_link_id,
+                payment_status, payment_created_at, supplier_product_id, supplier_variation_id,
+                supplier_status, supplier_iccid, order_kind, parent_order_id, topup_mb, topup_days
+            ) VALUES (?, ?, ?, ?, 'payment_pending', ?, ?, ?, 'topup', '', ?, 'tochka', '',
+                      'CREATING', ?, ?, ?, '', ?, 'topup', ?, ?, ?)
+            """,
+            (
+                user_id, text, option["price"], option["price"], current_parent[0], tariff, now,
+                json.dumps({**legal, "recorded_at": now}, ensure_ascii=False), now,
+                option["product_id"], option["variation_id"], current_parent[1], parent_order_id,
+                option["refill_mb"], option["refill_days"],
+            ),
+        )
+        order_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+        db.execute("UPDATE orders SET payment_link_id=? WHERE id=?", (f"esimlime-{order_id}", order_id))
+        db.commit()
+    except ApiError:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+    try:
+        payment = tochka.create_payment(
+            order_id, option["price"], f"Пополнение eSIM, заказ №{order_id}",
+            "https://t.me/esimlimebot?startapp=account",
+            "https://t.me/esimlimebot?startapp=account",
+        )
+    except TochkaError as exc:
+        with closing(_payment_db()) as db:
+            db.execute(
+                "UPDATE orders SET status='payment_error', payment_status=? WHERE id=?",
+                (str(exc)[:100], order_id),
+            )
+            db.commit()
+        _notify_admin_safe(
+            f"⚠️ Точка не создала ссылку оплаты пополнения\n\nЗаказ #{order_id}\n"
+            f"Код: {_format_tochka_error(exc)}"
+        )
+        raise ApiError(503, _payment_api_error(exc)) from exc
+    with closing(_payment_db()) as db:
+        db.execute(
+            """
+            UPDATE orders SET payment_operation_id=?, payment_url=?, payment_status=?
+            WHERE id=? AND user_id=? AND status='payment_pending'
+            """,
+            (payment["operationId"], payment["paymentLink"], payment.get("status", "CREATED"), order_id, user_id),
+        )
+        db.commit()
+    return {"order_id": order_id, "payment_url": payment["paymentLink"], "status": payment.get("status", "CREATED")}
 
 
 def read_mini_app_esim_image(user_id: int, order_id: int):
@@ -5454,12 +5726,17 @@ def _validated_api_order(body: Dict[str, Any], user_id: int) -> Optional[Dict[st
     price = get_valid_plan_price(country, tariff)
     if price is None or displayed_price != price or country == "Russia":
         return None
+    supplier_item = next(
+        (item for item in SUPPLIER_CATALOG if item["country"] == country and item["tariff"] == tariff),
+        None,
+    )
     return {
         "country": country, "tariff": tariff, "price": price, "plan": None,
         "plan_type": "",
         "days": 0, "unlimited_key": "", "supplier_tariff": "",
         "post_limit_speed": "", "daily_high_speed_gb": 0,
-        "supplier_product_id": 0, "supplier_variation_id": 0,
+        "supplier_product_id": supplier_item["product_id"] if supplier_item else 0,
+        "supplier_variation_id": supplier_item["variation_id"] if supplier_item else 0,
     }
 
 
@@ -5510,6 +5787,25 @@ def create_mini_app_payment(telegram_user: Dict[str, Any], body: Dict[str, Any])
     order = _validated_api_order(body, user_id)
     if not order:
         raise ApiError(409, "tariff_changed")
+    if _supplier_int(order["supplier_product_id"]) > 0:
+        if not banana.configured:
+            raise ApiError(503, "supplier_unavailable")
+        expected = _supplier_catalog_option(
+            order["country"], _topup_option_id(order["supplier_product_id"], order["supplier_variation_id"])
+        )
+        try:
+            product = banana.resolve_product(order["supplier_product_id"], order["supplier_variation_id"])
+            if (not isinstance(product, dict) or product.get("partner_provider") != "supplier_standard"
+                    or product.get("unlimited") is True
+                    or (expected and _supplier_int(product.get("refill_mb")) not in (0, expected["refill_mb"]))
+                    or (expected and _supplier_int(product.get("refill_days")) not in (0, expected["refill_days"]))):
+                raise BananaError("banana_product_changed")
+        except BananaError as exc:
+            _notify_admin_safe(
+                f"⚠️ Тариф Banana недоступен до оплаты\n"
+                f"{order['country']} — {order['tariff']}\nКод: {_format_banana_error(exc)}"
+            )
+            raise ApiError(503, "supplier_product_unavailable") from exc
 
     now = int(time.time())
     db = _payment_db()
@@ -5648,6 +5944,7 @@ def deliver_supplier_order(order_id: int) -> bool:
                    esim_file_id, supplier_delivered_at
             FROM orders
             WHERE id=? AND status='paid' AND supplier_status='issued'
+              AND COALESCE(order_kind, 'esim')='esim'
             """,
             (order_id,),
         ).fetchone()
@@ -5755,7 +6052,7 @@ def provision_paid_supplier_order(order_id: int) -> bool:
             """
             SELECT user_id, status, country, tariff, plan_type, supplier_product_id,
                    supplier_variation_id, supplier_status, supplier_requested_at
-            FROM orders WHERE id=?
+            FROM orders WHERE id=? AND COALESCE(order_kind, 'esim')='esim'
             """,
             (order_id,),
         ).fetchone()
@@ -5848,17 +6145,119 @@ def provision_paid_supplier_order(order_id: int) -> bool:
     return deliver_supplier_order(order_id)
 
 
+def apply_paid_supplier_topup(order_id: int) -> bool:
+    """Apply a paid refill idempotently and refresh the parent eSIM balance."""
+    now = int(time.time())
+    with closing(_payment_db()) as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute(
+            """
+            SELECT user_id, status, parent_order_id, supplier_iccid, supplier_product_id,
+                   supplier_variation_id, supplier_status, supplier_requested_at,
+                   topup_mb, topup_days, country
+            FROM orders WHERE id=? AND order_kind='topup'
+            """,
+            (order_id,),
+        ).fetchone()
+        if not row or row[1] != "paid" or not row[3] or _supplier_int(row[4]) <= 0:
+            db.rollback()
+            return False
+        if row[6] == "issued":
+            db.rollback()
+            return True
+        if row[6] == "processing" and _supplier_int(row[7]) > now - 5 * 60:
+            db.rollback()
+            return False
+        parent = db.execute(
+            """
+            SELECT supplier_iccid FROM orders
+            WHERE id=? AND user_id=? AND status='paid' AND supplier_status='issued'
+              AND COALESCE(order_kind, 'esim')='esim'
+            """,
+            (row[2], row[0]),
+        ).fetchone()
+        if not parent or parent[0] != row[3]:
+            db.rollback()
+            return False
+        db.execute(
+            """
+            UPDATE orders SET supplier_status='processing', supplier_requested_at=?, supplier_last_error=''
+            WHERE id=? AND supplier_status!='issued'
+            """,
+            (now, order_id),
+        )
+        db.commit()
+
+    user_id, parent_order_id, iccid = row[0], row[2], row[3]
+    product_id, variation_id = _supplier_int(row[4]), _supplier_int(row[5])
+    try:
+        product = banana.resolve_product(product_id, variation_id)
+        if not isinstance(product, dict) or product.get("partner_provider") != "supplier_standard":
+            raise BananaError("banana_product_not_standard")
+        if product.get("unlimited") is True or product.get("refillable") is not True:
+            raise BananaError("banana_product_not_refillable")
+        resolved_mb = _supplier_int(product.get("refill_mb"))
+        resolved_days = _supplier_int(product.get("refill_days"))
+        if (resolved_mb and resolved_mb != _supplier_int(row[8])) or (
+            resolved_days and resolved_days != _supplier_int(row[9])
+        ):
+            raise BananaError("banana_product_changed")
+        banana.refill(order_id, iccid, product_id, variation_id)
+        details = banana.get_details(iccid)
+        sim_card = details.get("sim_card") if isinstance(details, dict) else None
+        if not isinstance(sim_card, dict):
+            raise BananaError("banana_invalid_line_response")
+        _persist_supplier_details(parent_order_id, sim_card)
+        applied_at = int(time.time())
+        with closing(_payment_db()) as db:
+            db.execute(
+                """
+                UPDATE orders SET supplier_status='issued', supplier_last_error='', topup_applied_at=?
+                WHERE id=? AND supplier_status!='issued'
+                """,
+                (applied_at, order_id),
+            )
+            db.commit()
+    except Exception as exc:
+        error = _format_banana_error(exc) if isinstance(exc, BananaError) else "supplier_internal_error"
+        with closing(_payment_db()) as db:
+            db.execute(
+                "UPDATE orders SET supplier_status='error', supplier_last_error=? WHERE id=? AND supplier_status!='issued'",
+                (error[:300], order_id),
+            )
+            db.commit()
+        _notify_admin_safe(
+            f"⚠️ Пополнение заказа #{order_id} оплачено, но Banana его не применил\n"
+            f"Код: {error}\nПовторная попытка выполнится автоматически."
+        )
+        return False
+
+    volume = _format_topup_volume(_supplier_int(row[8]))
+    bot.send_message(
+        user_id,
+        f"✅ eSIM пополнена на {volume}\n\nАктуальный остаток уже доступен в разделе «Мои eSIM».",
+        reply_markup=main_keyboard(user_id),
+    )
+    _notify_admin_safe(
+        f"✅ Banana пополнил eSIM\n\nЗаказ #{order_id}\nПокупатель: {format_user_for_admin(user_id)}\n"
+        f"Пакет: {volume}\nICCID: {iccid}"
+    )
+    return True
+
+
 def _mark_bank_order_paid(order_id: int, operation_id: str, amount: Any) -> bool:
     now = int(time.time())
     db = _payment_db()
     try:
         db.execute("BEGIN IMMEDIATE")
+        db.row_factory = sqlite3.Row
         row = db.execute(
             """
             SELECT user_id, status, country, tariff, price, pay_amount, partner_code, partner_rate,
                    partner_commission, ref_bonus_given, plan_type, supplier_key, supplier_tariff,
                    duration_days, post_limit_speed, daily_high_speed_gb, payment_operation_id,
-                   supplier_product_id, supplier_variation_id, supplier_status
+                   supplier_product_id, supplier_variation_id, supplier_status,
+                   COALESCE(order_kind, 'esim') AS order_kind, parent_order_id, topup_mb
             FROM orders WHERE id=? AND payment_provider='tochka'
             """,
             (order_id,)
@@ -5866,18 +6265,22 @@ def _mark_bank_order_paid(order_id: int, operation_id: str, amount: Any) -> bool
         if not row:
             db.rollback()
             return False
-        if row[1] == "paid":
+        if row["status"] == "paid":
             db.rollback()
-            if _supplier_int(row[17]) > 0 and row[19] != "issued":
+            if row["order_kind"] == "topup" and row["supplier_status"] != "issued":
                 threading.Thread(
-                    target=provision_paid_supplier_order, args=(order_id,), daemon=True,
-                    name=f"supplier-order-{order_id}",
+                    target=apply_paid_supplier_topup, args=(order_id,), daemon=True,
+                    name=f"supplier-topup-{order_id}",
                 ).start()
+            elif _supplier_int(row["supplier_product_id"]) > 0 and row["supplier_status"] != "issued":
+                threading.Thread(target=provision_paid_supplier_order, args=(order_id,), daemon=True,
+                                 name=f"supplier-order-{order_id}").start()
             return True
-        if row[1] != "payment_pending" or row[16] != operation_id or float(row[5]) != float(amount):
+        if (row["status"] != "payment_pending" or row["payment_operation_id"] != operation_id
+                or float(row["pay_amount"]) != float(amount)):
             db.rollback()
             return False
-        user_id = row[0]
+        user_id = row["user_id"]
         already_paid = db.execute(
             "SELECT COUNT(*) FROM orders WHERE user_id=? AND status='paid' AND id!=?", (user_id, order_id)
         ).fetchone()[0] > 0
@@ -5892,11 +6295,15 @@ def _mark_bank_order_paid(order_id: int, operation_id: str, amount: Any) -> bool
             "UPDATE reminder_jobs SET status='cancelled' WHERE order_id=? AND status IN ('pending','processing')",
             (order_id,)
         )
-        supplier_order = _supplier_int(row[17]) > 0
-        if not supplier_order:
+        topup_order = row["order_kind"] == "topup"
+        supplier_order = not topup_order and _supplier_int(row["supplier_product_id"]) > 0
+        if not supplier_order and not topup_order:
             schedule_reminder(ADMIN_ID, order_id, "admin_esim_15m", now + ADMIN_ESIM_15M_DELAY,
                               db_cursor=db.cursor(), db_conn=db, commit=False)
-        partner_code, partner_rate, partner_commission, ref_bonus_given = row[6], row[7], row[8], row[9]
+        partner_code = row["partner_code"]
+        partner_rate = row["partner_rate"]
+        partner_commission = row["partner_commission"]
+        ref_bonus_given = row["ref_bonus_given"]
         if partner_code and partner_commission > 0:
             db.execute(
                 """
@@ -5904,7 +6311,7 @@ def _mark_bank_order_paid(order_id: int, operation_id: str, amount: Any) -> bool
                     (order_id, partner_code, user_id, sale_amount, commission_rate, commission_amount, status, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, 'available', ?)
                 """,
-                (order_id, partner_code, user_id, row[5], partner_rate, partner_commission, now)
+                (order_id, partner_code, user_id, row["pay_amount"], partner_rate, partner_commission, now)
             )
             schedule_partner_sale_job(order_id, now, db_cursor=db.cursor(), db_conn=db, commit=False)
         elif not already_paid and not ref_bonus_given:
@@ -5917,7 +6324,13 @@ def _mark_bank_order_paid(order_id: int, operation_id: str, amount: Any) -> bool
     finally:
         db.close()
 
-    if supplier_order:
+    if topup_order:
+        bot.send_message(
+            user_id,
+            "✅ Оплата пополнения получена\n\nПередаём пакет поставщику. После применения пришлём подтверждение сюда.",
+            reply_markup=main_keyboard(user_id),
+        )
+    elif supplier_order:
         bot.send_message(
             user_id,
             "✅ Оплата получена\n\nАвтоматически выпускаем eSIM у поставщика. "
@@ -5931,16 +6344,25 @@ def _mark_bank_order_paid(order_id: int, operation_id: str, amount: Any) -> bool
             "Они придут сюда и сохранятся в личном кабинете. Обычно это занимает 5–15 минут.",
             reply_markup=main_keyboard(user_id)
         )
-    unlimited_details = format_unlimited_admin_details(row[10], row[11], row[12], row[13], row[14], row[15])
+    unlimited_details = format_unlimited_admin_details(
+        row["plan_type"], row["supplier_key"], row["supplier_tariff"], row["duration_days"],
+        row["post_limit_speed"], row["daily_high_speed_gb"]
+    )
     bot.send_message(
         ADMIN_ID,
         f"✅ Оплата через Точку подтверждена\n\nЗаказ #{order_id}\n"
-        f"Покупатель: {format_user_for_admin(user_id)}\nСтрана: {row[2]}\nТариф: {row[3]}\n"
-        f"Сумма: {row[4]}₽{unlimited_details}" +
-        ("\n\nЗапущена автоматическая выдача Banana." if supplier_order
+        f"Покупатель: {format_user_for_admin(user_id)}\nСтрана: {row['country']}\nТариф: {row['tariff']}\n"
+        f"Сумма: {row['price']}₽{unlimited_details}" +
+        ("\n\nЗапущено автоматическое пополнение Banana." if topup_order else
+         "\n\nЗапущена автоматическая выдача Banana." if supplier_order
          else f"\n\n/sendqr {user_id} {order_id}")
     )
-    if supplier_order:
+    if topup_order:
+        threading.Thread(
+            target=apply_paid_supplier_topup, args=(order_id,), daemon=True,
+            name=f"supplier-topup-{order_id}",
+        ).start()
+    elif supplier_order:
         threading.Thread(
             target=provision_paid_supplier_order, args=(order_id,), daemon=True,
             name=f"supplier-order-{order_id}",
@@ -5951,12 +6373,16 @@ def _mark_bank_order_paid(order_id: int, operation_id: str, amount: Any) -> bool
 def read_mini_app_payment(telegram_user: Dict[str, Any], order_id: int) -> Dict[str, Any]:
     with closing(_payment_db()) as db:
         row = db.execute(
-            "SELECT status, payment_status, payment_operation_id, pay_amount FROM orders WHERE id=? AND user_id=? AND payment_provider='tochka'",
+            """
+            SELECT status, payment_status, payment_operation_id, pay_amount,
+                   COALESCE(order_kind, 'esim')
+            FROM orders WHERE id=? AND user_id=? AND payment_provider='tochka'
+            """,
             (order_id, telegram_user["id"])
         ).fetchone()
     if not row:
         raise ApiError(404, "order_not_found")
-    status, bank_status, operation_id, amount = row
+    status, bank_status, operation_id, amount, order_kind = row
     if status == "payment_pending" and operation_id:
         try:
             info = tochka.get_payment(operation_id)
@@ -5966,7 +6392,10 @@ def read_mini_app_payment(telegram_user: Dict[str, Any], order_id: int) -> Dict[
                 status = "paid"
         except TochkaError:
             pass
-    return {"order_id": order_id, "status": status, "payment_status": bank_status}
+    return {
+        "order_id": order_id, "status": status, "payment_status": bank_status,
+        "order_kind": order_kind,
+    }
 
 
 def _deep_value(data: Any, key: str):
@@ -6132,19 +6561,26 @@ def supplier_fulfillment_worker() -> None:
             with closing(_payment_db()) as db:
                 rows = db.execute(
                     """
-                    SELECT id, supplier_status FROM orders
+                    SELECT id, supplier_status, COALESCE(order_kind, 'esim') FROM orders
                     WHERE status='paid' AND COALESCE(supplier_product_id, 0)>0
                       AND (
-                        (COALESCE(supplier_status, '')!='issued'
+                        (COALESCE(order_kind, 'esim')='topup'
+                         AND COALESCE(supplier_status, '')!='issued'
                          AND (COALESCE(supplier_status, '')='' OR COALESCE(supplier_requested_at, 0)<=?))
-                        OR (supplier_status='issued' AND COALESCE(supplier_delivered_at, 0)=0)
+                        OR (COALESCE(order_kind, 'esim')='esim'
+                         AND COALESCE(supplier_status, '')!='issued'
+                         AND (COALESCE(supplier_status, '')='' OR COALESCE(supplier_requested_at, 0)<=?))
+                        OR (COALESCE(order_kind, 'esim')='esim' AND supplier_status='issued'
+                            AND COALESCE(supplier_delivered_at, 0)=0)
                       )
                     ORDER BY id ASC LIMIT 10
                     """,
-                    (retry_before,),
+                    (retry_before, retry_before),
                 ).fetchall()
-            for order_id, supplier_status in rows:
-                if supplier_status == "issued":
+            for order_id, supplier_status, order_kind in rows:
+                if order_kind == "topup":
+                    apply_paid_supplier_topup(order_id)
+                elif supplier_status == "issued":
                     deliver_supplier_order(order_id)
                 else:
                     provision_paid_supplier_order(order_id)
@@ -6193,6 +6629,8 @@ start_account_api(
     create_mini_app_payment,
     read_mini_app_payment,
     accept_tochka_webhook,
+    refresh_mini_app_esim,
+    create_mini_app_topup,
 )
 threading.Thread(target=tochka_setup_worker, daemon=True, name="tochka-setup").start()
 threading.Thread(
