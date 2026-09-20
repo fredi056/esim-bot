@@ -5921,8 +5921,6 @@ def create_mini_app_payment(telegram_user: Dict[str, Any], body: Dict[str, Any])
             """,
             (payment["operationId"], payment["paymentLink"], payment.get("status", "CREATED"), order_id, user_id)
         )
-        schedule_reminder(user_id, order_id, "payment_30m", now + 30 * 60, db_cursor=db.cursor(), db_conn=db, commit=False)
-        schedule_reminder(user_id, order_id, "payment_24h", now + 24 * 60 * 60, db_cursor=db.cursor(), db_conn=db, commit=False)
         db.commit()
     return {"order_id": order_id, "payment_url": payment["paymentLink"], "status": payment.get("status", "CREATED")}
 
@@ -6461,12 +6459,7 @@ def tochka_setup_worker() -> None:
     while True:
         try:
             customer_code = tochka.resolve_customer_code()
-            merchant_id = tochka.resolve_merchant_id(customer_code)
-            _notify_admin_safe(
-                "✅ API оплаты Точки доступен\n\n"
-                f"Клиент: {customer_code}\nТорговая точка: {merchant_id}\n"
-                f"Способы: {', '.join(tochka.payment_modes or ['sbp'])}"
-            )
+            tochka.resolve_merchant_id(customer_code)
             break
         except TochkaError as exc:
             if not api_failure_notified:
@@ -6488,7 +6481,6 @@ def tochka_setup_worker() -> None:
     while True:
         try:
             tochka.ensure_webhook(TOCHKA_WEBHOOK_URL)
-            _notify_admin_safe("✅ Уведомления об оплатах Точки подключены")
             return
         except TochkaError as exc:
             if (
@@ -6514,13 +6506,12 @@ def tochka_payment_reconciliation_worker() -> None:
         return
     time.sleep(10)
     reported_errors = set()
-    reported_statuses = set()
     while True:
         try:
             with closing(_payment_db()) as db:
                 rows = db.execute(
                     """
-                    SELECT id, payment_operation_id, created_at
+                    SELECT id, payment_operation_id
                     FROM orders
                     WHERE status='payment_pending' AND payment_provider='tochka'
                       AND COALESCE(payment_operation_id, '')!='' AND created_at>=?
@@ -6528,7 +6519,7 @@ def tochka_payment_reconciliation_worker() -> None:
                     """,
                     (int(time.time()) - 3 * 24 * 60 * 60,)
                 ).fetchall()
-            for order_id, operation_id, created_at in rows:
+            for order_id, operation_id in rows:
                 try:
                     info = tochka.get_payment(operation_id)
                     bank_status = str(info.get("status") or "UNKNOWN").upper()
@@ -6550,15 +6541,6 @@ def tochka_payment_reconciliation_worker() -> None:
                                 (order_id,),
                             )
                             db.commit()
-                    elif int(created_at or 0) < int(time.time()) - 2 * 60:
-                        status_key = (order_id, bank_status)
-                        if status_key not in reported_statuses:
-                            reported_statuses.add(status_key)
-                            _notify_admin_safe(
-                                f"ℹ️ Заказ #{order_id} ещё не подтверждён Точкой\n"
-                                f"Статус банка: {bank_status}\n\n"
-                                "Повторно оплачивать заказ не нужно. Проверка продолжится автоматически."
-                            )
                 except TochkaError as exc:
                     error_key = (str(exc), getattr(exc, "detail", "") or "")
                     if error_key not in reported_errors:
@@ -6638,10 +6620,6 @@ def banana_setup_worker() -> None:
             f"Код: {_format_banana_error(exc)}"
         )
         return
-    _notify_admin_safe(
-        "✅ API поставщика Banana доступен\n\n"
-        "Проверка подключения выполнена без создания eSIM."
-    )
 
 
 threading.Thread(target=reminder_worker, daemon=True).start()
