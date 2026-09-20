@@ -149,6 +149,14 @@ CREATE TABLE IF NOT EXISTS reminder_jobs (
 """)
 conn.commit()
 
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS service_alerts (
+    alert_key TEXT PRIMARY KEY,
+    last_sent_at INTEGER NOT NULL
+)
+""")
+conn.commit()
+
 cursor.execute(
     "UPDATE reminder_jobs SET status='cancelled' WHERE reminder_type='review_15m' AND status IN ('pending', 'processing')"
 )
@@ -5513,9 +5521,11 @@ def refresh_mini_app_esim(telegram_user: Dict[str, Any], order_id: int) -> Dict[
             raise BananaError("banana_invalid_line_response")
         _persist_supplier_details(order_id, sim_card)
     except BananaError as exc:
-        _notify_admin_safe(
+        _notify_admin_throttled(
+            f"balance-check:{order_id}:{str(exc)}",
             f"⚠️ Не удалось проверить остаток eSIM заказа #{order_id}\n"
-            f"Код: {_format_banana_error(exc)}"
+            f"Код: {_format_banana_error(exc)}",
+            cooldown=60 * 60,
         )
         raise ApiError(503, "balance_check_unavailable") from exc
     return {"account": read_mini_app_account(telegram_user)}
@@ -5557,9 +5567,10 @@ def create_mini_app_topup(telegram_user: Dict[str, Any], parent_order_id: int,
                 or (_supplier_int(product.get("refill_days")) not in (0, option["refill_days"]))):
             raise BananaError("banana_product_not_refillable")
     except BananaError as exc:
-        _notify_admin_safe(
+        _notify_admin_throttled(
+            f"topup-product:{option['product_id']}:{option['variation_id']}:{str(exc)}",
             f"⚠️ Пакет пополнения Banana недоступен до оплаты\n"
-            f"Код: {_format_banana_error(exc)}"
+            f"Код: {_format_banana_error(exc)}",
         )
         raise ApiError(503, "topup_option_unavailable") from exc
     db = _payment_db()
@@ -5632,9 +5643,11 @@ def create_mini_app_topup(telegram_user: Dict[str, Any], parent_order_id: int,
                 (str(exc)[:100], order_id),
             )
             db.commit()
-        _notify_admin_safe(
+        _notify_admin_throttled(
+            f"topup-payment-create:{str(exc)}",
             f"⚠️ Точка не создала ссылку оплаты пополнения\n\nЗаказ #{order_id}\n"
-            f"Код: {_format_tochka_error(exc)}"
+            f"Код: {_format_tochka_error(exc)}",
+            cooldown=60 * 60,
         )
         raise ApiError(503, _payment_api_error(exc)) from exc
     with closing(_payment_db()) as db:
@@ -5677,6 +5690,30 @@ def _payment_db():
     db = sqlite3.connect(DB_PATH, timeout=10)
     db.execute("PRAGMA busy_timeout = 10000")
     return db
+
+
+def _notify_admin_throttled(alert_key: str, text: str, cooldown: int = 6 * 60 * 60) -> bool:
+    """Persist alert cooldowns so retries and Railway restarts cannot spam the admin."""
+    now = int(time.time())
+    key = re.sub(r"[^a-zA-Z0-9:_.-]+", "_", str(alert_key))[:180]
+    with closing(_payment_db()) as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute(
+            "SELECT last_sent_at FROM service_alerts WHERE alert_key=?", (key,)
+        ).fetchone()
+        if row and int(row[0] or 0) > now - max(60, int(cooldown)):
+            db.rollback()
+            return False
+        db.execute(
+            """
+            INSERT INTO service_alerts (alert_key, last_sent_at) VALUES (?, ?)
+            ON CONFLICT(alert_key) DO UPDATE SET last_sent_at=excluded.last_sent_at
+            """,
+            (key, now),
+        )
+        db.commit()
+    _notify_admin_safe(text)
+    return True
 
 
 def _valid_checkout_email(value: Any) -> Optional[str]:
@@ -5801,9 +5838,10 @@ def create_mini_app_payment(telegram_user: Dict[str, Any], body: Dict[str, Any])
                     or (expected and _supplier_int(product.get("refill_days")) not in (0, expected["refill_days"]))):
                 raise BananaError("banana_product_changed")
         except BananaError as exc:
-            _notify_admin_safe(
+            _notify_admin_throttled(
+                f"sale-product:{order['supplier_product_id']}:{order['supplier_variation_id']}:{str(exc)}",
                 f"⚠️ Тариф Banana недоступен до оплаты\n"
-                f"{order['country']} — {order['tariff']}\nКод: {_format_banana_error(exc)}"
+                f"{order['country']} — {order['tariff']}\nКод: {_format_banana_error(exc)}",
             )
             raise ApiError(503, "supplier_product_unavailable") from exc
 
@@ -5907,9 +5945,11 @@ def create_mini_app_payment(telegram_user: Dict[str, Any], body: Dict[str, Any])
                 (str(exc)[:100], order_id)
             )
             db.commit()
-        _notify_admin_safe(
+        _notify_admin_throttled(
+            f"payment-create:{str(exc)}",
             f"⚠️ Точка не создала ссылку оплаты\n\nЗаказ #{order_id}\n"
-            f"Код: {_format_tochka_error(exc)}"
+            f"Код: {_format_tochka_error(exc)}",
+            cooldown=60 * 60,
         )
         raise ApiError(503, _payment_api_error(exc)) from exc
 
@@ -5955,8 +5995,10 @@ def deliver_supplier_order(order_id: int) -> bool:
     iccid, lpa_code, provider_status = row[4], row[5], row[6]
     install_url, existing_qr_file_id = row[10], row[11]
     if not iccid or not str(lpa_code or "").startswith("LPA:1$") or not install_url:
-        _notify_admin_safe(
-            f"⚠️ eSIM заказа #{order_id} выпущена, но данные установки неполные."
+        _notify_admin_throttled(
+            f"supplier-delivery-data:{order_id}",
+            f"⚠️ eSIM заказа #{order_id} выпущена, но данные установки неполные.",
+            cooldown=60 * 60,
         )
         return False
 
@@ -6020,10 +6062,12 @@ def deliver_supplier_order(order_id: int) -> bool:
             reply_markup=main_keyboard(user_id),
         )
     except Exception as exc:
-        _notify_admin_safe(
+        _notify_admin_throttled(
+            f"supplier-delivery-telegram:{order_id}:{type(exc).__name__}",
             f"⚠️ eSIM заказа #{order_id} выпущена, но сообщение не доставлено\n"
             f"Код: telegram_delivery_{type(exc).__name__}\n"
-            "Доставка будет повторена автоматически."
+            "Доставка будет повторена автоматически.",
+            cooldown=60 * 60,
         )
         return False
 
@@ -6134,9 +6178,11 @@ def provision_paid_supplier_order(order_id: int) -> bool:
                 (error[:300], order_id),
             )
             db.commit()
-        _notify_admin_safe(
+        _notify_admin_throttled(
+            f"supplier-issue:{order_id}:{error}",
             f"⚠️ Оплата заказа #{order_id} получена, но Banana не выдал eSIM\n"
-            f"Код: {error}\nПовторная проверка выполнится автоматически."
+            f"Код: {error}\nПовторная проверка выполнится автоматически.",
+            cooldown=60 * 60,
         )
         return False
 
@@ -6224,9 +6270,11 @@ def apply_paid_supplier_topup(order_id: int) -> bool:
                 (error[:300], order_id),
             )
             db.commit()
-        _notify_admin_safe(
+        _notify_admin_throttled(
+            f"supplier-topup:{order_id}:{error}",
             f"⚠️ Пополнение заказа #{order_id} оплачено, но Banana его не применил\n"
-            f"Код: {error}\nПовторная попытка выполнится автоматически."
+            f"Код: {error}\nПовторная попытка выполнится автоматически.",
+            cooldown=60 * 60,
         )
         return False
 
@@ -6463,17 +6511,19 @@ def tochka_setup_worker() -> None:
             break
         except TochkaError as exc:
             if not api_failure_notified:
-                _notify_admin_safe(
+                _notify_admin_throttled(
+                    f"tochka-setup:{str(exc)}",
                     "⚠️ API оплаты Точки недоступен\n"
-                    f"Код: {_format_tochka_error(exc)}"
+                    f"Код: {_format_tochka_error(exc)}",
                 )
                 api_failure_notified = True
             time.sleep(5 * 60)
 
     if not TOCHKA_WEBHOOK_URL:
-        _notify_admin_safe(
+        _notify_admin_throttled(
+            "tochka-webhook-domain-missing",
             "⚠️ Для мгновенного подтверждения оплат нужен публичный домен сервиса esim-bot в Railway. "
-            "Пока включена автоматическая проверка оплат через API раз в минуту."
+            "Пока включена автоматическая проверка оплат через API раз в минуту.",
         )
         return
 
@@ -6487,15 +6537,17 @@ def tochka_setup_worker() -> None:
                 str(exc) == "tochka_http_400"
                 and "Failed to test webhook url accessibility" in (getattr(exc, "detail", "") or "")
             ):
-                _notify_admin_safe(
+                _notify_admin_throttled(
+                    "tochka-webhook-inaccessible",
                     "ℹ️ Точка не может открыть webhook на Railway. "
-                    "Включена автоматическая проверка оплат через API раз в минуту."
+                    "Включена автоматическая проверка оплат через API раз в минуту.",
                 )
                 return
             if not webhook_failure_notified:
-                _notify_admin_safe(
+                _notify_admin_throttled(
+                    f"tochka-webhook:{str(exc)}",
                     "⚠️ Не удалось подключить уведомления Точки\n"
-                    f"Код: {_format_tochka_error(exc)}"
+                    f"Код: {_format_tochka_error(exc)}",
                 )
                 webhook_failure_notified = True
             time.sleep(60)
@@ -6508,6 +6560,31 @@ def tochka_payment_reconciliation_worker() -> None:
     reported_errors = set()
     while True:
         try:
+            now = int(time.time())
+            # Tochka links live for 24 hours. Close abandoned orders locally as
+            # well, even if the bank keeps returning CREATED or is unavailable.
+            with closing(_payment_db()) as db:
+                stale_ids = [row[0] for row in db.execute(
+                    """
+                    SELECT id FROM orders
+                    WHERE status='payment_pending' AND payment_provider='tochka'
+                      AND created_at>0 AND created_at<?
+                    """,
+                    (now - 25 * 60 * 60,),
+                ).fetchall()]
+                if stale_ids:
+                    placeholders = ",".join("?" for _ in stale_ids)
+                    db.execute(
+                        f"UPDATE reminder_jobs SET status='cancelled' WHERE order_id IN ({placeholders}) "
+                        "AND status IN ('pending','processing')",
+                        stale_ids,
+                    )
+                    db.execute(
+                        f"UPDATE orders SET status='payment_failed', payment_status='EXPIRED' "
+                        f"WHERE id IN ({placeholders}) AND status='payment_pending'",
+                        stale_ids,
+                    )
+                    db.commit()
             with closing(_payment_db()) as db:
                 rows = db.execute(
                     """
@@ -6517,7 +6594,7 @@ def tochka_payment_reconciliation_worker() -> None:
                       AND COALESCE(payment_operation_id, '')!='' AND created_at>=?
                     ORDER BY id ASC LIMIT 20
                     """,
-                    (int(time.time()) - 3 * 24 * 60 * 60,)
+                    (now - 3 * 24 * 60 * 60,)
                 ).fetchall()
             for order_id, operation_id in rows:
                 try:
@@ -6545,20 +6622,24 @@ def tochka_payment_reconciliation_worker() -> None:
                     error_key = (str(exc), getattr(exc, "detail", "") or "")
                     if error_key not in reported_errors:
                         reported_errors.add(error_key)
-                        _notify_admin_safe(
+                        _notify_admin_throttled(
+                            f"tochka-reconciliation:{error_key[0]}:{error_key[1]}",
                             f"⚠️ Не удалось проверить оплату заказа #{order_id} через Точку\n"
                             f"Код: {_format_tochka_error(exc)}\n\n"
-                            "Повторно оплачивать заказ не нужно. Проверка продолжится автоматически."
+                            "Повторно оплачивать заказ не нужно. Проверка продолжится автоматически.",
+                            cooldown=60 * 60,
                         )
                     continue
                 except Exception as exc:
                     error_key = ("internal", type(exc).__name__)
                     if error_key not in reported_errors:
                         reported_errors.add(error_key)
-                        _notify_admin_safe(
+                        _notify_admin_throttled(
+                            f"tochka-reconciliation-internal:{type(exc).__name__}",
                             f"⚠️ Ошибка обработки оплаченного заказа #{order_id}\n"
                             f"Код: payment_reconciliation_internal — {type(exc).__name__}\n\n"
-                            "Повторно оплачивать заказ не нужно."
+                            "Повторно оплачивать заказ не нужно.",
+                            cooldown=60 * 60,
                         )
         except Exception:
             pass
@@ -6606,18 +6687,20 @@ def supplier_fulfillment_worker() -> None:
 
 def banana_setup_worker() -> None:
     if not banana.configured:
-        _notify_admin_safe(
+        _notify_admin_throttled(
+            "banana-not-configured",
             "⚠️ API поставщика Banana не настроен\n"
-            "Добавьте BANANA_PARTNER_KEY в Railway для сервиса esim-bot."
+            "Добавьте BANANA_PARTNER_KEY в Railway для сервиса esim-bot.",
         )
         return
     time.sleep(30)
     try:
         banana.health()
     except BananaError as exc:
-        _notify_admin_safe(
+        _notify_admin_throttled(
+            f"banana-setup:{str(exc)}",
             "⚠️ API поставщика Banana недоступен\n"
-            f"Код: {_format_banana_error(exc)}"
+            f"Код: {_format_banana_error(exc)}",
         )
         return
 
