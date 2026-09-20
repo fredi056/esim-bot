@@ -6390,6 +6390,23 @@ def read_mini_app_payment(telegram_user: Dict[str, Any], order_id: int) -> Dict[
             if bank_status == "APPROVED":
                 _mark_bank_order_paid(order_id, operation_id, info.get("amount"))
                 status = "paid"
+            elif bank_status in {
+                "DECLINED", "REJECTED", "CANCELED", "CANCELLED", "EXPIRED", "FAILED"
+            }:
+                with closing(_payment_db()) as db:
+                    db.execute(
+                        """
+                        UPDATE orders SET status='payment_failed', payment_status=?
+                        WHERE id=? AND user_id=? AND status='payment_pending'
+                        """,
+                        (bank_status, order_id, telegram_user["id"]),
+                    )
+                    db.execute(
+                        "UPDATE reminder_jobs SET status='cancelled' WHERE order_id=? AND status IN ('pending','processing')",
+                        (order_id,),
+                    )
+                    db.commit()
+                status = "payment_failed"
         except TochkaError:
             pass
     return {
@@ -6517,6 +6534,22 @@ def tochka_payment_reconciliation_worker() -> None:
                     bank_status = str(info.get("status") or "UNKNOWN").upper()
                     if bank_status == "APPROVED":
                         _mark_bank_order_paid(order_id, operation_id, info.get("amount"))
+                    elif bank_status in {
+                        "DECLINED", "REJECTED", "CANCELED", "CANCELLED", "EXPIRED", "FAILED"
+                    }:
+                        with closing(_payment_db()) as db:
+                            db.execute(
+                                """
+                                UPDATE orders SET status='payment_failed', payment_status=?
+                                WHERE id=? AND status='payment_pending'
+                                """,
+                                (bank_status, order_id),
+                            )
+                            db.execute(
+                                "UPDATE reminder_jobs SET status='cancelled' WHERE order_id=? AND status IN ('pending','processing')",
+                                (order_id,),
+                            )
+                            db.commit()
                     elif int(created_at or 0) < int(time.time()) - 2 * 60:
                         status_key = (order_id, bank_status)
                         if status_key not in reported_statuses:
