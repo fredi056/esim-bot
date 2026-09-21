@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import re
 import ssl
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlsplit
@@ -11,10 +12,12 @@ import certifi
 
 
 class BananaError(RuntimeError):
-    def __init__(self, code, detail=""):
+    def __init__(self, code, detail="", *, http_status=None, supplier_code=""):
         super().__init__(code)
         self.code = code
         self.detail = detail
+        self.http_status = http_status
+        self.supplier_code = supplier_code
 
 
 class BananaClient:
@@ -28,6 +31,10 @@ class BananaClient:
             "BANANA_API_BASE_URL",
             "https://esimbanana.com/wp-json/banana-supplier/v1/standard",
         ).rstrip("/")
+        # The partner documentation shows the root; older deployments already
+        # configure the /standard suffix. Accept both without doubling it.
+        if self.base_url.endswith("/v1"):
+            self.base_url += "/standard"
         self._ssl_context = ssl.create_default_context(cafile=certifi.where())
 
     @property
@@ -39,8 +46,10 @@ class BananaClient:
             raise BananaError("banana_not_configured")
         if any("\n" in value or "\r" in value for value in (self.key, self.site, self.client_name)):
             raise BananaError("banana_invalid_config")
-        parsed_site = urlsplit(self.site)
-        if parsed_site.scheme != "https" or not parsed_site.hostname:
+        parsed_site = urlsplit(self.site if "://" in self.site else f"https://{self.site}")
+        if (parsed_site.scheme != "https" or not parsed_site.hostname
+                or parsed_site.username or parsed_site.password
+                or any(char.isspace() for char in self.site)):
             raise BananaError("banana_invalid_site")
         return {
             "Accept": "application/json",
@@ -57,16 +66,20 @@ class BananaClient:
         for name, value in self._headers().items():
             request.add_header(name, value)
         for name, value in (extra_headers or {}).items():
+            if not isinstance(value, str) or "\n" in value or "\r" in value:
+                raise BananaError("banana_invalid_order")
             request.add_header(name, value)
         try:
             with urlopen(request, timeout=20, context=self._ssl_context) as response:
-                raw = response.read(1024 * 1024)
+                raw = response.read(1024 * 1024 + 1)
         except HTTPError as exc:
             detail = ""
+            supplier_code = ""
             try:
                 raw_error = exc.read(8192).decode("utf-8", errors="replace")
                 error_data = json.loads(raw_error)
                 if isinstance(error_data, dict):
+                    supplier_code = str(error_data.get("code") or "")[:100]
                     detail = str(
                         error_data.get("message") or error_data.get("error")
                         or error_data.get("code") or raw_error
@@ -75,12 +88,15 @@ class BananaClient:
                     detail = raw_error
             except Exception:
                 pass
-            raise BananaError(f"banana_http_{exc.code}", detail[:300]) from exc
+            raise BananaError(
+                f"banana_http_{exc.code}", detail[:300],
+                http_status=exc.code, supplier_code=supplier_code,
+            ) from exc
         except (URLError, TimeoutError, OSError) as exc:
             raise BananaError("banana_unavailable") from exc
 
-        if not raw:
-            return {}
+        if not raw or len(raw) > 1024 * 1024:
+            raise BananaError("banana_invalid_response")
         try:
             result = json.loads(raw.decode("utf-8"))
         except (UnicodeError, json.JSONDecodeError) as exc:
@@ -88,6 +104,30 @@ class BananaClient:
         if not isinstance(result, (dict, list)):
             raise BananaError("banana_invalid_response")
         return result
+
+    @staticmethod
+    def _iccid(iccid):
+        value = str(iccid or "").strip()
+        if not re.fullmatch(r"[0-9]{15,22}", value):
+            raise BananaError("banana_invalid_iccid")
+        return value
+
+    @classmethod
+    def _validate_sim_card(cls, card, *, expected_iccid=None, installation=False):
+        if not isinstance(card, dict):
+            raise BananaError("banana_invalid_line_response")
+        iccid = cls._iccid(card.get("iccid"))
+        if expected_iccid is not None and iccid != expected_iccid:
+            raise BananaError("banana_line_mismatch")
+        if installation and not str(card.get("lpa_code") or "").startswith("LPA:1$"):
+            raise BananaError("banana_missing_installation_data")
+        # Missing balances are valid for some providers; retain them as unknown.
+        # Never turn a partial response into a zero balance.
+        for key in ("remaining_usage_kb", "allowed_usage_kb", "remaining_days"):
+            value = card.get(key)
+            if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0):
+                raise BananaError("banana_invalid_line_response")
+        return card
 
     def health(self):
         return self._request("GET", "/health")
@@ -106,18 +146,27 @@ class BananaClient:
         return {"product_id": product_id, "variation_id": variation_id}
 
     def resolve_product(self, product_id, variation_id):
-        return self._request(
+        result = self._request(
             "POST",
             "/product/resolve",
             self._product_reference(product_id, variation_id),
         )
+        if (not isinstance(result, dict)
+                or result.get("product_id") != product_id
+                or result.get("variation_id") != variation_id
+                or result.get("partner_provider") not in ("supplier_standard", "supplier_unlimited")
+                or not isinstance(result.get("unlimited"), bool)):
+            raise BananaError("banana_invalid_product_response")
+        if result["unlimited"] != (result["partner_provider"] == "supplier_unlimited"):
+            raise BananaError("banana_invalid_product_response")
+        return result
 
     def create_line(self, order_id, product_id, variation_id, count=1, item_id=1):
         if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
             raise BananaError("banana_invalid_order")
         payload = self._product_reference(product_id, variation_id)
         payload["count"] = count
-        return self._request(
+        result = self._request(
             "POST",
             "/line/create",
             payload,
@@ -126,25 +175,25 @@ class BananaClient:
                 "X-Partner-Order-ID": str(order_id),
             },
         )
+        self._validate_sim_card(result.get("sim_card") if isinstance(result, dict) else None, installation=True)
+        return result
 
     def get_details(self, iccid):
-        value = str(iccid or "").strip()
-        if not value.isdigit() or not 15 <= len(value) <= 22:
-            raise BananaError("banana_invalid_iccid")
-        return self._request("GET", f"/line/{quote(value, safe='')}/get_details")
+        value = self._iccid(iccid)
+        result = self._request("GET", f"/line/{quote(value, safe='')}/get_details")
+        self._validate_sim_card(result.get("sim_card") if isinstance(result, dict) else None, expected_iccid=value)
+        return result
 
     def refill(
         self, order_id, iccid, product_id, variation_id,
         line_provider="supplier_standard", item_id=1,
     ):
-        value = str(iccid or "").strip()
-        if not value.isdigit() or not 15 <= len(value) <= 22:
-            raise BananaError("banana_invalid_iccid")
+        value = self._iccid(iccid)
         if line_provider != "supplier_standard":
             raise BananaError("banana_invalid_line_provider")
         payload = self._product_reference(product_id, variation_id)
         payload["line_provider"] = line_provider
-        return self._request(
+        result = self._request(
             "POST",
             f"/line/{quote(value, safe='')}/refill",
             payload,
@@ -154,3 +203,8 @@ class BananaClient:
                 )
             },
         )
+        if not isinstance(result, dict) or result.get("success") is not True:
+            raise BananaError("banana_invalid_refill_response")
+        if result.get("iccid") is not None and self._iccid(result["iccid"]) != value:
+            raise BananaError("banana_line_mismatch")
+        return result

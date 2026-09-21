@@ -91,12 +91,12 @@ def read_account(db_path, user, referral_link, referral_share_url, referral_text
     esims = []
     for row in rows:
         sent = bool(row["esim_sent_at"])
-        remaining_kb = max(0, int(row["supplier_remaining_usage_kb"] or 0))
-        if remaining_kb >= 1024 * 1024:
+        remaining_kb = max(0, int(row["supplier_remaining_usage_kb"])) if row["supplier_remaining_usage_kb"] is not None else None
+        if remaining_kb is not None and remaining_kb >= 1024 * 1024:
             traffic_remaining = f"{remaining_kb / (1024 * 1024):g} ГБ"
         elif remaining_kb:
             traffic_remaining = f"{remaining_kb / 1024:g} МБ"
-        elif row["supplier_iccid"] and int(row["supplier_allowed_usage_kb"] or 0) > 0:
+        elif remaining_kb == 0 and row["supplier_iccid"] and int(row["supplier_allowed_usage_kb"] or 0) > 0:
             traffic_remaining = "0 МБ"
         else:
             traffic_remaining = None
@@ -109,7 +109,7 @@ def read_account(db_path, user, referral_link, referral_share_url, referral_text
             "iccid": row["supplier_iccid"] or None,
             "provider_status": row["supplier_provider_status"] or None,
             "traffic_remaining": traffic_remaining,
-            "remaining_days": int(row["supplier_remaining_days"] or 0) or None,
+            "remaining_days": int(row["supplier_remaining_days"]) if row["supplier_remaining_days"] is not None else None,
             "activated_at": None, "expires_at": row["supplier_expire_at"] or None,
             "can_check_traffic": bool(sent and row["supplier_iccid"]),
             "can_top_up": False, "top_up_options": [],

@@ -1,3 +1,4 @@
 pyTelegramBotAPI
 PyJWT[crypto]>=2.10,<3
 certifi>=2025.8.3
+qrcode[pil]>=8.2,<9

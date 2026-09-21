@@ -4,9 +4,10 @@ import os
 import ssl
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit, quote
 from urllib.request import Request, urlopen
 
 import certifi
@@ -89,7 +90,7 @@ class TochkaClient:
             except Exception:
                 pass
             raise TochkaError(f"tochka_http_{exc.code}", detail) from exc
-        except (URLError, TimeoutError, UnicodeError, json.JSONDecodeError) as exc:
+        except (URLError, TimeoutError, OSError, UnicodeError, json.JSONDecodeError) as exc:
             raise TochkaError("tochka_unavailable") from exc
         if not isinstance(result, dict):
             raise TochkaError("tochka_invalid_response")
@@ -189,59 +190,64 @@ class TochkaClient:
             }
         }
         data = self._request("POST", "/acquiring/v1.0/payments", payload).get("Data", {})
-        if not data.get("operationId") or not data.get("paymentLink"):
+        link = urlsplit(str(data.get("paymentLink") or ""))
+        if (not data.get("operationId") or link.scheme != "https" or not link.hostname
+                or link.username or link.password):
             raise TochkaError("tochka_invalid_payment_response")
         return data
 
     def get_payment(self, operation_id):
         if not isinstance(operation_id, str) or not operation_id:
             raise TochkaError("invalid_operation_id")
-        response = self._request("GET", f"/acquiring/v1.0/payments/{operation_id}")
-        candidates = []
-
-        def collect(value):
-            if isinstance(value, dict):
-                candidates.append(value)
-                for nested in value.values():
-                    collect(nested)
-            elif isinstance(value, list):
-                for nested in value:
-                    collect(nested)
-
-        collect(response.get("Data", response))
+        response = self._request("GET", f"/acquiring/v1.0/payments/{quote(operation_id, safe='')}")
+        data = response.get("Data", response)
+        candidates = data.get("Operation", data) if isinstance(data, dict) else data
+        candidates = candidates if isinstance(candidates, list) else [candidates]
         known_statuses = {
             "CREATED", "PENDING", "PROCESSING", "AUTHORIZED", "APPROVED",
             "DECLINED", "REJECTED", "CANCELED", "CANCELLED", "EXPIRED",
             "ON-REFUND", "REFUNDED", "FAILED",
         }
-        matching = [
-            item for item in candidates
-            if str(item.get("operationId") or item.get("operation_id") or "") == operation_id
-        ]
-        for item in matching + candidates:
+        for item in candidates:
+            if not isinstance(item, dict):
+                continue
+            # Never borrow a status or amount from a different payment/refund.
+            identity = item.get("operationId") or item.get("operation_id")
+            if identity != operation_id:
+                continue
             raw_status = item.get("status") or item.get("operationStatus") or item.get("paymentStatus")
             status = str(raw_status or "").upper()
             if status not in known_statuses:
                 continue
-            amount = item.get("amount")
-            if amount is None:
-                for nested in candidates:
-                    nested_operation = str(
-                        nested.get("operationId") or nested.get("operation_id") or ""
-                    )
-                    if nested_operation in ("", operation_id) and nested.get("amount") is not None:
-                        amount = nested["amount"]
-                        break
             result = dict(item)
             result["operationId"] = operation_id
             result["status"] = status
-            if amount is not None:
-                result["amount"] = amount
             return result
         shape = ", ".join(
-            sorted({"/".join(sorted(map(str, item.keys())))[:160] for item in candidates if item})
+            sorted({"/".join(sorted(map(str, item.keys())))[:160] for item in candidates if isinstance(item, dict)})
         )[:300]
         raise TochkaError("tochka_invalid_payment_response", shape or "Data is empty")
+
+    def find_payment(self, payment_link_id, created_at):
+        """Recover a lost create response using the merchant's unique order reference."""
+        query = {"customerCode": self.resolve_customer_code(), "perPage": 1000,
+                 "fromDate": datetime.fromtimestamp(max(0, int(created_at) - 86400), timezone.utc).strftime("%Y-%m-%d")}
+        for page in range(1, 11):
+            response = self._request("GET", "/acquiring/v1.0/payments", query={**query, "page": page})
+            operations = response.get("Data", {}).get("Operation")
+            if not isinstance(operations, list):
+                raise TochkaError("tochka_invalid_payment_response")
+            matching = [item for item in operations if isinstance(item, dict)
+                        and item.get("paymentLinkId") == payment_link_id]
+            if len(matching) > 1:
+                raise TochkaError("tochka_payment_ambiguous")
+            if matching:
+                if not matching[0].get("operationId"):
+                    raise TochkaError("tochka_invalid_payment_response")
+                return matching[0]
+            if len(operations) < 1000:
+                return None
+        raise TochkaError("tochka_payment_lookup_incomplete")
 
     def ensure_webhook(self, url):
         if not isinstance(url, str) or not url.startswith("https://"):
@@ -265,13 +271,6 @@ class TochkaClient:
         now = time.time()
         if self._public_key is not None and now - self._public_key_loaded_at < 6 * 60 * 60:
             return self._public_key
-        if self._public_key is None:
-            try:
-                self._public_key = jwt.PyJWK.from_dict(TOCHKA_WEBHOOK_JWK).key
-                self._public_key_loaded_at = now
-                return self._public_key
-            except Exception:
-                pass
         request = Request("https://enter.tochka.com/doc/openapi/static/keys/public", method="GET")
         request.add_header("Accept", "application/json")
         try:
