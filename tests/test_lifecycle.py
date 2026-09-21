@@ -334,6 +334,24 @@ class ClientTest(unittest.TestCase):
         self.assertEqual(BananaClient.request_id(123),hashlib.sha256(b'123/1/standard').hexdigest())
         self.assertNotEqual(BananaClient.request_id(123),BananaClient.request_id(124))
 
+    def test_banana_resolve_accepts_numeric_string_ids(self):
+        client=BananaClient()
+        client._request=Mock(return_value={
+            'product_id':'796','variation_id':'809','partner_provider':'supplier_standard',
+            'unlimited':False,'refill_mb':5120,'refill_days':30,
+        })
+        product=client.resolve_product(796,809)
+        self.assertEqual(product['product_id'],796)
+        self.assertEqual(product['variation_id'],809)
+
+    def test_banana_resolve_rejects_wrong_numeric_string_id(self):
+        client=BananaClient()
+        client._request=Mock(return_value={
+            'product_id':'796','variation_id':'810','partner_provider':'supplier_standard',
+            'unlimited':False,'refill_mb':5120,'refill_days':30,
+        })
+        with self.assertRaises(BananaError):client.resolve_product(796,809)
+
     def test_banana_rejects_false_refill_success(self):
         client=BananaClient();client._request=Mock(return_value={'success':False})
         with self.assertRaises(BananaError):client.refill(1,'8985201234567890123',1,2)

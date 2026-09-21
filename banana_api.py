@@ -145,20 +145,42 @@ class BananaClient:
             raise BananaError("banana_invalid_product_reference")
         return {"product_id": product_id, "variation_id": variation_id}
 
+    @staticmethod
+    def _response_product_id(value, *, allow_zero=False):
+        """Normalize WooCommerce IDs, which the live API may encode as strings."""
+        if isinstance(value, bool):
+            raise BananaError("banana_invalid_product_response")
+        if isinstance(value, int):
+            normalized = value
+        elif isinstance(value, str) and re.fullmatch(r"[0-9]+", value):
+            normalized = int(value)
+        else:
+            raise BananaError("banana_invalid_product_response")
+        if normalized < 0 or (normalized == 0 and not allow_zero):
+            raise BananaError("banana_invalid_product_response")
+        return normalized
+
     def resolve_product(self, product_id, variation_id):
         result = self._request(
             "POST",
             "/product/resolve",
             self._product_reference(product_id, variation_id),
         )
-        if (not isinstance(result, dict)
-                or result.get("product_id") != product_id
-                or result.get("variation_id") != variation_id
+        if not isinstance(result, dict):
+            raise BananaError("banana_invalid_product_response")
+        resolved_product_id = self._response_product_id(result.get("product_id"))
+        resolved_variation_id = self._response_product_id(
+            result.get("variation_id"), allow_zero=True,
+        )
+        if (resolved_product_id != product_id
+                or resolved_variation_id != variation_id
                 or result.get("partner_provider") not in ("supplier_standard", "supplier_unlimited")
                 or not isinstance(result.get("unlimited"), bool)):
             raise BananaError("banana_invalid_product_response")
         if result["unlimited"] != (result["partner_provider"] == "supplier_unlimited"):
             raise BananaError("banana_invalid_product_response")
+        result["product_id"] = resolved_product_id
+        result["variation_id"] = resolved_variation_id
         return result
 
     def create_line(self, order_id, product_id, variation_id, count=1, item_id=1):
