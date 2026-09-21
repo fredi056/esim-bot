@@ -1433,9 +1433,6 @@ def mini_app_receipt_keyboard():
 def main_keyboard(user_id: Optional[int] = None):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     if MINI_APP_URL:
-        # Reply-keyboard web_app launches have no signed user initData.
-        # Send an inline launch button in response to this ordinary button.
-        kb.add("🚀 Открыть eSIMLime")
         kb.add("🎁 Пригласить друга — 100 ₽")
         if user_id == ADMIN_ID:
             kb.add("📊 Статистика", "📦 Заказы")
