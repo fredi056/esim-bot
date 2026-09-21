@@ -237,6 +237,15 @@ class LifecycleTest(unittest.TestCase):
         with self.assertRaises(ApiError):self.call('create_mini_app_payment',{'id':1},self.payload())
         self.bank.create_payment.assert_not_called()
 
+    def test_unmapped_tariff_stops_before_payment(self):
+        body={'country':'Vietnam','tariff':'50GB / 90 дней','displayed_price':12390,
+              'legal_acceptance':self.payload()['legal_acceptance']}
+        with self.assertRaises(ApiError) as caught:
+            self.call('create_mini_app_payment',{'id':1},body)
+        self.assertEqual(caught.exception.code,'supplier_product_unavailable')
+        self.supplier.resolve_product.assert_not_called()
+        self.bank.create_payment.assert_not_called()
+
     def test_topup_create_checks_existing_line_and_price(self):
         parent=self.issued()
         self.supplier.resolve_product.return_value=self.product()

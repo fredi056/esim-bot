@@ -6046,22 +6046,26 @@ def create_mini_app_payment(telegram_user: Dict[str, Any], body: Dict[str, Any])
     order = _validated_api_order(body, user_id)
     if not order:
         raise ApiError(409, "tariff_changed")
-    if _supplier_int(order["supplier_product_id"]) > 0:
-        if not banana.configured:
-            raise ApiError(503, "supplier_unavailable")
-        expected = _supplier_catalog_option(
-            order["country"], _topup_option_id(order["supplier_product_id"], order["supplier_variation_id"])
+    if _supplier_int(order["supplier_product_id"]) <= 0:
+        # Never accept money for a package that cannot be issued through the
+        # configured supplier API. Unmapped catalogue rows remain visible until
+        # the separate availability/catalogue update, but checkout is blocked.
+        raise ApiError(503, "supplier_product_unavailable")
+    if not banana.configured:
+        raise ApiError(503, "supplier_unavailable")
+    expected = _supplier_catalog_option(
+        order["country"], _topup_option_id(order["supplier_product_id"], order["supplier_variation_id"])
+    )
+    try:
+        product = banana.resolve_product(order["supplier_product_id"], order["supplier_variation_id"])
+        _validate_supplier_product(product, expected)
+    except BananaError as exc:
+        _notify_admin_throttled(
+            f"sale-product:{order['supplier_product_id']}:{order['supplier_variation_id']}:{str(exc)}",
+            f"⚠️ Тариф Banana недоступен до оплаты\n"
+            f"{order['country']} — {order['tariff']}\nКод: {_format_banana_error(exc)}",
         )
-        try:
-            product = banana.resolve_product(order["supplier_product_id"], order["supplier_variation_id"])
-            _validate_supplier_product(product, expected)
-        except BananaError as exc:
-            _notify_admin_throttled(
-                f"sale-product:{order['supplier_product_id']}:{order['supplier_variation_id']}:{str(exc)}",
-                f"⚠️ Тариф Banana недоступен до оплаты\n"
-                f"{order['country']} — {order['tariff']}\nКод: {_format_banana_error(exc)}",
-            )
-            raise ApiError(503, "supplier_product_unavailable") from exc
+        raise ApiError(503, "supplier_product_unavailable") from exc
 
     now = int(time.time())
     db = _payment_db()
