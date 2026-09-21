@@ -216,6 +216,22 @@ class LifecycleTest(unittest.TestCase):
         result=self.call('create_mini_app_payment',{'id':1},self.payload())
         self.assertEqual(result['payment_url'],'https://bank.example/pay')
 
+    def test_admin_supplier_test_uses_live_standard_package(self):
+        self.supplier.resolve_product.return_value={
+            'product_id':317,'variation_id':330,'partner_provider':'supplier_standard',
+            'unlimited':False,'refillable':True,'refill_mb':1024,'refill_days':7,
+        }
+        body={
+            'country':'Технический тест','tariff':'Тех тариф','displayed_price':14,
+            'plan_type':'supplier_test','legal_acceptance':self.payload()['legal_acceptance'],
+        }
+        result=self.call('create_mini_app_payment',{'id':99},body)
+        self.assertEqual(result['payment_url'],'https://bank.example/pay')
+        self.assertEqual(self.value(result['order_id'],'supplier_product_id'),317)
+        self.assertEqual(self.value(result['order_id'],'supplier_variation_id'),330)
+        self.assertEqual(self.bank.create_payment.call_args.args[1],14)
+        self.supplier.resolve_product.assert_called_once_with(317,330)
+
     def test_alternative_provider_line_allows_topup(self):
         self.assertTrue(self.call('_supplier_line_allows_topup',{
             'line_provider':'supplier_alternative','refillable':True,'status':'active',

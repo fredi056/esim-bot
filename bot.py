@@ -5950,7 +5950,10 @@ def _validated_api_order(body: Dict[str, Any], user_id: int) -> Optional[Dict[st
             "plan": None, "plan_type": "supplier_test", "days": 0,
             "unlimited_key": "banana", "supplier_tariff": "40",
             "post_limit_speed": "", "daily_high_speed_gb": 0,
-            "supplier_product_id": 40, "supplier_variation_id": 0,
+            # Product 40 is only the 14 RUB WooCommerce storefront item. The
+            # partner API cannot issue it. Use the cheapest live standard
+            # package for this admin-only end-to-end payment test instead.
+            "supplier_product_id": 317, "supplier_variation_id": 330,
         }
     if plan_type == "unlimited":
         order = validate_unlimited_order_payload(body)
