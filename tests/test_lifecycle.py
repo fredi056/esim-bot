@@ -26,7 +26,7 @@ from urllib.parse import urlencode
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from account_api import ApiError, read_account, safe_install_url
-from banana_api import BananaClient, BananaError
+from banana_api import BananaClient, BananaError, STANDARD_PARTNER_PROVIDERS
 from tochka_api import TochkaClient, TochkaError
 
 TREE = ast.parse((ROOT / 'bot.py').read_text(encoding='utf-8'))
@@ -209,6 +209,18 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(self.bank.create_payment.call_count,1)
         self.assertEqual(self.bank.create_payment.call_args.args[1],920)
 
+    def test_alternative_provider_purchase_gets_bank_link(self):
+        product=self.product()
+        product['partner_provider']='supplier_alternative'
+        self.supplier.resolve_product.return_value=product
+        result=self.call('create_mini_app_payment',{'id':1},self.payload())
+        self.assertEqual(result['payment_url'],'https://bank.example/pay')
+
+    def test_alternative_provider_line_allows_topup(self):
+        self.assertTrue(self.call('_supplier_line_allows_topup',{
+            'line_provider':'supplier_alternative','refillable':True,'status':'active',
+        }))
+
     def test_standard_purchase_through_issue_and_delivery(self):
         self.supplier.resolve_product.return_value=self.product()
         result=self.call('create_mini_app_payment',{'id':1},self.payload())
@@ -380,6 +392,23 @@ class ClientTest(unittest.TestCase):
             'refillable':True,'refill_mb':5120,'refill_days':30,
         })
         self.assertIs(client.resolve_product(796,809)['unlimited'],False)
+
+    def test_banana_resolve_accepts_alternative_standard_provider(self):
+        client=BananaClient()
+        client._request=Mock(return_value={
+            'product_id':796,'variation_id':807,'partner_provider':'supplier_alternative',
+            'unlimited':False,'refillable':True,'refill_mb':1024,'refill_days':7,
+        })
+        product=client.resolve_product(796,807)
+        self.assertEqual(product['partner_provider'],'supplier_alternative')
+
+    def test_banana_refill_preserves_alternative_line_provider(self):
+        client=BananaClient()
+        client._request=Mock(return_value={'success':True,'iccid':'8985201234567890123'})
+        client.refill(1,'8985201234567890123',796,807,
+                      line_provider='supplier_alternative')
+        payload=client._request.call_args.args[2]
+        self.assertEqual(payload['line_provider'],'supplier_alternative')
 
     def test_banana_resolve_rejects_wrong_numeric_string_id(self):
         client=BananaClient()

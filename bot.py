@@ -18,7 +18,7 @@ import telebot
 from telebot import types
 
 from account_api import ApiError, delivery_data, read_account, start_account_api
-from banana_api import BananaClient, BananaError
+from banana_api import BananaClient, BananaError, STANDARD_PARTNER_PROVIDERS
 from maintenance import reset_order_data_once
 from tochka_api import TochkaClient, TochkaError
 
@@ -4228,7 +4228,8 @@ def banana_issue_test_handler(message):
         product = banana.resolve_product(product_id, variation_id)
         if not isinstance(product, dict):
             raise BananaError("banana_invalid_product_response")
-        if product.get("unlimited") is True or product.get("partner_provider") != "supplier_standard":
+        if (product.get("unlimited") is True
+                or product.get("partner_provider") not in STANDARD_PARTNER_PROVIDERS):
             raise BananaError("banana_test_product_not_standard")
         # This stable key makes retries idempotent: the same command must return
         # the original test eSIM instead of issuing another one.
@@ -5483,7 +5484,7 @@ def _supplier_line_allows_topup(sim_card: Dict[str, Any]) -> bool:
     if sim_card.get("refillable") is False or sim_card.get("refillable") == 0:
         return False
     provider = sim_card.get("line_provider") or sim_card.get("partner_provider")
-    if provider and provider != "supplier_standard":
+    if provider and provider not in STANDARD_PARTNER_PROVIDERS:
         return False
     status = str(sim_card.get("status") or "").strip().lower()
     if status in {"expired", "blocked", "deleted", "cancelled", "canceled", "terminated", "disabled"}:
@@ -5656,7 +5657,7 @@ def create_mini_app_topup(telegram_user: Dict[str, Any], parent_order_id: int,
         # Validate the existing line, not just the package being sold.
         source_product = banana.resolve_product(parent[3], parent[4])
         if (not isinstance(source_product, dict)
-                or source_product.get("partner_provider") != "supplier_standard"
+                or source_product.get("partner_provider") not in STANDARD_PARTNER_PROVIDERS
                 or source_product.get("refillable") is not True):
             raise BananaError("banana_product_not_refillable")
         details = banana.get_details(parent[1])
@@ -5727,8 +5728,8 @@ def create_mini_app_topup(telegram_user: Dict[str, Any], parent_order_id: int,
             ),
         )
         order_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-        db.execute("UPDATE orders SET payment_link_id=?,supplier_line_provider='supplier_standard' WHERE id=?",
-                   (f"esimlime-{order_id}", order_id))
+        db.execute("UPDATE orders SET payment_link_id=?,supplier_line_provider=? WHERE id=?",
+                   (f"esimlime-{order_id}", source_product["partner_provider"], order_id))
         db.commit()
     except ApiError:
         db.rollback()
@@ -6020,7 +6021,8 @@ def _format_banana_error(exc: BananaError) -> str:
 
 
 def _validate_supplier_product(product, expected=None):
-    if (not isinstance(product, dict) or product.get("partner_provider") != "supplier_standard"
+    if (not isinstance(product, dict)
+            or product.get("partner_provider") not in STANDARD_PARTNER_PROVIDERS
             or product.get("unlimited") is not False):
         raise BananaError("banana_product_changed")
     if expected and (_supplier_int(product.get("refill_mb")) != expected["refill_mb"]
@@ -6505,7 +6507,8 @@ def apply_paid_supplier_topup(order_id: int) -> bool:
         _validate_supplier_product(product, {"refill_mb":row[8], "refill_days":row[9]})
         if product.get("refillable") is not True:
             raise BananaError("banana_product_not_refillable")
-        banana.refill(order_id, row[3], row[4], row[5])
+        line_provider = row[10] or product["partner_provider"]
+        banana.refill(order_id, row[3], row[4], row[5], line_provider=line_provider)
         # Persist the supplier's successful refill BEFORE a balance lookup or Telegram call.
         with closing(_payment_db()) as db:
             db.execute("""UPDATE orders SET supplier_status='issued',supplier_last_error='',topup_applied_at=?

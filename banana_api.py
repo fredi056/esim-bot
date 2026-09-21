@@ -11,6 +11,12 @@ from urllib.request import Request, urlopen
 import certifi
 
 
+STANDARD_PARTNER_PROVIDERS = frozenset({
+    "supplier_standard",
+    "supplier_alternative",
+})
+
+
 class BananaError(RuntimeError):
     def __init__(self, code, detail="", *, http_status=None, supplier_code=""):
         super().__init__(code)
@@ -197,7 +203,7 @@ class BananaClient:
                 f"product reference mismatch: {resolved_product_id}/{resolved_variation_id}",
             )
         provider = result.get("partner_provider")
-        if provider not in ("supplier_standard", "supplier_unlimited"):
+        if provider not in STANDARD_PARTNER_PROVIDERS | {"supplier_unlimited"}:
             raise BananaError(
                 "banana_invalid_product_response",
                 f"unsupported partner_provider: {str(provider)[:80]}",
@@ -247,7 +253,7 @@ class BananaClient:
         line_provider="supplier_standard", item_id=1,
     ):
         value = self._iccid(iccid)
-        if line_provider != "supplier_standard":
+        if line_provider not in STANDARD_PARTNER_PROVIDERS:
             raise BananaError("banana_invalid_line_provider")
         payload = self._product_reference(product_id, variation_id)
         payload["line_provider"] = line_provider
