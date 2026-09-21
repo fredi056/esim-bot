@@ -363,6 +363,24 @@ class ClientTest(unittest.TestCase):
         self.assertEqual(product['product_id'],796)
         self.assertEqual(product['variation_id'],809)
 
+    def test_banana_resolve_normalizes_legacy_boolean_fields(self):
+        client=BananaClient()
+        client._request=Mock(return_value={
+            'product_id':796,'variation_id':809,'partner_provider':'supplier_standard',
+            'unlimited':'0','refillable':'1','refill_mb':5120,'refill_days':30,
+        })
+        product=client.resolve_product(796,809)
+        self.assertIs(product['unlimited'],False)
+        self.assertIs(product['refillable'],True)
+
+    def test_banana_resolve_infers_missing_unlimited_from_provider(self):
+        client=BananaClient()
+        client._request=Mock(return_value={
+            'product_id':796,'variation_id':809,'partner_provider':'supplier_standard',
+            'refillable':True,'refill_mb':5120,'refill_days':30,
+        })
+        self.assertIs(client.resolve_product(796,809)['unlimited'],False)
+
     def test_banana_resolve_rejects_wrong_numeric_string_id(self):
         client=BananaClient()
         client._request=Mock(return_value={

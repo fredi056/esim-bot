@@ -160,6 +160,25 @@ class BananaClient:
             raise BananaError("banana_invalid_product_response")
         return normalized
 
+    @staticmethod
+    def _response_bool(value):
+        if isinstance(value, bool):
+            return value
+        if value in (0, "0"):
+            return False
+        if value in (1, "1"):
+            return True
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered == "false":
+                return False
+            if lowered == "true":
+                return True
+        raise BananaError(
+            "banana_invalid_product_response",
+            f"invalid boolean field: {type(value).__name__}",
+        )
+
     def resolve_product(self, product_id, variation_id):
         result = self._request(
             "POST",
@@ -172,15 +191,32 @@ class BananaClient:
         resolved_variation_id = self._response_product_id(
             result.get("variation_id"), allow_zero=True,
         )
-        if (resolved_product_id != product_id
-                or resolved_variation_id != variation_id
-                or result.get("partner_provider") not in ("supplier_standard", "supplier_unlimited")
-                or not isinstance(result.get("unlimited"), bool)):
-            raise BananaError("banana_invalid_product_response")
-        if result["unlimited"] != (result["partner_provider"] == "supplier_unlimited"):
-            raise BananaError("banana_invalid_product_response")
+        if resolved_product_id != product_id or resolved_variation_id != variation_id:
+            raise BananaError(
+                "banana_invalid_product_response",
+                f"product reference mismatch: {resolved_product_id}/{resolved_variation_id}",
+            )
+        provider = result.get("partner_provider")
+        if provider not in ("supplier_standard", "supplier_unlimited"):
+            raise BananaError(
+                "banana_invalid_product_response",
+                f"unsupported partner_provider: {str(provider)[:80]}",
+            )
+        raw_unlimited = result.get("unlimited")
+        resolved_unlimited = (
+            provider == "supplier_unlimited"
+            if raw_unlimited is None else self._response_bool(raw_unlimited)
+        )
+        if resolved_unlimited != (provider == "supplier_unlimited"):
+            raise BananaError(
+                "banana_invalid_product_response",
+                "partner_provider and unlimited disagree",
+            )
         result["product_id"] = resolved_product_id
         result["variation_id"] = resolved_variation_id
+        result["unlimited"] = resolved_unlimited
+        if result.get("refillable") is not None:
+            result["refillable"] = self._response_bool(result["refillable"])
         return result
 
     def create_line(self, order_id, product_id, variation_id, count=1, item_id=1):
