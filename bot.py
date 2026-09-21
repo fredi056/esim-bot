@@ -6634,8 +6634,11 @@ def _mark_bank_order_paid(order_id: int, operation_id: str, amount: Any) -> bool
 
 def read_mini_app_payment(telegram_user: Dict[str, Any], order_id: int) -> Dict[str, Any]:
     with closing(_payment_db()) as db:
-        owned = db.execute("SELECT 1 FROM orders WHERE id=? AND user_id=? AND payment_provider='tochka'",
-                           (order_id, telegram_user["id"])).fetchone()
+        owned = db.execute(
+            """SELECT COALESCE(order_kind,'esim'),supplier_product_id
+               FROM orders WHERE id=? AND user_id=? AND payment_provider='tochka'""",
+            (order_id, telegram_user["id"]),
+        ).fetchone()
     if not owned:
         raise ApiError(404, "order_not_found")
     try:
@@ -6643,6 +6646,15 @@ def read_mini_app_payment(telegram_user: Dict[str, Any], order_id: int) -> Dict[
     except TochkaError:
         pass  # Keep the persisted state during bank outages.
     with closing(_payment_db()) as db:
+        if owned[0] == "esim" and _supplier_int(owned[1]) <= 0:
+            # Old versions could create bank links for catalogue rows without an
+            # automatic supplier mapping. Do not reopen those unpaid links.
+            db.execute(
+                """UPDATE orders SET status='payment_error',payment_status='SUPPLIER_UNMAPPED',payment_url=''
+                   WHERE id=? AND user_id=? AND status='payment_pending'""",
+                (order_id, telegram_user["id"]),
+            )
+            db.commit()
         row = db.execute("""SELECT id,payment_url,payment_status,status,COALESCE(order_kind,'esim')
                             FROM orders WHERE id=? AND user_id=?""", (order_id, telegram_user["id"])).fetchone()
     result = _pending_payment_response(row)

@@ -90,7 +90,8 @@ class LifecycleTest(unittest.TestCase):
     def order(self, **fields):
         defaults = dict(user_id=1,text='test',price=920,pay_amount=920,status='payment_pending',
                         country='Vietnam',tariff='5GB / 30 дней',created_at=int(time.time()),
-                        payment_provider='tochka',payment_operation_id='op1',payment_status='CREATED')
+                        payment_provider='tochka',payment_operation_id='op1',payment_status='CREATED',
+                        supplier_product_id=796,supplier_variation_id=809)
         defaults.update(fields)
         columns = ','.join(defaults)
         cur = self.db.execute(f"INSERT INTO orders({columns}) VALUES({','.join('?' for _ in defaults)})", tuple(defaults.values()))
@@ -245,6 +246,15 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(caught.exception.code,'supplier_product_unavailable')
         self.supplier.resolve_product.assert_not_called()
         self.bank.create_payment.assert_not_called()
+
+    def test_old_unmapped_pending_link_is_not_reopened(self):
+        oid=self.order(tariff='50GB / 90 дней',price=12390,pay_amount=12390,
+                       supplier_product_id=0,payment_url='https://bank.example/old')
+        self.bank.get_payment.return_value={'status':'CREATED','amount':12390}
+        result=self.call('read_mini_app_payment',{'id':1},oid)
+        self.assertEqual(result['status'],'payment_error')
+        self.assertEqual(result['payment_status'],'SUPPLIER_UNMAPPED')
+        self.assertEqual(result['payment_url'],'')
 
     def test_topup_create_checks_existing_line_and_price(self):
         parent=self.issued()
