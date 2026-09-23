@@ -110,6 +110,28 @@ class BananaClient:
         return (result, response_status) if return_status else result
 
     @staticmethod
+    def _unwrap_response(result):
+        if not isinstance(result, dict):
+            raise BananaError("banana_invalid_response")
+        is_wrapper = any(key in result for key in ("obj", "errorCode", "errorMsg"))
+        if not is_wrapper:
+            return result
+        success = result.get("success")
+        if success is False or success == 0:
+            supplier_code = str(result.get("errorCode") or "").strip()
+            raise BananaError(
+                supplier_code or "banana_supplier_error",
+                str(result.get("errorMsg") or ""),
+                supplier_code=supplier_code,
+            )
+        if success is not True and success != 1:
+            raise BananaError("banana_invalid_response")
+        payload = result.get("obj")
+        if not isinstance(payload, dict):
+            raise BananaError("banana_invalid_response")
+        return payload
+
+    @staticmethod
     def _iccid(iccid):
         value = str(iccid or "").strip()
         if not re.fullmatch(r"[0-9]{15,22}", value):
@@ -134,7 +156,7 @@ class BananaClient:
         return card
 
     def health(self):
-        return self._request("GET", "/health")
+        return self._unwrap_response(self._request("GET", "/health"))
 
     @staticmethod
     def request_id(order_id, item_id=1, provider="standard"):
@@ -211,8 +233,9 @@ class BananaClient:
                 },
                 return_status=True,
             )
-            if not isinstance(result, dict):
-                raise BananaError("banana_invalid_line_response", http_status=http_status)
+            result = self._unwrap_response(result)
+            if "sim_card" not in result and all(result.get(key) for key in ("iccid", "lpa_code")):
+                result = {"sim_card": result}
             if isinstance(result.get("sim_card"), dict):
                 self._validate_sim_card(result["sim_card"], installation=True)
             else:
@@ -260,9 +283,9 @@ class BananaClient:
 
     def get_request(self, order_id, request_id):
         request_id = self._request_reference(request_id)
-        result = self._request("GET", f"/request/{quote(request_id, safe='')}")
-        if not isinstance(result, dict):
-            raise BananaError("banana_invalid_request_response")
+        result = self._unwrap_response(
+            self._request("GET", f"/request/{quote(request_id, safe='')}")
+        )
         status = str(result.get("status") or "").strip().lower()
         print(f"BANANA_REQUEST_STATUS order_id={order_id} status={status or 'unknown'}", flush=True)
         if status == "processing":
@@ -284,7 +307,9 @@ class BananaClient:
 
     def get_details(self, iccid):
         value = self._iccid(iccid)
-        result = self._request("GET", f"/line/{quote(value, safe='')}/get_details")
+        result = self._unwrap_response(
+            self._request("GET", f"/line/{quote(value, safe='')}/get_details")
+        )
         self._validate_sim_card(result.get("sim_card") if isinstance(result, dict) else None, expected_iccid=value)
         return result
 
@@ -294,7 +319,7 @@ class BananaClient:
         payload = {"item_id": item_id}
         if period_days is not None:
             payload["period_days"] = self._period_days(period_days)
-        result = self._request(
+        result = self._unwrap_response(self._request(
             "POST",
             f"/line/{quote(value, safe='')}/refill",
             payload,
@@ -303,7 +328,7 @@ class BananaClient:
                     order_id, item_id, self.REFILL_REQUEST_ID_VERSION
                 )
             },
-        )
+        ))
         if not isinstance(result, dict) or result.get("success") is not True:
             raise BananaError("banana_invalid_refill_response")
         if result.get("iccid") is not None and self._iccid(result["iccid"]) != value:

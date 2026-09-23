@@ -488,6 +488,39 @@ class ClientTest(unittest.TestCase):
             'request_id':'req-41','status':'processing',
         })
 
+    def test_banana_create_unwraps_sync_wrapper(self):
+        client=BananaClient()
+        card={'iccid':'8985201234567890123','lpa_code':'LPA:1$host$code'}
+        client._request=Mock(return_value=({
+            'success':True,'errorCode':0,'errorMsg':'','obj':{'sim_card':card},
+        },200))
+        self.assertEqual(client.create_line(41,330),{'sim_card':card})
+
+    def test_banana_create_normalizes_direct_wrapped_sim_card(self):
+        client=BananaClient()
+        card={'iccid':'8985201234567890123','lpa_code':'LPA:1$host$code'}
+        client._request=Mock(return_value=({'success':True,'obj':card},200))
+        self.assertEqual(client.create_line(41,330),{'sim_card':card})
+
+    def test_banana_create_unwraps_async_wrapper(self):
+        client=BananaClient()
+        client._request=Mock(return_value=({
+            'success':True,'obj':{'request_id':'abc/123=','status':'processing'},
+        },200))
+        self.assertEqual(client.create_line(42,331),{
+            'request_id':'abc/123=','status':'processing',
+        })
+
+    def test_banana_wrapper_error_preserves_supplier_code(self):
+        client=BananaClient()
+        with self.assertRaises(BananaError) as caught:
+            client._unwrap_response({
+                'success':False,'errorCode':'some_code','errorMsg':'some error','obj':None,
+            })
+        self.assertEqual(caught.exception.code,'some_code')
+        self.assertEqual(caught.exception.detail,'some error')
+        self.assertEqual(caught.exception.supplier_code,'some_code')
+
     def test_banana_request_reference_accepts_documented_open_charset(self):
         client=BananaClient()
         accepted=(
