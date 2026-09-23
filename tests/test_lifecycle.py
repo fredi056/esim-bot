@@ -148,6 +148,12 @@ SM-DP+ Address: rsp-eu.simlessly.com
 
 **ICCID:** {iccid}"""
 
+    def country_order_banana_block(self, country_left, country_right, iccid, activation_code):
+        return f"""{country_left} / {country_right} - 10gb-30-days
+30 дн / 10240 МБ
+LPA:1$rsp-eu.simlessly.com${activation_code}
+ICCID: {iccid}"""
+
     def claim_avito(self, deep_link, user_id):
         token=deep_link.split('start=avito_',1)[1]
         message=SimpleNamespace(from_user=SimpleNamespace(id=user_id,username='client',first_name='Client'))
@@ -172,11 +178,37 @@ SM-DP+ Address: rsp-eu.simlessly.com
                          self.current_banana_avito_block('8997250230001320742',activation))
         self.assertEqual(len(parsed),1)
         self.assertEqual(parsed[0]['catalog']['country'],'Turkey')
+        self.assertEqual(parsed[0]['display_country'],'Турция')
         self.assertEqual(parsed[0]['supplier_tariff'],'10 GB / 30 days / mb 10240')
         self.assertEqual(parsed[0]['days'],30)
         self.assertEqual(parsed[0]['megabytes'],10240)
         self.assertEqual(parsed[0]['iccid'],'8997250230001320742')
         self.assertEqual(parsed[0]['lpa_code'],f'LPA:1$rsp-eu.simlessly.com${activation}')
+
+    def test_parse_reversed_and_standard_china_country_names(self):
+        for left,right in (('Китай','China'),('China','Китай')):
+            with self.subTest(left=left,right=right):
+                parsed=self.call(
+                    'parse_banana_avito_messages',
+                    self.country_order_banana_block(
+                        left,right,'8997250230001320750','29D8F4C77E054DCA803ED99B3D678765',
+                    ),
+                )
+                self.assertEqual(len(parsed),1)
+                self.assertEqual(parsed[0]['catalog']['country'],'China')
+                self.assertEqual(parsed[0]['display_country'],'Китай')
+
+    def test_parse_reversed_china_and_turkey_blocks_together(self):
+        text='\n\n'.join((
+            self.country_order_banana_block(
+                'Китай','China','8997250230001320751','39D8F4C77E054DCA803ED99B3D678766',
+            ),
+            self.current_banana_avito_block(
+                '8997250230001320752','49D8F4C77E054DCA803ED99B3D678767',
+            ),
+        ))
+        parsed=self.call('parse_banana_avito_messages',text)
+        self.assertEqual([item['catalog']['country'] for item in parsed],['China','Turkey'])
 
     def test_parse_two_current_banana_avito_blocks(self):
         blocks = [

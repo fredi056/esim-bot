@@ -794,18 +794,35 @@ def _parse_banana_avito_block(block: str) -> Dict[str, Any]:
     iccid = re.search(r"(?i)\bICCID\s*:\s*\**\s*(\d{15,22})\b", block or "")
     if not all((header, package, lpa, iccid)):
         raise ValueError("banana_message_invalid")
-    country = header.group(1).strip()
+    country_left = header.group(1).strip()
+    country_right = header.group(2).strip()
     days, megabytes = int(package.group(1)), int(package.group(2))
-    matches = [
+    package_matches = [
         item for item in SUPPLIER_CATALOG
-        if item["country"] == country
-        and item["refill_mb"] == megabytes
+        if item["refill_mb"] == megabytes
         and item["refill_days"] == days
+    ]
+    left_key, right_key = country_left.casefold(), country_right.casefold()
+    left_countries = {
+        item["country"].strip().casefold() for item in package_matches
+        if item["country"].strip().casefold() == left_key
+    }
+    right_countries = {
+        item["country"].strip().casefold() for item in package_matches
+        if item["country"].strip().casefold() == right_key
+    }
+    if left_countries and right_countries and left_countries != right_countries:
+        raise ValueError("banana_tariff_not_unique")
+    matches = [
+        item for item in package_matches
+        if item["country"].strip().casefold() in {left_key, right_key}
     ]
     if len(matches) != 1:
         raise ValueError("banana_tariff_not_unique")
+    canonical_key = matches[0]["country"].strip().casefold()
+    display_country = country_right if canonical_key == left_key else country_left
     return {
-        "catalog": matches[0], "display_country": header.group(2).strip(),
+        "catalog": matches[0], "display_country": display_country,
         "supplier_tariff": header.group(3).strip(),
         "days": days, "megabytes": megabytes,
         "lpa_code": lpa.group(0), "iccid": iccid.group(1),
