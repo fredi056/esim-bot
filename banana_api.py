@@ -155,8 +155,11 @@ class BananaClient:
 
     @staticmethod
     def _request_reference(request_id):
-        value = str(request_id or "").strip()
-        if not re.fullmatch(r"[A-Za-z0-9._:-]{1,200}", value):
+        if isinstance(request_id, bool) or not isinstance(request_id, (str, int)):
+            raise BananaError("banana_invalid_request_id")
+        raw_value = str(request_id)
+        value = raw_value.strip()
+        if not raw_value.isprintable() or not value or len(value) > 500:
             raise BananaError("banana_invalid_request_id")
         return value
 
@@ -213,7 +216,25 @@ class BananaClient:
             if isinstance(result.get("sim_card"), dict):
                 self._validate_sim_card(result["sim_card"], installation=True)
             else:
-                request_id = self._request_reference(result.get("request_id"))
+                raw_request_id = result.get("request_id")
+                response_keys = ",".join(sorted(
+                    re.sub(r"[^A-Za-z0-9_.:-]+", "_", str(key))[:80]
+                    for key in result.keys()
+                ))[:500] or "none"
+                request_id_present = "request_id" in result and raw_request_id is not None
+                request_id_length = (
+                    len(str(raw_request_id).strip()) if request_id_present else 0
+                )
+                request_id_type = type(raw_request_id).__name__
+                response_status = self._safe_error_detail(result.get("status"), "missing")
+                print(
+                    f"BANANA_CREATE_RESPONSE order_id={order_id} http_status={http_status} "
+                    f"keys={response_keys} status={response_status} "
+                    f"request_id_present={str(request_id_present).lower()} "
+                    f"request_id_type={request_id_type} request_id_length={request_id_length}",
+                    flush=True,
+                )
+                request_id = self._request_reference(raw_request_id)
                 if result.get("status") != "processing":
                     raise BananaError("banana_invalid_line_response", http_status=http_status)
                 result = {"request_id": request_id, "status": "processing"}
@@ -231,7 +252,8 @@ class BananaClient:
         print(f"BANANA_CREATE_OK order_id={order_id} http_status={http_status}", flush=True)
         if result.get("status") == "processing":
             print(
-                f"BANANA_CREATE_ASYNC order_id={order_id} request_id={result['request_id']}",
+                f"BANANA_CREATE_ASYNC order_id={order_id} request_id_present=true "
+                f"request_id_length={len(result['request_id'])}",
                 flush=True,
             )
         return result

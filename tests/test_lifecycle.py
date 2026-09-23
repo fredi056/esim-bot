@@ -488,6 +488,47 @@ class ClientTest(unittest.TestCase):
             'request_id':'req-41','status':'processing',
         })
 
+    def test_banana_request_reference_accepts_documented_open_charset(self):
+        client=BananaClient()
+        accepted=(
+            ('req-abc_123','req-abc_123'),
+            ('folder/request','folder/request'),
+            ('request==','request=='),
+            ('https://banana.example/request?id=1&next=%2Fdone#result',
+             'https://banana.example/request?id=1&next=%2Fdone#result'),
+            (1234567890,'1234567890'),
+        )
+        for raw, expected in accepted:
+            with self.subTest(raw=raw):
+                self.assertEqual(client._request_reference(raw),expected)
+
+    def test_banana_request_reference_rejects_empty_and_control_characters(self):
+        client=BananaClient()
+        for raw in (None,'','   ','request\n','request\tid','request\x00id','request\x7fid'):
+            with self.subTest(raw=raw), self.assertRaises(BananaError):
+                client._request_reference(raw)
+
+    def test_banana_create_response_diagnostic_is_safe(self):
+        client=BananaClient()
+        request_id='https://banana.example/request/abc==?next=%2Fdone#result'
+        client._request=Mock(return_value=({
+            'request_id':request_id,'status':'processing','metadata':{'ignored':'raw'},
+        },200))
+        output=io.StringIO()
+        with redirect_stdout(output):
+            result=client.create_line(41,330)
+        logged=output.getvalue()
+        self.assertEqual(result,{'request_id':request_id,'status':'processing'})
+        self.assertIn(
+            'BANANA_CREATE_RESPONSE order_id=41 http_status=200 '
+            'keys=metadata,request_id,status status=processing '
+            'request_id_present=true request_id_type=str '
+            f'request_id_length={len(request_id)}',
+            logged,
+        )
+        self.assertNotIn(request_id,logged)
+        self.assertNotIn("{'ignored': 'raw'}",logged)
+
     def test_banana_get_request_returns_completed_sim_card(self):
         client=BananaClient()
         client._request=Mock(return_value={
