@@ -13,8 +13,10 @@ import re
 import secrets
 import sqlite3
 import sys
+import tempfile
 import time
 import unittest
+import os
 from contextlib import closing, redirect_stdout
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -60,9 +62,12 @@ class LifecycleTest(unittest.TestCase):
         self.ns = dict(globals())
         self.ns.update(__file__=str(ROOT/'bot.py'), ADMIN_ID=99, REF_BONUS=100,
                        DEFAULT_PARTNER_RATE=20, ADMIN_ESIM_15M_DELAY=900, TOCHKA_PAYMENTS_ENABLED=True,
-                       DB_PATH=self.uri, MINI_APP_URL='https://example.com')
+                       DB_PATH=self.uri, MINI_APP_URL='https://example.com',
+                       AVITO_SOURCE_CODE='avito_manual',AVITO_TOKEN_PREFIX='avito_',
+                       AVITO_LINK_TTL_SECONDS=7*24*60*60,AVITO_TOKEN_BYTES=24)
         exec(compile(ast.Module(body=definitions, type_ignores=[]), str(ROOT/'bot.py'), 'exec'), self.ns)
         self.ns['_payment_db'] = lambda: sqlite3.connect(self.uri, uri=True)
+        self.ns.update(conn=self.db,cursor=self.db.cursor(),avito_sale_mode={},EMOJI={})
         self.bank = Mock(configured=True)
         self.supplier = Mock(configured=True)
         self.telegram = Mock()
@@ -105,6 +110,65 @@ class LifecycleTest(unittest.TestCase):
     def payload(self):
         return {'country':'Vietnam','tariff':'5GB / 30 дней','displayed_price':920,
                 'legal_acceptance':{'offer_version':'1','personal_data_consent_version':'1','accepted_at':'now'}}
+
+    def avito_items(self, count, offset=0):
+        result=[]
+        for index,item in enumerate(self.ns['SUPPLIER_CATALOG'][offset:offset+count]):
+            result.append({'catalog':item,'display_country':item['country'],'supplier_tariff':'slug',
+                           'days':item['refill_days'],'megabytes':item['refill_mb'],
+                           'lpa_code':f'LPA:1$host$code{offset+index}',
+                           'iccid':str(8900000000000000000+offset+index)})
+        return result
+
+    def claim_avito(self, deep_link, user_id):
+        token=deep_link.split('start=avito_',1)[1]
+        message=SimpleNamespace(from_user=SimpleNamespace(id=user_id,username='client',first_name='Client'))
+        return self.call('claim_external_sale',token,message)
+
+    def test_avito_batches_of_one_two_and_three_claim_all_orders(self):
+        offset=0
+        for count,user_id in ((1,101),(2,102),(3,103)):
+            with self.subTest(count=count):
+                deep_link,order_ids=self.call('create_imported_avito_batch',self.avito_items(count,offset),99)
+                result=self.claim_avito(deep_link,user_id)
+                self.assertEqual(result['status'],'claimed')
+                self.assertEqual(result['sale']['esim_count'],count)
+                owners=[self.value(order_id,'user_id') for order_id in order_ids]
+                self.assertEqual(owners,[user_id]*count)
+            offset+=count
+
+    def test_avito_duplicate_iccid_in_session_and_orders_is_rejected(self):
+        parsed=self.avito_items(1)[0]
+        self.assertTrue(self.call('avito_iccid_already_added',[parsed],parsed['iccid'],self.db.cursor()))
+        self.order(supplier_iccid=parsed['iccid'])
+        self.assertTrue(self.call('avito_iccid_already_added',[],parsed['iccid'],self.db.cursor()))
+
+    def test_avito_partial_claim_rolls_back_every_order_and_sale(self):
+        deep_link,order_ids=self.call('create_imported_avito_batch',self.avito_items(2,10),99)
+        self.db.execute('UPDATE orders SET user_id=777 WHERE id=?',(order_ids[1],)); self.db.commit()
+        result=self.claim_avito(deep_link,222)
+        self.assertEqual(result['status'],'unavailable')
+        self.assertEqual(self.value(order_ids[0],'user_id'),0)
+        self.assertEqual(self.value(order_ids[1],'user_id'),777)
+        self.assertEqual(self.db.execute('SELECT status FROM external_sales').fetchone()[0],'created')
+
+    def test_avito_legacy_order_id_link_still_claims(self):
+        oid=self.order(user_id=0,status='paid',supplier_status='issued',supplier_iccid='8900000000000000999')
+        deep_link,_sale=self.call('create_external_sale','Turkey','1GB / 7 дней',0,99,oid)
+        self.assertEqual(self.claim_avito(deep_link,333)['status'],'claimed')
+        self.assertEqual(self.value(oid,'user_id'),333)
+
+    def test_account_returns_all_esims_after_avito_claim(self):
+        deep_link,order_ids=self.call('create_imported_avito_batch',self.avito_items(3,20),99)
+        self.assertEqual(self.claim_avito(deep_link,444)['status'],'claimed')
+        handle=tempfile.NamedTemporaryFile(suffix='.db',delete=False)
+        path=handle.name; handle.close()
+        try:
+            disk=sqlite3.connect(path); self.db.backup(disk); disk.close()
+            result=read_account(path,{'id':444,'first_name':'Client'},lambda uid:'ref',lambda uid:'share',lambda:'text','support')
+            self.assertEqual({esim['id'] for esim in result['esims']},set(order_ids))
+        finally:
+            os.unlink(path)
 
     def set_active_partner(self, user_id, partner_user_id, *, until=None, first_source=''):
         self.db.execute(

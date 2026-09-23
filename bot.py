@@ -266,6 +266,13 @@ CREATE TABLE IF NOT EXISTS external_sales (
 """)
 add_column_if_not_exists("external_sales", "order_id", "INTEGER DEFAULT 0")
 cursor.execute("""
+CREATE TABLE IF NOT EXISTS external_sale_orders (
+    external_sale_id INTEGER NOT NULL,
+    order_id INTEGER NOT NULL UNIQUE,
+    PRIMARY KEY (external_sale_id, order_id)
+)
+""")
+cursor.execute("""
 CREATE TABLE IF NOT EXISTS engagement_jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     target_type TEXT NOT NULL,
@@ -753,7 +760,7 @@ def create_external_sale(country: str, tariff: str, amount: int, created_by: int
 
 def parse_banana_avito_message(text: str) -> Dict[str, Any]:
     header = re.search(
-        r"(?m)^\s*([^/\r\n]+?)\s*/[^\r\n]*?\s+-\s+([^\s\r\n]+)\s*$",
+        r"(?m)^\s*([^/\r\n]+?)\s*/\s*(.*?)\s+-\s+([^\s\r\n]+)\s*$",
         text or "",
     )
     package = re.search(r"(?i)(\d+)\s*(?:дн\.?|days?)\s*/\s*(\d+)\s*(?:мб|mb)\b", text or "")
@@ -772,42 +779,52 @@ def parse_banana_avito_message(text: str) -> Dict[str, Any]:
     if len(matches) != 1:
         raise ValueError("banana_tariff_not_unique")
     return {
-        "catalog": matches[0], "supplier_tariff": header.group(2).strip(),
+        "catalog": matches[0], "display_country": header.group(2).strip(),
+        "supplier_tariff": header.group(3).strip(),
         "days": days, "megabytes": megabytes,
         "lpa_code": lpa.group(0), "iccid": iccid.group(1),
     }
 
 
-def create_imported_avito_sale(parsed: Dict[str, Any], created_by: int) -> Tuple[str, int]:
+def _insert_imported_avito_order(db_cursor, parsed: Dict[str, Any], now: int) -> int:
     item = parsed["catalog"]
-    now = int(time.time())
     iccid = parsed["iccid"]
     lpa_code = parsed["lpa_code"]
     usage_kb = parsed["megabytes"] * 1024
     install_url = "https://esimsetup.apple.com/esim_qrcode_provisioning?" + urlencode({"carddata": lpa_code})
+    if db_cursor.execute("SELECT 1 FROM orders WHERE supplier_iccid=? LIMIT 1", (iccid,)).fetchone():
+        raise ValueError("avito_iccid_exists")
+    db_cursor.execute(
+        """
+        INSERT INTO orders (
+            user_id,text,price,pay_amount,status,country,tariff,created_at,source_code,
+            order_kind,plan_type,supplier_product_id,supplier_variation_id,supplier_status,
+            supplier_iccid,supplier_lpa_code,supplier_provider_status,
+            supplier_remaining_usage_kb,supplier_allowed_usage_kb,supplier_remaining_days,
+            supplier_issued_at,supplier_delivered_at,esim_sent_at,install_url
+        ) VALUES (0,?,0,0,'paid',?,?,?,'avito_manual','esim','standard',?,?,'issued',
+                  ?,?,'issued',?,?,?,?,?,?,?)
+        """,
+        (
+            f"{item['country']} | {item['tariff']} — Авито", item["country"], item["tariff"], now,
+            item["product_id"], item["variation_id"], iccid, lpa_code,
+            usage_kb, usage_kb, parsed["days"], now, now, now, install_url,
+        ),
+    )
+    return db_cursor.lastrowid
+
+
+def create_imported_avito_batch(parsed_items: List[Dict[str, Any]], created_by: int) -> Tuple[str, List[int]]:
+    if not parsed_items or len(parsed_items) > 20:
+        raise ValueError("avito_batch_size")
+    now = int(time.time())
     try:
         cursor.execute("BEGIN IMMEDIATE")
-        if cursor.execute("SELECT 1 FROM orders WHERE supplier_iccid=? LIMIT 1", (iccid,)).fetchone():
-            conn.rollback()
-            return "", 0
-        cursor.execute(
-            """
-            INSERT INTO orders (
-                user_id,text,price,pay_amount,status,country,tariff,created_at,source_code,
-                order_kind,plan_type,supplier_product_id,supplier_variation_id,supplier_status,
-                supplier_iccid,supplier_lpa_code,supplier_provider_status,
-                supplier_remaining_usage_kb,supplier_allowed_usage_kb,supplier_remaining_days,
-                supplier_issued_at,supplier_delivered_at,esim_sent_at,install_url
-            ) VALUES (0,?,0,0,'paid',?,?,?,'avito_manual','esim','standard',?,?,
-                      'issued',?,?,'issued',?,?,?,?,?,?,?)
-            """,
-            (
-                f"{item['country']} | {item['tariff']} — Авито", item["country"], item["tariff"], now,
-                item["product_id"], item["variation_id"], iccid, lpa_code,
-                usage_kb, usage_kb, parsed["days"], now, now, now, install_url,
-            ),
-        )
-        order_id = cursor.lastrowid
+        iccids = [item["iccid"] for item in parsed_items]
+        if len(set(iccids)) != len(iccids):
+            raise ValueError("avito_iccid_exists")
+        order_ids = [_insert_imported_avito_order(cursor, item, now) for item in parsed_items]
+        first_item = parsed_items[0]["catalog"]
         expires_at = now + AVITO_LINK_TTL_SECONDS
         for _ in range(20):
             token = secrets.token_urlsafe(AVITO_TOKEN_BYTES)
@@ -821,17 +838,27 @@ def create_imported_avito_sale(parsed: Dict[str, Any], created_by: int) -> Tuple
                          status,created_at,claimed_at,expires_at,created_by,order_id)
                     VALUES (? ,?,?,0,?,0,'created',?,0,?,?,?)
                     """,
-                    (AVITO_SOURCE_CODE, item["country"], item["tariff"], avito_token_hash(token),
-                     now, expires_at, created_by, order_id),
+                    (AVITO_SOURCE_CODE, first_item["country"], first_item["tariff"], avito_token_hash(token),
+                     now, expires_at, created_by, order_ids[0]),
+                )
+                sale_id = cursor.lastrowid
+                cursor.executemany(
+                    "INSERT INTO external_sale_orders(external_sale_id,order_id) VALUES (?,?)",
+                    ((sale_id, order_id) for order_id in order_ids),
                 )
                 conn.commit()
-                return avito_deep_link(token), order_id
+                return avito_deep_link(token), order_ids
             except sqlite3.IntegrityError:
                 continue
         raise RuntimeError("Could not generate unique external sale token")
     except Exception:
         conn.rollback()
         raise
+
+
+def create_imported_avito_sale(parsed: Dict[str, Any], created_by: int) -> Tuple[str, int]:
+    deep_link, order_ids = create_imported_avito_batch([parsed], created_by)
+    return deep_link, order_ids[0]
 
 def ensure_user_with_cursor(db_cursor, user_id: int, username: Optional[str], first_name: Optional[str], ref: Optional[int] = None) -> bool:
     username = username or ""
@@ -879,7 +906,7 @@ def claim_external_sale(token: str, message) -> Dict[str, Any]:
     user_id = message.from_user.id
     now = int(time.time())
     token_hash = avito_token_hash(token)
-    db_conn = sqlite3.connect(DB_PATH, timeout=5)
+    db_conn = _payment_db()
     db_conn.execute("PRAGMA busy_timeout = 5000")
     db_cursor = db_conn.cursor()
 
@@ -938,15 +965,23 @@ def claim_external_sale(token: str, message) -> Dict[str, Any]:
             db_conn.rollback()
             return {"status": "already_used"}
 
-        if sale["order_id"]:
+        order_ids = [row[0] for row in db_cursor.execute(
+            "SELECT order_id FROM external_sale_orders WHERE external_sale_id=? ORDER BY order_id",
+            (sale["id"],),
+        ).fetchall()]
+        if not order_ids and sale["order_id"]:
+            order_ids = [sale["order_id"]]
+        if order_ids:
+            placeholders = ",".join("?" for _ in order_ids)
             db_cursor.execute(
-                """
+                f"""
                 UPDATE orders SET user_id=?
-                WHERE id=? AND user_id=0 AND status='paid' AND supplier_status='issued'
+                WHERE id IN ({placeholders}) AND user_id=0
+                  AND status='paid' AND supplier_status='issued'
                 """,
-                (user_id, sale["order_id"]),
+                (user_id, *order_ids),
             )
-            if db_cursor.rowcount != 1:
+            if db_cursor.rowcount != len(order_ids):
                 db_conn.rollback()
                 return {"status": "unavailable"}
 
@@ -956,6 +991,7 @@ def claim_external_sale(token: str, message) -> Dict[str, Any]:
         sale["telegram_user_id"] = user_id
         sale["claimed_at"] = now
         sale["status"] = "claimed"
+        sale["esim_count"] = len(order_ids)
         return {"status": "claimed", "sale": sale}
     except Exception:
         db_conn.rollback()
@@ -1153,11 +1189,18 @@ def external_sale_customer_text(country: str, tariff: str) -> str:
     return text
 
 
-def imported_avito_customer_text() -> str:
+def imported_avito_customer_text(count: int) -> str:
+    if count == 1:
+        return (
+            "💚 Ваша eSIM сохранена в eSIMLime.\n\n"
+            "Откройте «Мои eSIM» — там можно проверить актуальный остаток трафика и срок действия.\n"
+            "Если eSIM поддерживает пополнение, там же будут доступны пакеты пополнения."
+        )
     return (
-        "💚 Ваша eSIM сохранена в eSIMLime.\n\n"
-        "Откройте «Мои eSIM» — там можно проверить актуальный остаток трафика и срок действия.\n"
-        "Если eSIM поддерживает пополнение, там же будут доступны пакеты пополнения."
+        "💚 Ваши eSIM сохранены в eSIMLime.\n\n"
+        f"Добавлено eSIM: {count}\n\n"
+        "Откройте «Мои eSIM» — там можно проверить остаток трафика и срок действия каждой eSIM.\n"
+        "Если для eSIM доступно пополнение, там же будут показаны пакеты."
     )
 
 def avito_admin_back_keyboard():
@@ -1217,7 +1260,7 @@ def handle_avito_start(message, token: Optional[str]) -> None:
     if status == "claimed":
         bot.send_message(
             message.chat.id,
-            (imported_avito_customer_text() if sale.get("order_id")
+            (imported_avito_customer_text(int(sale.get("esim_count") or 1)) if sale.get("order_id")
              else external_sale_customer_text(sale.get("country", ""), sale.get("tariff", ""))),
             reply_markup=external_sale_customer_keyboard()
         )
@@ -1311,18 +1354,42 @@ def start_avito_sale_flow(chat_id: int, user_id: int) -> None:
     partner_application_mode.discard(user_id)
     partner_message_mode.pop(user_id, None)
     ad_source_creation_mode.discard(user_id)
-    avito_sale_mode[user_id] = {"step": "banana_message"}
+    avito_sale_mode[user_id] = {"step": "banana_message", "items": []}
     bot.send_message(
         chat_id,
-        "Перешлите полное сообщение от Banana с выданной eSIM.",
+        "Перешлите сообщение Banana с первой eSIM.",
         reply_markup=nav_keyboard(),
     )
 
 
+def avito_sale_session_keyboard():
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("➕ Добавить ещё eSIM", callback_data="avito_add_esim"))
+    kb.add(types.InlineKeyboardButton("✅ Готово — создать ссылку", callback_data="avito_finish_sale"))
+    kb.add(types.InlineKeyboardButton("❌ Отмена", callback_data="avito_cancel_sale"))
+    return kb
+
+
+def avito_session_item_line(parsed: Dict[str, Any]) -> str:
+    volume = (f"{parsed['megabytes'] // 1024} ГБ"
+              if parsed["megabytes"] % 1024 == 0 else f"{parsed['megabytes']} МБ")
+    country = parsed.get("display_country") or parsed["catalog"]["country"]
+    return f"{EMOJI.get(parsed['catalog']['country'], '🌐')} {country} — {volume} / {parsed['days']} дней"
+
+
+def avito_iccid_already_added(items: List[Dict[str, Any]], iccid: str, db_cursor=None) -> bool:
+    db_cursor = db_cursor or cursor
+    return (any(item["iccid"] == iccid for item in items)
+            or db_cursor.execute("SELECT 1 FROM orders WHERE supplier_iccid=? LIMIT 1", (iccid,)).fetchone() is not None)
+
+
 def handle_avito_banana_message(message) -> None:
+    state = avito_sale_mode.get(message.from_user.id)
+    if not state or state.get("step") != "banana_message":
+        bot.send_message(message.chat.id, "Используйте кнопки ниже.", reply_markup=avito_sale_session_keyboard())
+        return
     try:
         parsed = parse_banana_avito_message(message.text or "")
-        deep_link, order_id = create_imported_avito_sale(parsed, message.from_user.id)
     except ValueError as exc:
         error = (
             "Не удалось однозначно найти тариф в каталоге. Ничего не создано."
@@ -1331,25 +1398,22 @@ def handle_avito_banana_message(message) -> None:
         )
         bot.send_message(message.chat.id, error)
         return
-    except Exception:
-        bot.send_message(message.chat.id, "Не удалось подготовить eSIM. Ничего не создано.")
+    items = state["items"]
+    if avito_iccid_already_added(items, parsed["iccid"]):
+        bot.send_message(message.chat.id, "Эта eSIM уже добавлена.", reply_markup=avito_sale_session_keyboard())
         return
-    if not order_id:
-        avito_sale_mode.pop(message.from_user.id, None)
-        bot.send_message(message.chat.id, "Эта eSIM уже добавлена.", reply_markup=main_keyboard(message.from_user.id))
+    if len(items) >= 20:
+        bot.send_message(message.chat.id, "Можно добавить не более 20 eSIM.", reply_markup=avito_sale_session_keyboard())
         return
-    avito_sale_mode.pop(message.from_user.id, None)
-    item = parsed["catalog"]
-    volume = (f"{parsed['megabytes'] // 1024} ГБ"
-              if parsed["megabytes"] % 1024 == 0 else f"{parsed['megabytes']} МБ")
+    items.append(parsed)
+    state["step"] = "review"
     bot.send_message(
         message.chat.id,
-        "✅ eSIM Авито подготовлена\n"
-        f"{country_label(item['country'])}\n"
-        f"{volume} / {parsed['days']} дней\n"
+        "✅ eSIM добавлена\n"
+        f"{avito_session_item_line(parsed)}\n"
         f"ICCID: …{parsed['iccid'][-4:]}\n\n"
-        f"Отправьте клиенту:\n{deep_link}",
-        reply_markup=main_keyboard(message.from_user.id),
+        f"eSIM в продаже: {len(items)}",
+        reply_markup=avito_sale_session_keyboard(),
     )
 
 
@@ -4980,6 +5044,57 @@ def callback_handler(call):
         and not data.startswith("avito_")
     ):
         avito_sale_mode.pop(call.from_user.id, None)
+
+    if data == "avito_cancel_sale":
+        if call.from_user.id != ADMIN_ID:
+            bot.answer_callback_query(call.id, "Недоступно")
+            return
+        avito_sale_mode.pop(call.from_user.id, None)
+        bot.answer_callback_query(call.id, "Отменено")
+        show_main(call.message.chat.id, call.from_user.id, add_to_history=False)
+        return
+
+    if data == "avito_add_esim":
+        state = avito_sale_mode.get(call.from_user.id)
+        if call.from_user.id != ADMIN_ID or not state:
+            bot.answer_callback_query(call.id, "Сессия не найдена")
+            return
+        if len(state.get("items", [])) >= 20:
+            bot.answer_callback_query(call.id, "Максимум 20 eSIM")
+            return
+        state["step"] = "banana_message"
+        bot.answer_callback_query(call.id)
+        bot.send_message(call.message.chat.id, "Перешлите полное сообщение Banana со следующей eSIM.")
+        return
+
+    if data == "avito_finish_sale":
+        state = avito_sale_mode.get(call.from_user.id)
+        items = state.get("items", []) if state else []
+        if call.from_user.id != ADMIN_ID or not items:
+            bot.answer_callback_query(call.id, "Нет добавленных eSIM")
+            return
+        try:
+            deep_link, _order_ids = create_imported_avito_batch(items, call.from_user.id)
+        except ValueError as exc:
+            bot.answer_callback_query(call.id, "Не удалось создать продажу")
+            text = "Эта eSIM уже добавлена." if str(exc) == "avito_iccid_exists" else "Не удалось создать продажу."
+            bot.send_message(call.message.chat.id, text, reply_markup=avito_sale_session_keyboard())
+            return
+        except Exception:
+            bot.answer_callback_query(call.id, "Ошибка")
+            bot.send_message(call.message.chat.id, "Не удалось создать продажу. Ничего не сохранено.")
+            return
+        avito_sale_mode.pop(call.from_user.id, None)
+        bot.answer_callback_query(call.id, "Готово")
+        lines = "\n".join(avito_session_item_line(item) for item in items)
+        bot.send_message(
+            call.message.chat.id,
+            "✅ Продажа Авито подготовлена\n\n"
+            f"eSIM: {len(items)}\n\n{lines}\n\n"
+            f"Отправьте клиенту одну ссылку:\n{deep_link}",
+            reply_markup=main_keyboard(call.from_user.id),
+        )
+        return
 
     if data == "visitor_catalog":
         bot.answer_callback_query(call.id)
