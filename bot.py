@@ -781,7 +781,7 @@ def create_external_sale(country: str, tariff: str, amount: int, created_by: int
 
 def _banana_avito_headers(text: str):
     return list(re.finditer(
-        r"(?m)^\s*([^/\r\n]+?)\s*/\s*(.*?)\s+-\s+([^\s\r\n]+)\s*$",
+        r"(?m)^\s*([^/\r\n]+?)\s*/\s*(.*?)\s+-\s+([^\r\n]+?)\s*$",
         text or "",
     ))
 
@@ -791,7 +791,7 @@ def _parse_banana_avito_block(block: str) -> Dict[str, Any]:
     header = headers[0] if headers else None
     package = re.search(r"(?i)(\d+)\s*(?:дн\.?|days?)\s*/\s*(\d+)\s*(?:мб|mb)\b", block or "")
     lpa = re.search(r"LPA:1\$[^\s]+", block or "")
-    iccid = re.search(r"(?i)\bICCID\s*:\s*(\d{15,22})\b", block or "")
+    iccid = re.search(r"(?i)\bICCID\s*:\s*\**\s*(\d{15,22})\b", block or "")
     if not all((header, package, lpa, iccid)):
         raise ValueError("banana_message_invalid")
     country = header.group(1).strip()

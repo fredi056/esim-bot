@@ -131,6 +131,23 @@ class LifecycleTest(unittest.TestCase):
         lines.append(f"ICCID: {iccid}")
         return '\n'.join(lines)
 
+    def current_banana_avito_block(self, iccid, activation_code):
+        return f"""Turkey / Турция - 10 GB / 30 days / mb 10240
+30 дн / 10240 МБ
+
+📱 Установка через QR:
+
+⚡ Автоматическая установка:
+
+📲 Android (ручной ввод):
+LPA:1$rsp-eu.simlessly.com${activation_code}
+
+🍏 iPhone (ввести вручную):
+SM-DP+ Address: rsp-eu.simlessly.com
+Код активации: {activation_code}
+
+**ICCID:** {iccid}"""
+
     def claim_avito(self, deep_link, user_id):
         token=deep_link.split('start=avito_',1)[1]
         message=SimpleNamespace(from_user=SimpleNamespace(id=user_id,username='client',first_name='Client'))
@@ -148,6 +165,41 @@ class LifecycleTest(unittest.TestCase):
                 self.assertEqual([item['lpa_code'] for item in parsed],
                                  [f'LPA:1$smdp.io$CODE-{index}' for index in range(1,count+1)])
         self.assertEqual(self.call('parse_banana_avito_message',text)['iccid'],parsed[0]['iccid'])
+
+    def test_parse_current_banana_avito_format(self):
+        activation='09D8F4C77E054DCA803ED99B3D678763'
+        parsed=self.call('parse_banana_avito_messages',
+                         self.current_banana_avito_block('8997250230001320742',activation))
+        self.assertEqual(len(parsed),1)
+        self.assertEqual(parsed[0]['catalog']['country'],'Turkey')
+        self.assertEqual(parsed[0]['supplier_tariff'],'10 GB / 30 days / mb 10240')
+        self.assertEqual(parsed[0]['days'],30)
+        self.assertEqual(parsed[0]['megabytes'],10240)
+        self.assertEqual(parsed[0]['iccid'],'8997250230001320742')
+        self.assertEqual(parsed[0]['lpa_code'],f'LPA:1$rsp-eu.simlessly.com${activation}')
+
+    def test_parse_two_current_banana_avito_blocks(self):
+        blocks = [
+            self.current_banana_avito_block('8997250230001320742','09D8F4C77E054DCA803ED99B3D678763'),
+            self.current_banana_avito_block('8997250230001320743','19D8F4C77E054DCA803ED99B3D678764'),
+        ]
+        parsed=self.call('parse_banana_avito_messages','\n\n'.join(blocks))
+        self.assertEqual([item['iccid'] for item in parsed],
+                         ['8997250230001320742','8997250230001320743'])
+        self.assertEqual([item['lpa_code'] for item in parsed],[
+            'LPA:1$rsp-eu.simlessly.com$09D8F4C77E054DCA803ED99B3D678763',
+            'LPA:1$rsp-eu.simlessly.com$19D8F4C77E054DCA803ED99B3D678764',
+        ])
+
+    def test_parse_markdown_iccid_variants(self):
+        catalog=self.ns['SUPPLIER_CATALOG'][0]
+        base=self.banana_avito_block(catalog,1)
+        iccid='8948010020008591001'
+        for value in (f'ICCID: {iccid}',f'**ICCID:** {iccid}',f'ICCID: **{iccid}**'):
+            with self.subTest(value=value):
+                parsed=self.call('parse_banana_avito_messages',
+                                 re.sub(r'ICCID: \d+',value,base))
+                self.assertEqual(parsed[0]['iccid'],iccid)
 
     def test_parse_banana_blocks_skips_only_damaged_block(self):
         catalog = self.ns['SUPPLIER_CATALOG'][:2]
