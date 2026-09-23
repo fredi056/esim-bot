@@ -18,7 +18,7 @@ import telebot
 from telebot import types
 
 from account_api import ApiError, delivery_data, read_account, start_account_api
-from banana_api import BananaClient, BananaError, STANDARD_PARTNER_PROVIDERS
+from banana_api import BananaClient, BananaError
 from maintenance import reset_order_data_once
 from tochka_api import TochkaClient, TochkaError
 
@@ -115,6 +115,7 @@ add_column_if_not_exists("orders", "supplier_allowed_usage_kb", "INTEGER DEFAULT
 add_column_if_not_exists("orders", "supplier_remaining_days", "INTEGER DEFAULT 0")
 add_column_if_not_exists("orders", "supplier_expire_at", "TEXT DEFAULT ''")
 add_column_if_not_exists("orders", "supplier_requested_at", "INTEGER DEFAULT 0")
+add_column_if_not_exists("orders", "supplier_request_id", "TEXT DEFAULT ''")
 add_column_if_not_exists("orders", "supplier_issued_at", "INTEGER DEFAULT 0")
 add_column_if_not_exists("orders", "supplier_delivered_at", "INTEGER DEFAULT 0")
 add_column_if_not_exists("orders", "supplier_last_error", "TEXT DEFAULT ''")
@@ -460,6 +461,13 @@ def load_unlimited_catalog() -> Dict[str, Dict[str, Any]]:
         daily_gb = plan.get("daily_high_speed_gb")
         supplier_class = plan.get("supplier_class")
         prices = plan.get("retail_prices_rub")
+        for field in ("item_id", "product_id", "variation_id"):
+            value = plan.get(field)
+            if value is not None and (
+                    isinstance(value, bool) or not isinstance(value, int) or value < 0):
+                raise RuntimeError(
+                    f"unlimited plan contains an invalid {field}: {supplier_key}"
+                )
         if not isinstance(supplier_key, str) or not supplier_key.strip():
             raise RuntimeError("unlimited plan contains an invalid supplier_key")
         if supplier_key in normalized:
@@ -4151,55 +4159,6 @@ def partner_payout_handler(message):
     show_partner_payout_confirmation(message.chat.id, message.from_user.id, parts[1])
 
 
-@bot.message_handler(commands=["banana_resolve"])
-def banana_resolve_handler(message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    parts = (message.text or "").split()
-    if len(parts) != 3:
-        bot.send_message(
-            message.chat.id,
-            "Используйте: /banana_resolve PRODUCT_ID VARIATION_ID\n"
-            "Для простого товара без вариации укажите 0."
-        )
-        return
-    try:
-        product_id = int(parts[1])
-        variation_id = int(parts[2])
-    except ValueError:
-        bot.send_message(message.chat.id, "ID товара и вариации должны быть числами.")
-        return
-    if not banana.configured:
-        bot.send_message(message.chat.id, "API Banana не настроен.")
-        return
-    try:
-        product = banana.resolve_product(product_id, variation_id)
-    except BananaError as exc:
-        bot.send_message(
-            message.chat.id,
-            "⚠️ Banana не подтвердил товар\n"
-            f"Код: {_format_banana_error(exc)}"
-        )
-        return
-    if not isinstance(product, dict):
-        bot.send_message(message.chat.id, "⚠️ Banana вернул неизвестный формат товара.")
-        return
-    details = [
-        ("Товар", product.get("product_id")),
-        ("Вариация", product.get("variation_id")),
-        ("Поставщик", product.get("partner_provider")),
-        ("Объём", f"{product.get('refill_mb')} МБ" if product.get("refill_mb") is not None else None),
-        ("Срок", f"{product.get('refill_days')} дн." if product.get("refill_days") is not None else None),
-        ("Пополнение", "да" if product.get("refillable") is True else "нет"),
-        ("Безлимит", "да" if product.get("unlimited") is True else "нет"),
-    ]
-    bot.send_message(
-        message.chat.id,
-        "✅ Banana подтвердил товар\n\n" +
-        "\n".join(f"{label}: {value}" for label, value in details if value is not None)
-    )
-
-
 @bot.message_handler(commands=["banana_issue_test"])
 def banana_issue_test_handler(message):
     if message.from_user.id != ADMIN_ID:
@@ -4223,16 +4182,13 @@ def banana_issue_test_handler(message):
         bot.send_message(message.chat.id, "API Banana не настроен.")
         return
     try:
-        product = banana.resolve_product(product_id, variation_id)
-        if not isinstance(product, dict):
-            raise BananaError("banana_invalid_product_response")
-        if (product.get("unlimited") is True
-                or product.get("partner_provider") not in STANDARD_PARTNER_PROVIDERS):
-            raise BananaError("banana_test_product_not_standard")
+        item_id = _supplier_item_id(product_id, variation_id)
+        if item_id <= 0:
+            raise BananaError("banana_invalid_product_reference")
         # This stable key makes retries idempotent: the same command must return
         # the original test eSIM instead of issuing another one.
         test_order_id = f"banana-test-{product_id}-{variation_id}-v1"
-        result = banana.create_line(test_order_id, product_id, variation_id)
+        result = banana.create_line(test_order_id, item_id)
     except BananaError as exc:
         bot.send_message(
             message.chat.id,
@@ -4242,7 +4198,10 @@ def banana_issue_test_handler(message):
         return
     sim_card = result.get("sim_card") if isinstance(result, dict) else None
     if not isinstance(sim_card, dict):
-        bot.send_message(message.chat.id, "⚠️ Banana выпустил товар, но вернул неизвестный формат eSIM.")
+        if isinstance(result, dict) and result.get("status") == "processing":
+            bot.send_message(message.chat.id, "⏳ Banana принял запрос. Выпуск eSIM ещё выполняется.")
+        else:
+            bot.send_message(message.chat.id, "⚠️ Banana выпустил товар, но вернул неизвестный формат eSIM.")
         return
     iccid = str(sim_card.get("iccid") or "").strip()
     lpa_code = str(sim_card.get("lpa_code") or "").strip()
@@ -5481,9 +5440,6 @@ def _supplier_line_allows_topup(sim_card: Dict[str, Any]) -> bool:
 
     if sim_card.get("refillable") is False or sim_card.get("refillable") == 0:
         return False
-    provider = sim_card.get("line_provider") or sim_card.get("partner_provider")
-    if provider and provider not in STANDARD_PARTNER_PROVIDERS:
-        return False
     status = str(sim_card.get("status") or "").strip().lower()
     if status in {"expired", "blocked", "deleted", "cancelled", "canceled", "terminated", "disabled"}:
         return False
@@ -5502,8 +5458,7 @@ def _topup_options_for_order(db, user_id: int, order_id: int) -> List[Dict[str, 
     row = db.execute(
         """
         SELECT country, supplier_iccid, supplier_status, supplier_product_id, plan_type,
-               supplier_line_provider, supplier_refillable, supplier_provider_status,
-               supplier_expire_at
+               supplier_refillable, supplier_provider_status, supplier_expire_at
         FROM orders
         WHERE id=? AND user_id=? AND status='paid' AND COALESCE(order_kind, 'esim')='esim'
         """,
@@ -5511,7 +5466,7 @@ def _topup_options_for_order(db, user_id: int, order_id: int) -> List[Dict[str, 
     ).fetchone()
     if (not row or not row[1] or row[2] != "issued" or not row[3]
             or row[4] == "unlimited" or not _supplier_line_allows_topup({
-                "line_provider": row[5], "refillable": row[6], "status": row[7], "expire_at": row[8],
+                "refillable": row[5], "status": row[6], "expire_at": row[7],
             })):
         return []
     options = []
@@ -5540,7 +5495,7 @@ def _persist_supplier_details(order_id: int, sim_card: Dict[str, Any], expected_
     iccid = str(sim_card.get("iccid") or "").strip()
     if not iccid or (expected_iccid and iccid != expected_iccid):
         raise BananaError("banana_invalid_line_response")
-    # Missing/null provider fields mean unknown, never a zero balance.
+    # Missing/null supplier fields mean unknown, never a zero balance.
     updates = {"supplier_balance_checked_at": int(time.time())}
     for source, column in (
         ("remaining_usage_kb", "supplier_remaining_usage_kb"),
@@ -5552,9 +5507,7 @@ def _persist_supplier_details(order_id: int, sim_card: Dict[str, Any], expected_
             if isinstance(value, bool) or not re.fullmatch(r"\d+", str(value)):
                 raise BananaError("banana_invalid_line_response")
             updates[column] = int(value)
-    for source, column in (("status", "supplier_provider_status"),
-                           ("line_provider", "supplier_line_provider"),
-                           ("partner_provider", "supplier_line_provider")):
+    for source, column in (("status", "supplier_provider_status"),):
         if sim_card.get(source):
             updates[column] = str(sim_card[source]).strip()[:80]
     if "refillable" in sim_card and sim_card["refillable"] is not None:
@@ -5652,12 +5605,6 @@ def create_mini_app_topup(telegram_user: Dict[str, Any], parent_order_id: int,
     if duplicate:
         return _pending_payment_response(duplicate)
     try:
-        # Validate the existing line, not just the package being sold.
-        source_product = banana.resolve_product(parent[3], parent[4])
-        if (not isinstance(source_product, dict)
-                or source_product.get("partner_provider") not in STANDARD_PARTNER_PROVIDERS
-                or source_product.get("refillable") is not True):
-            raise BananaError("banana_product_not_refillable")
         details = banana.get_details(parent[1])
         sim_card = details.get("sim_card") if isinstance(details, dict) else None
         if not isinstance(sim_card, dict):
@@ -5665,11 +5612,6 @@ def create_mini_app_topup(telegram_user: Dict[str, Any], parent_order_id: int,
         _persist_supplier_details(parent_order_id, sim_card, str(parent[1]))
         if not _supplier_line_allows_topup(sim_card):
             raise BananaError("banana_refill_line_blocked")
-        product = (source_product if (parent[3], parent[4]) == (option["product_id"], option["variation_id"])
-                   else banana.resolve_product(option["product_id"], option["variation_id"]))
-        _validate_supplier_product(product, option)
-        if product.get("refillable") is not True:
-            raise BananaError("banana_product_not_refillable")
     except BananaError as exc:
         _notify_admin_throttled(
             f"topup-product:{option['product_id']}:{option['variation_id']}:{str(exc)}",
@@ -5726,8 +5668,8 @@ def create_mini_app_topup(telegram_user: Dict[str, Any], parent_order_id: int,
             ),
         )
         order_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-        db.execute("UPDATE orders SET payment_link_id=?,supplier_line_provider=? WHERE id=?",
-                   (f"esimlime-{order_id}", source_product["partner_provider"], order_id))
+        db.execute("UPDATE orders SET payment_link_id=? WHERE id=?",
+                   (f"esimlime-{order_id}", order_id))
         db.commit()
     except ApiError:
         db.rollback()
@@ -5959,9 +5901,12 @@ def _validated_api_order(body: Dict[str, Any], user_id: int) -> Optional[Dict[st
     if plan_type == "unlimited":
         order = validate_unlimited_order_payload(body)
         if order:
+            plan = order["plan"]
+            product_id = plan.get("product_id") or plan.get("item_id", 0)
+            variation_id = plan.get("variation_id", 0)
             order.update({
-                "plan_type": "unlimited", "supplier_product_id": 0,
-                "supplier_variation_id": 0,
+                "plan_type": "unlimited", "supplier_product_id": product_id,
+                "supplier_variation_id": variation_id,
             })
         return order
     if plan_type not in ("", None):
@@ -6021,16 +5966,6 @@ def _format_banana_error(exc: BananaError) -> str:
     return f"{str(exc)}{f' — {detail}' if detail else ''}"[:450]
 
 
-def _validate_supplier_product(product, expected=None):
-    if (not isinstance(product, dict)
-            or product.get("partner_provider") not in STANDARD_PARTNER_PROVIDERS
-            or product.get("unlimited") is not False):
-        raise BananaError("banana_product_changed")
-    if expected and (_supplier_int(product.get("refill_mb")) != expected["refill_mb"]
-                     or _supplier_int(product.get("refill_days")) != expected["refill_days"]):
-        raise BananaError("banana_product_changed")
-
-
 def create_mini_app_payment(telegram_user: Dict[str, Any], body: Dict[str, Any]) -> Dict[str, Any]:
     if not TOCHKA_PAYMENTS_ENABLED:
         raise ApiError(503, "payments_not_enabled")
@@ -6049,28 +5984,13 @@ def create_mini_app_payment(telegram_user: Dict[str, Any], body: Dict[str, Any])
     order = _validated_api_order(body, user_id)
     if not order:
         raise ApiError(409, "tariff_changed")
-    if (_supplier_int(order["supplier_product_id"]) <= 0
-            or _supplier_int(order["supplier_variation_id"]) <= 0):
+    if _supplier_item_id(order["supplier_product_id"], order["supplier_variation_id"]) <= 0:
         # Never accept money for a package that cannot be issued through the
         # configured supplier API. Unmapped catalogue rows remain visible until
         # the separate availability/catalogue update, but checkout is blocked.
         raise ApiError(503, "supplier_product_unavailable")
     if not banana.configured:
         raise ApiError(503, "supplier_unavailable")
-    if order["plan_type"] == "supplier_test":
-        expected = _supplier_catalog_option(
-            order["country"], _topup_option_id(order["supplier_product_id"], order["supplier_variation_id"])
-        )
-        try:
-            product = banana.resolve_product(order["supplier_product_id"], order["supplier_variation_id"])
-            _validate_supplier_product(product, expected)
-        except BananaError as exc:
-            _notify_admin_throttled(
-                f"sale-product:{order['supplier_product_id']}:{order['supplier_variation_id']}:{str(exc)}",
-                f"⚠️ Тариф Banana недоступен до оплаты\n"
-                f"{order['country']} — {order['tariff']}\nКод: {_format_banana_error(exc)}",
-            )
-            raise ApiError(503, "supplier_product_unavailable") from exc
 
     now = int(time.time())
     db = _payment_db()
@@ -6172,6 +6092,11 @@ def _supplier_int(value: Any) -> int:
         return max(0, int(value or 0))
     except (TypeError, ValueError):
         return 0
+
+
+def _supplier_item_id(product_id: Any, variation_id: Any) -> int:
+    variation = _supplier_int(variation_id)
+    return variation if variation > 0 else _supplier_int(product_id)
 
 
 def _claim_supplier_delivery(order_id: int) -> str:
@@ -6348,12 +6273,13 @@ def provision_paid_supplier_order(order_id: int) -> bool:
         row = db.execute(
             """
             SELECT user_id, status, country, tariff, plan_type, supplier_product_id,
-                   supplier_variation_id, supplier_status, supplier_requested_at
+                   supplier_variation_id, supplier_status, supplier_requested_at,
+                   supplier_request_id, duration_days
             FROM orders WHERE id=? AND COALESCE(order_kind, 'esim')='esim'
             """,
             (order_id,),
         ).fetchone()
-        if not row or row[1] != "paid" or _supplier_int(row[5]) <= 0:
+        if not row or row[1] != "paid" or _supplier_item_id(row[5], row[6]) <= 0:
             db.rollback()
             return False
         if row[7] == "issued":
@@ -6377,19 +6303,36 @@ def provision_paid_supplier_order(order_id: int) -> bool:
 
     user_id, country, tariff, plan_type = row[0], row[2], row[3], row[4]
     product_id, variation_id = _supplier_int(row[5]), _supplier_int(row[6])
+    item_id = _supplier_item_id(product_id, variation_id)
+    supplier_request_id = str(row[9] or "").strip()
+    period_days = _supplier_int(row[10]) if plan_type == "unlimited" else None
     try:
-        line_provider = None
-        refillable = None
-        if plan_type == "supplier_test":
-            product = banana.resolve_product(product_id, variation_id)
-            if not isinstance(product, dict):
-                raise BananaError("banana_invalid_product_response")
-            _validate_supplier_product(product)
-            line_provider = product["partner_provider"]
-            refillable = int(product.get("refillable") is True)
-        # A stable request ID is derived from this database order ID, so retries
-        # return the same line rather than buying a second eSIM.
-        result = banana.create_line(order_id, product_id, variation_id)
+        # Once an asynchronous request is accepted, every retry polls its saved
+        # request ID. The POST is never repeated. The worker bounds polling to
+        # one GET per cycle and enforces a five-minute interval via requested_at.
+        if supplier_request_id:
+            result = banana.get_request(order_id, supplier_request_id)
+        else:
+            # A stable request ID is derived from this database order ID, so even
+            # a transport retry cannot purchase a second eSIM.
+            result = banana.create_line(
+                order_id, item_id, period_days=period_days,
+            )
+        if isinstance(result, dict) and result.get("status") == "processing":
+            request_id = str(result.get("request_id") or "").strip()
+            if not request_id:
+                raise BananaError("banana_invalid_request_response")
+            with closing(_payment_db()) as db:
+                db.execute(
+                    """
+                    UPDATE orders SET supplier_status='processing', supplier_request_id=?,
+                        supplier_requested_at=?, supplier_last_error=''
+                    WHERE id=? AND supplier_status!='issued'
+                    """,
+                    (request_id, int(time.time()), order_id),
+                )
+                db.commit()
+            return False
         sim_card = result.get("sim_card") if isinstance(result, dict) else None
         if not isinstance(sim_card, dict):
             raise BananaError("banana_invalid_line_response")
@@ -6411,8 +6354,7 @@ def provision_paid_supplier_order(order_id: int) -> bool:
                     supplier_provider_status=?, supplier_remaining_usage_kb=?,
                     supplier_allowed_usage_kb=?, supplier_remaining_days=?, supplier_expire_at=?,
                     supplier_issued_at=?, supplier_last_error='', install_url=?, esim_sent_at=?,
-                    supplier_line_provider=COALESCE(?,supplier_line_provider),
-                    supplier_refillable=COALESCE(?,supplier_refillable)
+                    supplier_request_id=COALESCE(NULLIF(?, ''), supplier_request_id)
                 WHERE id=? AND supplier_status!='issued'
                 """,
                 (
@@ -6421,7 +6363,7 @@ def provision_paid_supplier_order(order_id: int) -> bool:
                     sim_card.get("allowed_usage_kb"),
                     sim_card.get("remaining_days"),
                     expire_at, issued_at, install_url, issued_at,
-                    line_provider, refillable, order_id,
+                    supplier_request_id, order_id,
                 ),
             )
             db.execute(
@@ -6454,14 +6396,14 @@ def provision_paid_supplier_order(order_id: int) -> bool:
 def _finish_supplier_topup(order_id):
     with closing(_payment_db()) as db:
         row = db.execute("""SELECT user_id,parent_order_id,supplier_iccid,topup_mb,topup_days,
-                                   supplier_line_provider,topup_balance_refreshed_at,supplier_delivered_at
+                                   topup_balance_refreshed_at,supplier_delivered_at
                             FROM orders WHERE id=? AND status='paid' AND supplier_status='issued'
                             AND order_kind='topup'""", (order_id,)).fetchone()
         if not row:
             return False
         db.execute("UPDATE orders SET supplier_requested_at=? WHERE id=?", (int(time.time()),order_id))
         db.commit()
-    if not row[6]:
+    if not row[5]:
         try:
             details = banana.get_details(row[2])
             _persist_supplier_details(row[1], details["sim_card"], row[2])
@@ -6471,7 +6413,7 @@ def _finish_supplier_topup(order_id):
         except Exception:
             _notify_admin_throttled(f"topup-balance:{order_id}",
                 f"ℹ️ Пополнение #{order_id} применено. Обновление остатка пока недоступно; повторим проверку.", cooldown=3600)
-    if row[7]:
+    if row[6]:
         return True
     claim = _claim_supplier_delivery(order_id)
     if not claim:
@@ -6495,9 +6437,9 @@ def apply_paid_supplier_topup(order_id: int) -> bool:
     with closing(_payment_db()) as db:
         db.execute("BEGIN IMMEDIATE")
         row = db.execute("""SELECT user_id,status,parent_order_id,supplier_iccid,supplier_product_id,
-                            supplier_variation_id,supplier_status,supplier_requested_at,topup_mb,topup_days,
-                            supplier_line_provider FROM orders WHERE id=? AND order_kind='topup'""", (order_id,)).fetchone()
-        if not row or row[1] != "paid" or not row[3] or not row[4]:
+                            supplier_variation_id,supplier_status,supplier_requested_at,topup_mb,topup_days
+                            FROM orders WHERE id=? AND order_kind='topup'""", (order_id,)).fetchone()
+        if not row or row[1] != "paid" or not row[3] or _supplier_item_id(row[4], row[5]) <= 0:
             return False
         if row[6] != "issued":
             if row[6] == "processing" and row[7] > now-300:
@@ -6512,12 +6454,7 @@ def apply_paid_supplier_topup(order_id: int) -> bool:
     if row[6] == "issued":
         return _finish_supplier_topup(order_id)
     try:
-        product = banana.resolve_product(row[4], row[5])
-        _validate_supplier_product(product, {"refill_mb":row[8], "refill_days":row[9]})
-        if product.get("refillable") is not True:
-            raise BananaError("banana_product_not_refillable")
-        line_provider = row[10] or product["partner_provider"]
-        banana.refill(order_id, row[3], row[4], row[5], line_provider=line_provider)
+        banana.refill(order_id, row[3], _supplier_item_id(row[4], row[5]))
         # Persist the supplier's successful refill BEFORE a balance lookup or Telegram call.
         with closing(_payment_db()) as db:
             db.execute("""UPDATE orders SET supplier_status='issued',supplier_last_error='',topup_applied_at=?

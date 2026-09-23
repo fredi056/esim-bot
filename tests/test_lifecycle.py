@@ -27,7 +27,7 @@ from urllib.parse import urlencode
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from account_api import ApiError, read_account, safe_install_url
-from banana_api import BananaClient, BananaError, STANDARD_PARTNER_PROVIDERS
+from banana_api import BananaClient, BananaError
 from tochka_api import TochkaClient, TochkaError
 
 TREE = ast.parse((ROOT / 'bot.py').read_text(encoding='utf-8'))
@@ -101,11 +101,6 @@ class LifecycleTest(unittest.TestCase):
 
     def value(self, oid, column):
         return self.db.execute(f'SELECT {column} FROM orders WHERE id=?', (oid,)).fetchone()[0]
-
-    def product(self, unlimited=False, refillable=True):
-        return {'product_id':796,'variation_id':809,'partner_provider':'supplier_unlimited' if unlimited else 'supplier_standard',
-                'unlimited':unlimited,'refillable':refillable,'refill_mb':0 if unlimited else 5120,
-                'refill_days':1 if unlimited else 30,'period_min':1,'period_max':30}
 
     def payload(self):
         return {'country':'Vietnam','tariff':'5GB / 30 дней','displayed_price':920,
@@ -183,14 +178,12 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(self.value(oid,'payment_operation_id'),'op1')
 
     def test_duplicate_during_creation_does_not_create_another_payment(self):
-        self.supplier.resolve_product.return_value=self.product()
         oid=self.order(payment_operation_id='',payment_url='',payment_status='CREATING')
         result=self.call('create_mini_app_payment',{'id':1},self.payload())
         self.assertEqual(result['order_id'],oid)
         self.bank.create_payment.assert_not_called()
 
     def test_duplicate_after_twenty_minutes_reuses_link(self):
-        self.supplier.resolve_product.return_value=self.product()
         oid=self.order(created_at=int(time.time())-3600,payment_url='https://bank.example/pay')
         result=self.call('create_mini_app_payment',{'id':1},self.payload())
         self.assertEqual(result['order_id'],oid)
@@ -209,18 +202,13 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(self.value(result['order_id'],'supplier_variation_id'),809)
         self.assertEqual(self.bank.create_payment.call_count,1)
         self.assertEqual(self.bank.create_payment.call_args.args[1],920)
-        self.supplier.resolve_product.assert_not_called()
 
-    def test_standard_purchase_does_not_require_provider_resolve(self):
+    def test_standard_purchase_uses_catalog_without_supplier_lookup(self):
         result=self.call('create_mini_app_payment',{'id':1},self.payload())
         self.assertEqual(result['payment_url'],'https://bank.example/pay')
-        self.supplier.resolve_product.assert_not_called()
+        self.supplier.assert_not_called()
 
     def test_admin_supplier_test_uses_live_standard_package(self):
-        self.supplier.resolve_product.return_value={
-            'product_id':317,'variation_id':330,'partner_provider':'supplier_standard',
-            'unlimited':False,'refillable':True,'refill_mb':1024,'refill_days':7,
-        }
         body={
             'country':'Технический тест','tariff':'Тех тариф','displayed_price':14,
             'plan_type':'supplier_test','legal_acceptance':self.payload()['legal_acceptance'],
@@ -230,11 +218,11 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(self.value(result['order_id'],'supplier_product_id'),317)
         self.assertEqual(self.value(result['order_id'],'supplier_variation_id'),330)
         self.assertEqual(self.bank.create_payment.call_args.args[1],14)
-        self.supplier.resolve_product.assert_called_once_with(317,330)
+        self.supplier.assert_not_called()
 
-    def test_alternative_provider_line_allows_topup(self):
+    def test_active_refillable_line_allows_topup(self):
         self.assertTrue(self.call('_supplier_line_allows_topup',{
-            'line_provider':'supplier_alternative','refillable':True,'status':'active',
+            'refillable':True,'status':'active',
         }))
 
     def test_standard_purchase_through_issue_and_delivery(self):
@@ -252,10 +240,38 @@ class LifecycleTest(unittest.TestCase):
         self.assertIsNone(self.value(oid,'supplier_refillable'))
         self.assertGreater(self.value(oid,'supplier_delivered_at'),0)
         self.assertTrue(self.call('provision_paid_supplier_order',oid))
-        self.supplier.resolve_product.assert_not_called()
         self.assertEqual(self.supplier.create_line.call_count,1)
-        self.supplier.create_line.assert_called_once_with(oid,796,809)
+        self.supplier.create_line.assert_called_once_with(oid,809,period_days=None)
         self.assertEqual(self.telegram.send_photo.call_count,1)
+
+    def test_item_id_prefers_variation_and_falls_back_to_product(self):
+        self.assertEqual(self.call('_supplier_item_id',317,330),330)
+        self.assertEqual(self.call('_supplier_item_id',317,331),331)
+        self.assertEqual(self.call('_supplier_item_id',317,0),317)
+
+    def test_async_issue_polls_saved_request_without_second_post(self):
+        oid=self.order(status='paid',country='Turkey',tariff='1GB / 7 дней',
+                       supplier_product_id=317,supplier_variation_id=330)
+        self.supplier.create_line.return_value={'request_id':'req-41','status':'processing'}
+        self.assertFalse(self.call('provision_paid_supplier_order',oid))
+        self.assertEqual(self.value(oid,'supplier_request_id'),'req-41')
+        self.assertEqual(self.value(oid,'supplier_status'),'processing')
+
+        self.db.execute('UPDATE orders SET supplier_requested_at=0 WHERE id=?',(oid,)); self.db.commit()
+        self.supplier.get_request.return_value={'request_id':'req-41','status':'processing'}
+        self.assertFalse(self.call('provision_paid_supplier_order',oid))
+        self.assertEqual(self.supplier.create_line.call_count,1)
+        self.supplier.get_request.assert_called_once_with(oid,'req-41')
+
+        self.db.execute('UPDATE orders SET supplier_requested_at=0 WHERE id=?',(oid,)); self.db.commit()
+        self.supplier.get_request.return_value={'request_id':'req-41','status':'completed','sim_card':{
+            'iccid':'8985201234567890123','lpa_code':'LPA:1$host$code','status':'active'}}
+        self.telegram.send_photo.return_value=SimpleNamespace(photo=[SimpleNamespace(file_id='qr1')])
+        self.assertTrue(self.call('provision_paid_supplier_order',oid))
+        self.assertEqual(self.supplier.create_line.call_count,1)
+        self.assertEqual(self.supplier.get_request.call_count,2)
+        self.supplier.create_line.assert_called_once_with(oid,330,period_days=None)
+        self.assertEqual(self.value(oid,'supplier_status'),'issued')
 
     def test_bank_setup_failure_does_not_wait_for_nonexistent_payment(self):
         oid=self.order(payment_operation_id='')
@@ -265,11 +281,10 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(caught.exception.code,'bank_setup_required')
         self.assertEqual(self.value(oid,'status'),'payment_error')
 
-    def test_catalogued_supplier_product_does_not_require_resolve_before_payment(self):
-        self.supplier.resolve_product.side_effect=BananaError('banana_http_404')
+    def test_catalogued_supplier_product_does_not_call_supplier_before_payment(self):
         result=self.call('create_mini_app_payment',{'id':1},self.payload())
         self.assertEqual(result['payment_url'],'https://bank.example/pay')
-        self.supplier.resolve_product.assert_not_called()
+        self.supplier.assert_not_called()
         self.bank.create_payment.assert_called_once()
 
     def test_unmapped_tariff_stops_before_payment(self):
@@ -278,7 +293,6 @@ class LifecycleTest(unittest.TestCase):
         with self.assertRaises(ApiError) as caught:
             self.call('create_mini_app_payment',{'id':1},body)
         self.assertEqual(caught.exception.code,'supplier_product_unavailable')
-        self.supplier.resolve_product.assert_not_called()
         self.bank.create_payment.assert_not_called()
 
     def test_old_unmapped_pending_link_is_not_reopened(self):
@@ -292,7 +306,6 @@ class LifecycleTest(unittest.TestCase):
 
     def test_topup_create_checks_existing_line_and_price(self):
         parent=self.issued()
-        self.supplier.resolve_product.return_value=self.product()
         self.supplier.get_details.return_value={'sim_card':{'iccid':'8985201234567890123','status':'active'}}
         body={'option_id':'p796v809','legal_acceptance':self.payload()['legal_acceptance']}
         result=self.call('create_mini_app_topup',{'id':1},parent,body)
@@ -302,7 +315,6 @@ class LifecycleTest(unittest.TestCase):
 
     def test_expired_line_cannot_create_topup_payment(self):
         parent=self.issued()
-        self.supplier.resolve_product.return_value=self.product()
         self.supplier.get_details.return_value={'sim_card':{'iccid':'8985201234567890123','status':'expired'}}
         with self.assertRaises(ApiError):
             self.call('create_mini_app_topup',{'id':1},parent,{'option_id':'p796v809','legal_acceptance':self.payload()['legal_acceptance']})
@@ -347,12 +359,12 @@ class LifecycleTest(unittest.TestCase):
         parent=self.issued()
         oid=self.order(status='paid',order_kind='topup',parent_order_id=parent,supplier_iccid='8985201234567890123',
                        supplier_product_id=796,supplier_variation_id=809,topup_mb=5120,topup_days=30)
-        self.supplier.resolve_product.return_value=self.product()
         self.supplier.get_details.side_effect=BananaError('banana_unavailable')
         self.assertTrue(self.call('apply_paid_supplier_topup',oid))
         self.assertEqual(self.value(oid,'supplier_status'),'issued')
         self.assertTrue(self.call('apply_paid_supplier_topup',oid))
         self.assertEqual(self.supplier.refill.call_count,1)
+        self.supplier.refill.assert_called_once_with(oid,'8985201234567890123',809)
 
 
     def test_photo_is_not_repeated_after_instruction_failure(self):
@@ -383,9 +395,18 @@ class ClientTest(unittest.TestCase):
         client._request=Mock(return_value={'Data':{'Operation':[{'operationId':'wanted','status':'APPROVED','amount':920}]}})
         self.assertEqual(client.get_payment('wanted')['amount'],920)
 
-    def test_banana_request_ids_stay_stable(self):
-        self.assertEqual(BananaClient.request_id(123),hashlib.sha256(b'123/1/standard').hexdigest())
-        self.assertNotEqual(BananaClient.request_id(123),BananaClient.request_id(124))
+    def test_banana_v2_request_ids_stay_stable_and_unique(self):
+        create_41=BananaClient.request_id(41,330,BananaClient.CREATE_REQUEST_ID_VERSION)
+        create_42=BananaClient.request_id(42,331,BananaClient.CREATE_REQUEST_ID_VERSION)
+        self.assertEqual(create_41,hashlib.sha256(b'41/330/standard-v2').hexdigest())
+        self.assertEqual(create_41,BananaClient.request_id(41,330,'standard-v2'))
+        self.assertNotEqual(create_41,create_42)
+        self.assertNotEqual(create_41,BananaClient.request_id(41,1,'standard'))
+
+        refill_41=BananaClient.request_id(41,330,BananaClient.REFILL_REQUEST_ID_VERSION)
+        self.assertEqual(refill_41,hashlib.sha256(b'41/330/topup-v2').hexdigest())
+        self.assertEqual(refill_41,BananaClient.request_id(41,330,'topup-v2'))
+        self.assertNotEqual(refill_41,create_41)
 
     def test_banana_create_line_retry_reuses_request_id_and_safe_logs(self):
         client=BananaClient()
@@ -393,12 +414,16 @@ class ClientTest(unittest.TestCase):
         client._request=Mock(return_value=(response,200))
         output=io.StringIO()
         with redirect_stdout(output):
-            client.create_line(41,317,330)
-            client.create_line(41,317,330)
+            client.create_line(41,330)
+            client.create_line(41,330)
         self.assertEqual(client._request.call_count,2)
         first_headers=client._request.call_args_list[0].args[3]
         second_headers=client._request.call_args_list[1].args[3]
         self.assertEqual(first_headers['X-Partner-Request-ID'],second_headers['X-Partner-Request-ID'])
+        self.assertEqual(
+            first_headers['X-Partner-Request-ID'],
+            hashlib.sha256(b'41/330/standard-v2').hexdigest(),
+        )
         self.assertEqual(first_headers['X-Partner-Order-ID'],'41')
         self.assertNotIn('8985201234567890123',output.getvalue())
         self.assertNotIn('LPA:1$host$secret',output.getvalue())
@@ -412,9 +437,9 @@ class ClientTest(unittest.TestCase):
         ))
         output=io.StringIO()
         with redirect_stdout(output), self.assertRaises(BananaError):
-            client.create_line(41,317,330)
+            client.create_line(41,330)
         self.assertIn(
-            'BANANA_CREATE_ERROR order_id=41 product_id=317 variation_id=330 '
+            'BANANA_CREATE_ERROR order_id=41 item_id=330 '
             'http_status=404 supplier_code="operation_not_allowed" '
             'message="Supplier operation is not allowed."',
             output.getvalue(),
@@ -429,7 +454,7 @@ class ClientTest(unittest.TestCase):
         ))
         output=io.StringIO()
         with redirect_stdout(output), self.assertRaises(BananaError):
-            client.create_line(41,317,330)
+            client.create_line(41,330)
         logged=output.getvalue()
         self.assertIn('[REDACTED_LPA]',logged)
         self.assertIn('activation_code=[REDACTED_ACTIVATION_CODE]',logged)
@@ -438,62 +463,68 @@ class ClientTest(unittest.TestCase):
         self.assertNotIn('LPA:1$host$secret',output.getvalue())
         self.assertNotIn('very-secret',output.getvalue())
 
-    def test_banana_resolve_accepts_numeric_string_ids(self):
+    def test_banana_create_ordinary_payload_uses_only_item_id_and_count(self):
+        client=BananaClient()
+        client._request=Mock(return_value=({
+            'sim_card':{'iccid':'8985201234567890123','lpa_code':'LPA:1$host$code'},
+        },200))
+        client.create_line(41,330)
+        self.assertEqual(client._request.call_args.args[2],{'item_id':330,'count':1})
+
+    def test_banana_create_unlimited_payload_includes_period_days(self):
+        client=BananaClient()
+        client._request=Mock(return_value=({
+            'sim_card':{'iccid':'8985201234567890123','lpa_code':'LPA:1$host$code'},
+        },200))
+        client.create_line(41,900,period_days=7)
+        self.assertEqual(client._request.call_args.args[2],{
+            'item_id':900,'count':1,'period_days':7,
+        })
+
+    def test_banana_create_accepts_async_response(self):
+        client=BananaClient()
+        client._request=Mock(return_value=({'request_id':'req-41','status':'processing'},202))
+        self.assertEqual(client.create_line(41,330),{
+            'request_id':'req-41','status':'processing',
+        })
+
+    def test_banana_get_request_returns_completed_sim_card(self):
         client=BananaClient()
         client._request=Mock(return_value={
-            'product_id':'796','variation_id':'809','partner_provider':'supplier_standard',
-            'unlimited':False,'refill_mb':5120,'refill_days':30,
+            'request_id':'req-41','status':'completed','result':{'sim_cards':[{
+                'iccid':'8985201234567890123','lpa_code':'LPA:1$host$code',
+            }]},
         })
-        product=client.resolve_product(796,809)
-        self.assertEqual(product['product_id'],796)
-        self.assertEqual(product['variation_id'],809)
+        result=client.get_request(41,'req-41')
+        self.assertEqual(result['status'],'completed')
+        self.assertEqual(result['sim_card']['iccid'],'8985201234567890123')
 
-    def test_banana_resolve_normalizes_legacy_boolean_fields(self):
-        client=BananaClient()
-        client._request=Mock(return_value={
-            'product_id':796,'variation_id':809,'partner_provider':'supplier_standard',
-            'unlimited':'0','refillable':'1','refill_mb':5120,'refill_days':30,
-        })
-        product=client.resolve_product(796,809)
-        self.assertIs(product['unlimited'],False)
-        self.assertIs(product['refillable'],True)
-
-    def test_banana_resolve_infers_missing_unlimited_from_provider(self):
-        client=BananaClient()
-        client._request=Mock(return_value={
-            'product_id':796,'variation_id':809,'partner_provider':'supplier_standard',
-            'refillable':True,'refill_mb':5120,'refill_days':30,
-        })
-        self.assertIs(client.resolve_product(796,809)['unlimited'],False)
-
-    def test_banana_resolve_accepts_alternative_standard_provider(self):
-        client=BananaClient()
-        client._request=Mock(return_value={
-            'product_id':796,'variation_id':807,'partner_provider':'supplier_alternative',
-            'unlimited':False,'refillable':True,'refill_mb':1024,'refill_days':7,
-        })
-        product=client.resolve_product(796,807)
-        self.assertEqual(product['partner_provider'],'supplier_alternative')
-
-    def test_banana_refill_preserves_alternative_line_provider(self):
+    def test_banana_refill_ordinary_payload_uses_only_item_id(self):
         client=BananaClient()
         client._request=Mock(return_value={'success':True,'iccid':'8985201234567890123'})
-        client.refill(1,'8985201234567890123',796,807,
-                      line_provider='supplier_alternative')
+        client.refill(1,'8985201234567890123',807)
         payload=client._request.call_args.args[2]
-        self.assertEqual(payload['line_provider'],'supplier_alternative')
+        self.assertEqual(payload,{'item_id':807})
+        headers=client._request.call_args.args[3]
+        self.assertEqual(
+            headers['X-Partner-Request-ID'],
+            hashlib.sha256(b'1/807/topup-v2').hexdigest(),
+        )
 
-    def test_banana_resolve_rejects_wrong_numeric_string_id(self):
+    def test_banana_refill_unlimited_payload_includes_period_days(self):
         client=BananaClient()
-        client._request=Mock(return_value={
-            'product_id':'796','variation_id':'810','partner_provider':'supplier_standard',
-            'unlimited':False,'refill_mb':5120,'refill_days':30,
-        })
-        with self.assertRaises(BananaError):client.resolve_product(796,809)
+        client._request=Mock(return_value={'success':True,'iccid':'8985201234567890123'})
+        client.refill(1,'8985201234567890123',900,period_days=7)
+        self.assertEqual(client._request.call_args.args[2],{'item_id':900,'period_days':7})
 
     def test_banana_rejects_false_refill_success(self):
         client=BananaClient();client._request=Mock(return_value={'success':False})
-        with self.assertRaises(BananaError):client.refill(1,'8985201234567890123',1,2)
+        with self.assertRaises(BananaError):client.refill(1,'8985201234567890123',2)
+
+    def test_no_runtime_resolve_endpoint_or_method(self):
+        source=(ROOT/'banana_api.py').read_text(encoding='utf-8') + (ROOT/'bot.py').read_text(encoding='utf-8')
+        self.assertFalse(hasattr(BananaClient,'resolve_' + 'product'))
+        self.assertNotIn('/product/' + 'resolve',source)
 
 
     def test_details_reject_foreign_iccid(self):

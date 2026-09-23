@@ -11,12 +11,6 @@ from urllib.request import Request, urlopen
 import certifi
 
 
-STANDARD_PARTNER_PROVIDERS = frozenset({
-    "supplier_standard",
-    "supplier_alternative",
-})
-
-
 class BananaError(RuntimeError):
     def __init__(self, code, detail="", *, http_status=None, supplier_code=""):
         super().__init__(code)
@@ -27,6 +21,9 @@ class BananaError(RuntimeError):
 
 
 class BananaClient:
+    CREATE_REQUEST_ID_VERSION = "standard-v2"
+    REFILL_REQUEST_ID_VERSION = "topup-v2"
+
     def __init__(self):
         self.key = os.getenv("BANANA_PARTNER_KEY", "").strip()
         self.site = os.getenv("BANANA_PARTNER_SITE", "https://t.me/esimlimebot/").strip()
@@ -145,46 +142,23 @@ class BananaClient:
         return hashlib.sha256(source).hexdigest()
 
     @staticmethod
-    def _product_reference(product_id, variation_id):
-        if isinstance(product_id, bool) or not isinstance(product_id, int) or product_id <= 0:
+    def _item_id(item_id):
+        if isinstance(item_id, bool) or not isinstance(item_id, int) or item_id <= 0:
             raise BananaError("banana_invalid_product_reference")
-        if isinstance(variation_id, bool) or not isinstance(variation_id, int) or variation_id < 0:
-            raise BananaError("banana_invalid_product_reference")
-        return {"product_id": product_id, "variation_id": variation_id}
+        return item_id
 
     @staticmethod
-    def _response_product_id(value, *, allow_zero=False):
-        """Normalize WooCommerce IDs, which the live API may encode as strings."""
-        if isinstance(value, bool):
-            raise BananaError("banana_invalid_product_response")
-        if isinstance(value, int):
-            normalized = value
-        elif isinstance(value, str) and re.fullmatch(r"[0-9]+", value):
-            normalized = int(value)
-        else:
-            raise BananaError("banana_invalid_product_response")
-        if normalized < 0 or (normalized == 0 and not allow_zero):
-            raise BananaError("banana_invalid_product_response")
-        return normalized
+    def _period_days(period_days):
+        if isinstance(period_days, bool) or not isinstance(period_days, int) or period_days <= 0:
+            raise BananaError("banana_invalid_period")
+        return period_days
 
     @staticmethod
-    def _response_bool(value):
-        if isinstance(value, bool):
-            return value
-        if value in (0, "0"):
-            return False
-        if value in (1, "1"):
-            return True
-        if isinstance(value, str):
-            lowered = value.strip().lower()
-            if lowered == "false":
-                return False
-            if lowered == "true":
-                return True
-        raise BananaError(
-            "banana_invalid_product_response",
-            f"invalid boolean field: {type(value).__name__}",
-        )
+    def _request_reference(request_id):
+        value = str(request_id or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9._:-]{1,200}", value):
+            raise BananaError("banana_invalid_request_id")
+        return value
 
     @staticmethod
     def _safe_error_detail(detail, fallback):
@@ -209,54 +183,15 @@ class BananaClient:
         text = re.sub(r"\s+", " ", text).strip().replace('"', "'")
         return (text or str(fallback or "banana_error"))[:300]
 
-    def resolve_product(self, product_id, variation_id):
-        result = self._request(
-            "POST",
-            "/product/resolve",
-            self._product_reference(product_id, variation_id),
-        )
-        if not isinstance(result, dict):
-            raise BananaError("banana_invalid_product_response")
-        resolved_product_id = self._response_product_id(result.get("product_id"))
-        resolved_variation_id = self._response_product_id(
-            result.get("variation_id"), allow_zero=True,
-        )
-        if resolved_product_id != product_id or resolved_variation_id != variation_id:
-            raise BananaError(
-                "banana_invalid_product_response",
-                f"product reference mismatch: {resolved_product_id}/{resolved_variation_id}",
-            )
-        provider = result.get("partner_provider")
-        if provider not in STANDARD_PARTNER_PROVIDERS | {"supplier_unlimited"}:
-            raise BananaError(
-                "banana_invalid_product_response",
-                f"unsupported partner_provider: {str(provider)[:80]}",
-            )
-        raw_unlimited = result.get("unlimited")
-        resolved_unlimited = (
-            provider == "supplier_unlimited"
-            if raw_unlimited is None else self._response_bool(raw_unlimited)
-        )
-        if resolved_unlimited != (provider == "supplier_unlimited"):
-            raise BananaError(
-                "banana_invalid_product_response",
-                "partner_provider and unlimited disagree",
-            )
-        result["product_id"] = resolved_product_id
-        result["variation_id"] = resolved_variation_id
-        result["unlimited"] = resolved_unlimited
-        if result.get("refillable") is not None:
-            result["refillable"] = self._response_bool(result["refillable"])
-        return result
-
-    def create_line(self, order_id, product_id, variation_id, count=1, item_id=1):
+    def create_line(self, order_id, item_id, count=1, period_days=None):
         if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
             raise BananaError("banana_invalid_order")
-        payload = self._product_reference(product_id, variation_id)
-        payload["count"] = count
+        item_id = self._item_id(item_id)
+        payload = {"item_id": item_id, "count": count}
+        if period_days is not None:
+            payload["period_days"] = self._period_days(period_days)
         print(
-            f"BANANA_CREATE_REQUEST order_id={order_id} product_id={product_id} "
-            f"variation_id={variation_id} count={count}",
+            f"BANANA_CREATE_REQUEST order_id={order_id} item_id={item_id} count={count}",
             flush=True,
         )
         http_status = "unknown"
@@ -266,29 +201,64 @@ class BananaClient:
                 "/line/create",
                 payload,
                 {
-                    "X-Partner-Request-ID": self.request_id(order_id, item_id),
+                    "X-Partner-Request-ID": self.request_id(
+                        order_id, item_id, self.CREATE_REQUEST_ID_VERSION
+                    ),
                     "X-Partner-Order-ID": str(order_id),
                 },
                 return_status=True,
             )
-            self._validate_sim_card(
-                result.get("sim_card") if isinstance(result, dict) else None,
-                installation=True,
-            )
+            if not isinstance(result, dict):
+                raise BananaError("banana_invalid_line_response", http_status=http_status)
+            if isinstance(result.get("sim_card"), dict):
+                self._validate_sim_card(result["sim_card"], installation=True)
+            else:
+                request_id = self._request_reference(result.get("request_id"))
+                if result.get("status") != "processing":
+                    raise BananaError("banana_invalid_line_response", http_status=http_status)
+                result = {"request_id": request_id, "status": "processing"}
         except BananaError as exc:
             if isinstance(exc.http_status, int):
                 http_status = exc.http_status
             supplier_code = re.sub(r"[^A-Za-z0-9_.:-]+", "_", exc.supplier_code or "")[:100]
             message = self._safe_error_detail(exc.detail, exc.code)
             print(
-                f"BANANA_CREATE_ERROR order_id={order_id} product_id={product_id} "
-                f"variation_id={variation_id} http_status={http_status} "
+                f"BANANA_CREATE_ERROR order_id={order_id} item_id={item_id} http_status={http_status} "
                 f'supplier_code="{supplier_code}" message="{message}"',
                 flush=True,
             )
             raise
         print(f"BANANA_CREATE_OK order_id={order_id} http_status={http_status}", flush=True)
+        if result.get("status") == "processing":
+            print(
+                f"BANANA_CREATE_ASYNC order_id={order_id} request_id={result['request_id']}",
+                flush=True,
+            )
         return result
+
+    def get_request(self, order_id, request_id):
+        request_id = self._request_reference(request_id)
+        result = self._request("GET", f"/request/{quote(request_id, safe='')}")
+        if not isinstance(result, dict):
+            raise BananaError("banana_invalid_request_response")
+        status = str(result.get("status") or "").strip().lower()
+        print(f"BANANA_REQUEST_STATUS order_id={order_id} status={status or 'unknown'}", flush=True)
+        if status == "processing":
+            return {"request_id": request_id, "status": "processing"}
+        if status == "completed":
+            response_result = result.get("result")
+            cards = response_result.get("sim_cards") if isinstance(response_result, dict) else None
+            if not isinstance(cards, list) or len(cards) != 1:
+                raise BananaError("banana_invalid_request_response")
+            card = self._validate_sim_card(cards[0], installation=True)
+            return {"request_id": request_id, "status": "completed", "sim_card": card}
+        if status == "failed":
+            detail = result.get("message") or result.get("error") or result.get("code") or ""
+            raise BananaError(
+                "banana_async_failed", str(detail)[:300],
+                supplier_code=str(result.get("code") or "")[:100],
+            )
+        raise BananaError("banana_invalid_request_response")
 
     def get_details(self, iccid):
         value = self._iccid(iccid)
@@ -296,22 +266,19 @@ class BananaClient:
         self._validate_sim_card(result.get("sim_card") if isinstance(result, dict) else None, expected_iccid=value)
         return result
 
-    def refill(
-        self, order_id, iccid, product_id, variation_id,
-        line_provider="supplier_standard", item_id=1,
-    ):
+    def refill(self, order_id, iccid, item_id, period_days=None):
         value = self._iccid(iccid)
-        if line_provider not in STANDARD_PARTNER_PROVIDERS:
-            raise BananaError("banana_invalid_line_provider")
-        payload = self._product_reference(product_id, variation_id)
-        payload["line_provider"] = line_provider
+        item_id = self._item_id(item_id)
+        payload = {"item_id": item_id}
+        if period_days is not None:
+            payload["period_days"] = self._period_days(period_days)
         result = self._request(
             "POST",
             f"/line/{quote(value, safe='')}/refill",
             payload,
             {
                 "X-Partner-Request-ID": self.request_id(
-                    order_id, item_id, f"topup-{value}-{variation_id}"
+                    order_id, item_id, self.REFILL_REQUEST_ID_VERSION
                 )
             },
         )
