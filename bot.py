@@ -779,14 +779,19 @@ def create_external_sale(country: str, tariff: str, amount: int, created_by: int
     raise RuntimeError("Could not generate unique external sale token")
 
 
-def parse_banana_avito_message(text: str) -> Dict[str, Any]:
-    header = re.search(
+def _banana_avito_headers(text: str):
+    return list(re.finditer(
         r"(?m)^\s*([^/\r\n]+?)\s*/\s*(.*?)\s+-\s+([^\s\r\n]+)\s*$",
         text or "",
-    )
-    package = re.search(r"(?i)(\d+)\s*(?:дн\.?|days?)\s*/\s*(\d+)\s*(?:мб|mb)\b", text or "")
-    lpa = re.search(r"LPA:1\$[^\s]+", text or "")
-    iccid = re.search(r"(?i)\bICCID\s*:\s*(\d{15,22})\b", text or "")
+    ))
+
+
+def _parse_banana_avito_block(block: str) -> Dict[str, Any]:
+    headers = _banana_avito_headers(block)
+    header = headers[0] if headers else None
+    package = re.search(r"(?i)(\d+)\s*(?:дн\.?|days?)\s*/\s*(\d+)\s*(?:мб|mb)\b", block or "")
+    lpa = re.search(r"LPA:1\$[^\s]+", block or "")
+    iccid = re.search(r"(?i)\bICCID\s*:\s*(\d{15,22})\b", block or "")
     if not all((header, package, lpa, iccid)):
         raise ValueError("banana_message_invalid")
     country = header.group(1).strip()
@@ -805,6 +810,25 @@ def parse_banana_avito_message(text: str) -> Dict[str, Any]:
         "days": days, "megabytes": megabytes,
         "lpa_code": lpa.group(0), "iccid": iccid.group(1),
     }
+
+
+def parse_banana_avito_messages(text: str) -> List[Dict[str, Any]]:
+    headers = _banana_avito_headers(text)
+    parsed_items = []
+    for index, header in enumerate(headers):
+        end = headers[index + 1].start() if index + 1 < len(headers) else len(text or "")
+        try:
+            parsed_items.append(_parse_banana_avito_block((text or "")[header.start():end]))
+        except ValueError:
+            continue
+    return parsed_items
+
+
+def parse_banana_avito_message(text: str) -> Dict[str, Any]:
+    parsed_items = parse_banana_avito_messages(text)
+    if parsed_items:
+        return parsed_items[0]
+    return _parse_banana_avito_block(text)
 
 
 def _insert_imported_avito_order(db_cursor, parsed: Dict[str, Any], now: int) -> int:
@@ -1409,31 +1433,38 @@ def handle_avito_banana_message(message) -> None:
     if not state or state.get("step") != "banana_message":
         bot.send_message(message.chat.id, "Используйте кнопки ниже.", reply_markup=avito_sale_session_keyboard())
         return
-    try:
-        parsed = parse_banana_avito_message(message.text or "")
-    except ValueError as exc:
-        error = (
-            "Не удалось однозначно найти тариф в каталоге. Ничего не создано."
-            if str(exc) == "banana_tariff_not_unique"
-            else "Не удалось разобрать сообщение Banana. Перешлите полный текст целиком."
-        )
-        bot.send_message(message.chat.id, error)
-        return
+    text = message.text or ""
+    headers_count = len(_banana_avito_headers(text))
+    parsed_items = parse_banana_avito_messages(text)
+    invalid_count = max(headers_count - len(parsed_items), 1 if not headers_count else 0)
     items = state["items"]
-    if avito_iccid_already_added(items, parsed["iccid"]):
-        bot.send_message(message.chat.id, "Эта eSIM уже добавлена.", reply_markup=avito_sale_session_keyboard())
-        return
-    if len(items) >= 20:
-        bot.send_message(message.chat.id, "Можно добавить не более 20 eSIM.", reply_markup=avito_sale_session_keyboard())
-        return
-    items.append(parsed)
-    state["step"] = "review"
+    duplicate_count = 0
+    limit_count = 0
+    added_count = 0
+    for parsed in parsed_items:
+        if avito_iccid_already_added(items, parsed["iccid"]):
+            duplicate_count += 1
+        elif len(items) >= 20:
+            limit_count += 1
+        else:
+            items.append(parsed)
+            added_count += 1
+    state["step"] = "review" if items else "banana_message"
+    result_lines = [f"✅ Добавлено eSIM: {added_count}"]
+    if duplicate_count:
+        result_lines.append(f"⚠️ Пропущено дублей: {duplicate_count}")
+    if invalid_count:
+        result_lines.append(f"⚠️ Не удалось разобрать: {invalid_count}")
+    if limit_count:
+        result_lines.append(f"⚠️ Не добавлено из-за лимита 20 eSIM: {limit_count}")
+    result_lines.extend(("", f"Сейчас в продаже: {len(items)}"))
+    result_lines.extend(
+        f"{index}. {avito_session_item_line(item)} — ICCID …{item['iccid'][-4:]}"
+        for index, item in enumerate(items, 1)
+    )
     bot.send_message(
         message.chat.id,
-        "✅ eSIM добавлена\n"
-        f"{avito_session_item_line(parsed)}\n"
-        f"ICCID: …{parsed['iccid'][-4:]}\n\n"
-        f"eSIM в продаже: {len(items)}",
+        "\n".join(result_lines),
         reply_markup=avito_sale_session_keyboard(),
     )
 

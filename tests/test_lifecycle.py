@@ -120,10 +120,65 @@ class LifecycleTest(unittest.TestCase):
                            'iccid':str(8900000000000000000+offset+index)})
         return result
 
+    def banana_avito_block(self, catalog_item, index, *, iccid=None, include_lpa=True):
+        iccid = iccid or str(8948010020008591000 + index)
+        lines = [
+            f"{catalog_item['country']} / Страна {index} - tariff-{index}",
+            f"{catalog_item['refill_days']} дн / {catalog_item['refill_mb']} МБ",
+        ]
+        if include_lpa:
+            lines.append(f"LPA:1$smdp.io$CODE-{index}")
+        lines.append(f"ICCID: {iccid}")
+        return '\n'.join(lines)
+
     def claim_avito(self, deep_link, user_id):
         token=deep_link.split('start=avito_',1)[1]
         message=SimpleNamespace(from_user=SimpleNamespace(id=user_id,username='client',first_name='Client'))
         return self.call('claim_external_sale',token,message)
+
+    def test_parse_one_two_and_three_banana_blocks(self):
+        catalog = self.ns['SUPPLIER_CATALOG'][:3]
+        for count in (1, 2, 3):
+            with self.subTest(count=count):
+                text = '\n\n'.join(self.banana_avito_block(item, index) for index, item in enumerate(catalog[:count], 1))
+                parsed = self.call('parse_banana_avito_messages',text)
+                self.assertEqual(len(parsed),count)
+                self.assertEqual([item['iccid'] for item in parsed],
+                                 [str(8948010020008591000 + index) for index in range(1,count+1)])
+                self.assertEqual([item['lpa_code'] for item in parsed],
+                                 [f'LPA:1$smdp.io$CODE-{index}' for index in range(1,count+1)])
+        self.assertEqual(self.call('parse_banana_avito_message',text)['iccid'],parsed[0]['iccid'])
+
+    def test_parse_banana_blocks_skips_only_damaged_block(self):
+        catalog = self.ns['SUPPLIER_CATALOG'][:2]
+        valid = self.banana_avito_block(catalog[0],1)
+        damaged = self.banana_avito_block(catalog[1],2,include_lpa=False)
+        parsed = self.call('parse_banana_avito_messages',valid+'\n\n'+damaged)
+        self.assertEqual(len(parsed),1)
+        self.assertEqual(parsed[0]['iccid'],'8948010020008591001')
+
+    def test_handle_avito_message_adds_two_items_from_one_message(self):
+        catalog = self.ns['SUPPLIER_CATALOG'][:2]
+        self.ns['avito_sale_mode'][99]={'step':'banana_message','items':[]}
+        self.ns['avito_sale_session_keyboard']=Mock(return_value='keyboard')
+        message=SimpleNamespace(from_user=SimpleNamespace(id=99),chat=SimpleNamespace(id=99),
+                                text='\n\n'.join(self.banana_avito_block(item,index)
+                                                for index,item in enumerate(catalog,1)))
+        self.call('handle_avito_banana_message',message)
+        self.assertEqual(len(self.ns['avito_sale_mode'][99]['items']),2)
+        self.assertIn('✅ Добавлено eSIM: 2',self.telegram.send_message.call_args.args[1])
+
+    def test_handle_avito_message_skips_duplicate_iccid(self):
+        catalog = self.ns['SUPPLIER_CATALOG'][:2]
+        duplicate='8948010020008591999'
+        self.ns['avito_sale_mode'][99]={'step':'banana_message','items':[]}
+        self.ns['avito_sale_session_keyboard']=Mock(return_value='keyboard')
+        message=SimpleNamespace(from_user=SimpleNamespace(id=99),chat=SimpleNamespace(id=99),
+                                text='\n\n'.join(self.banana_avito_block(item,index,iccid=duplicate)
+                                                for index,item in enumerate(catalog,1)))
+        self.call('handle_avito_banana_message',message)
+        self.assertEqual(len(self.ns['avito_sale_mode'][99]['items']),1)
+        self.assertIn('⚠️ Пропущено дублей: 1',self.telegram.send_message.call_args.args[1])
 
     def test_avito_batches_of_one_two_and_three_claim_all_orders(self):
         offset=0
