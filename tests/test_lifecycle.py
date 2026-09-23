@@ -62,6 +62,7 @@ class LifecycleTest(unittest.TestCase):
         self.ns = dict(globals())
         self.ns.update(__file__=str(ROOT/'bot.py'), ADMIN_ID=99, REF_BONUS=100,
                        DEFAULT_PARTNER_RATE=20, ADMIN_ESIM_15M_DELAY=900, TOCHKA_PAYMENTS_ENABLED=True,
+                       PROMO_CODES={'lime10':10,'lime20':20,'lime99':99},
                        DB_PATH=self.uri, MINI_APP_URL='https://example.com',
                        AVITO_SOURCE_CODE='avito_manual',AVITO_TOKEN_PREFIX='avito_',
                        AVITO_LINK_TTL_SECONDS=7*24*60*60,AVITO_TOKEN_BYTES=24)
@@ -79,7 +80,8 @@ class LifecycleTest(unittest.TestCase):
         self.ns['UNLIMITED_PLANS'] = self.ns['load_unlimited_catalog']()
         self.ns['SUPPLIER_CATALOG'] = self.ns['load_supplier_catalog']()
         for name in ['_notify_admin_throttled','_notify_admin_safe','schedule_reminder',
-                     'schedule_referral_bonus_awarded_job','schedule_partner_sale_job','main_keyboard']:
+                     'schedule_referral_bonus_awarded_job','schedule_partner_sale_job','main_keyboard',
+                     'mini_app_receipt_keyboard']:
             self.ns[name] = Mock()
         self.ns['format_user_for_admin'] = str
         self.ns['read_mini_app_account'] = lambda user: {'esims': []}
@@ -324,9 +326,122 @@ ICCID: {iccid}"""
         )
         self.db.commit()
 
-    def create_payment_order(self, user_id):
-        result=self.call('create_mini_app_payment',{'id':user_id},self.payload())
+    def create_payment_order(self, user_id, promo_code=''):
+        body=self.payload();body['promo_code']=promo_code
+        result=self.call('create_mini_app_payment',{'id':user_id},body)
         return result['order_id']
+
+    def test_promo_discount_calculation_and_normalization(self):
+        for code,expected in (('lime10',900),('lime20',800),('lime99',10)):
+            with self.subTest(code=code):
+                result=self.call('calculate_promo_discount',1000,code)
+                self.assertEqual(result['final_price'],expected)
+                self.assertEqual(result['promo_discount'],1000-expected)
+        self.assertEqual(self.call('calculate_promo_discount',1,'lime99')['final_price'],1)
+        for code in ('LIME20','lime20',' lime20 '):
+            self.assertEqual(self.call('calculate_promo_discount',1000,code)['promo_code'],'lime20')
+
+    def test_invalid_promo_is_rejected(self):
+        body=self.payload();body['promo_code']='lime100'
+        with self.assertRaises(ApiError) as caught:
+            self.call('create_mini_app_payment',{'id':1},body)
+        self.assertEqual(caught.exception.code,'invalid_promo_code')
+        self.bank.create_payment.assert_not_called()
+
+    def test_standard_order_applies_promo_server_side(self):
+        oid=self.create_payment_order(1,' LIME20 ')
+        self.assertEqual(self.value(oid,'price'),920)
+        self.assertEqual(self.value(oid,'promo_code'),'lime20')
+        self.assertEqual(self.value(oid,'promo_percent'),20)
+        self.assertEqual(self.value(oid,'promo_discount'),184)
+        self.assertEqual(self.value(oid,'pay_amount'),736)
+        self.assertEqual(self.bank.create_payment.call_args.args[1],736)
+
+    def test_unlimited_order_applies_promo(self):
+        plan=next(iter(self.ns['UNLIMITED_PLANS'].values()))
+        days=3
+        payload={
+            'country':plan['display_name'],'tariff':self.call('get_unlimited_tariff_title',plan,days),
+            'displayed_price':plan['retail_prices_rub'][str(days)],
+            'unlimited_key':plan['supplier_key'],'days':days,
+        }
+        order=self.call('validate_unlimited_order_payload',payload)
+        self.call('process_unlimited_order_selection',1,1,order,promo_code='lime20')
+        oid=self.db.execute('SELECT MAX(id) FROM orders').fetchone()[0]
+        self.assertEqual(self.value(oid,'plan_type'),'unlimited')
+        self.assertEqual(self.value(oid,'price'),order['price'])
+        self.assertEqual(self.value(oid,'promo_discount'),round(order['price']*.2))
+        self.assertEqual(self.value(oid,'pay_amount'),order['price']-round(order['price']*.2))
+
+    def test_unlimited_duplicate_protection_separates_promo_codes(self):
+        plan=next(iter(self.ns['UNLIMITED_PLANS'].values()));days=3
+        order=self.call('validate_unlimited_order_payload',{
+            'country':plan['display_name'],'tariff':self.call('get_unlimited_tariff_title',plan,days),
+            'displayed_price':plan['retail_prices_rub'][str(days)],
+            'unlimited_key':plan['supplier_key'],'days':days,
+        })
+        for code in ('lime10','lime20',' LIME20 '):
+            self.call('process_unlimited_order_selection',1,1,order,promo_code=code)
+        rows=self.db.execute("SELECT promo_code FROM orders WHERE plan_type='unlimited' ORDER BY id").fetchall()
+        self.assertEqual(rows,[('lime10',),('lime20',)])
+
+    def test_promo_is_applied_before_bonus_balance(self):
+        self.db.execute('UPDATE users SET balance=100 WHERE user_id=1');self.db.commit()
+        self.call('process_order_selection',1,1,'Vietnam','5GB / 30 дней',920,
+                  use_balance=True,show_payment_message=False,promo_code='lime20')
+        oid=self.db.execute('SELECT MAX(id) FROM orders').fetchone()[0]
+        self.assertEqual(self.value(oid,'promo_discount'),184)
+        self.assertEqual(self.value(oid,'discount_used'),100)
+        self.assertEqual(self.value(oid,'pay_amount'),636)
+
+    def test_partner_commission_uses_promo_pay_amount(self):
+        self.set_active_partner(1,50)
+        oid=self.create_payment_order(1,'lime20')
+        self.assertEqual(self.value(oid,'pay_amount'),736)
+        self.assertEqual(self.value(oid,'partner_commission'),147)
+
+    def test_admin_promo_order_still_has_no_partner_commission(self):
+        self.set_active_partner(99,50)
+        oid=self.create_payment_order(99,'lime20')
+        self.assertEqual(self.value(oid,'promo_code'),'lime20')
+        self.assertEqual(self.value(oid,'partner_commission'),0)
+
+    def test_partner_self_purchase_with_promo_has_no_commission(self):
+        self.set_active_partner(1,1)
+        oid=self.create_payment_order(1,'lime20')
+        self.assertEqual(self.value(oid,'promo_code'),'lime20')
+        self.assertEqual(self.value(oid,'partner_commission'),0)
+
+    def test_promo_does_not_bypass_server_price_validation(self):
+        body=self.payload();body.update(displayed_price=100,promo_code='lime20')
+        with self.assertRaises(ApiError) as caught:
+            self.call('create_mini_app_payment',{'id':1},body)
+        self.assertEqual(caught.exception.code,'tariff_changed')
+
+    def test_client_promo_amount_fields_are_ignored(self):
+        body=self.payload();body.update(promo_code='lime20',promo_percent=100,
+                                        promo_discount=920,final_price=0)
+        oid=self.call('create_mini_app_payment',{'id':1},body)['order_id']
+        self.assertEqual(self.value(oid,'promo_percent'),20)
+        self.assertEqual(self.value(oid,'promo_discount'),184)
+        self.assertEqual(self.value(oid,'pay_amount'),736)
+
+    def test_duplicate_protection_separates_promo_codes(self):
+        lime10=self.create_payment_order(1,'lime10')
+        lime20=self.create_payment_order(1,'lime20')
+        same_lime20=self.create_payment_order(1,' LIME20 ')
+        self.assertNotEqual(lime10,lime20)
+        self.assertEqual(lime20,same_lime20)
+
+    def test_admin_order_shows_promo_details(self):
+        oid=self.create_payment_order(1,'lime20')
+        self.telegram.reset_mock()
+        self.call('show_admin_order',1,99,oid)
+        text=self.telegram.send_message.call_args.args[1]
+        self.assertIn('Промокод: LIME20',text)
+        self.assertIn('Скидка по промокоду: 184 ₽',text)
+        self.assertIn('Цена до скидки: 920 ₽',text)
+        self.assertIn('К оплате: 736 ₽',text)
 
     def test_admin_order_excludes_active_partner(self):
         self.set_active_partner(99,50)

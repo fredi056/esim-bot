@@ -88,6 +88,9 @@ add_column_if_not_exists("orders", "source_code", "TEXT DEFAULT ''")
 add_column_if_not_exists("orders", "partner_code", "TEXT DEFAULT ''")
 add_column_if_not_exists("orders", "partner_rate", "INTEGER DEFAULT 0")
 add_column_if_not_exists("orders", "partner_commission", "INTEGER DEFAULT 0")
+add_column_if_not_exists("orders", "promo_code", "TEXT DEFAULT ''")
+add_column_if_not_exists("orders", "promo_percent", "INTEGER DEFAULT 0")
+add_column_if_not_exists("orders", "promo_discount", "INTEGER DEFAULT 0")
 add_column_if_not_exists("orders", "plan_type", "TEXT DEFAULT ''")
 add_column_if_not_exists("orders", "supplier_key", "TEXT DEFAULT ''")
 add_column_if_not_exists("orders", "supplier_tariff", "TEXT DEFAULT ''")
@@ -323,6 +326,11 @@ ORDER_DATA_RESET_RESULT = reset_order_data_once(conn, DB_PATH, ORDER_DATA_RESET_
 
 REF_BONUS = 100
 DEFAULT_PARTNER_RATE = 20
+PROMO_CODES = {
+    "lime10": 10,
+    "lime20": 20,
+    "lime99": 99,
+}
 PARTNER_WINDOW_HOURS = 72
 PARTNER_WINDOW_SECONDS = PARTNER_WINDOW_HOURS * 60 * 60
 SUPPORT_URL = "https://t.me/F_Evdokimov"
@@ -1809,6 +1817,31 @@ def get_valid_plan_price(country: str, tariff: str) -> Optional[int]:
     return COUNTRY_PRICES.get(country, {}).get(tariff)
 
 
+def normalize_promo_code(code: Any) -> str:
+    return code.strip().lower() if isinstance(code, str) else ""
+
+
+def calculate_promo_discount(price: int, promo_code: Any) -> Dict[str, Any]:
+    if promo_code is not None and not isinstance(promo_code, str):
+        raise ValueError("invalid_promo_code")
+    normalized = normalize_promo_code(promo_code)
+    if not normalized:
+        return {
+            "promo_code": "", "discount_percent": 0,
+            "promo_discount": 0, "final_price": price,
+        }
+    discount_percent = PROMO_CODES.get(normalized)
+    if discount_percent is None:
+        raise ValueError("invalid_promo_code")
+    final_price = max(1, price - round(price * discount_percent / 100))
+    return {
+        "promo_code": normalized,
+        "discount_percent": discount_percent,
+        "promo_discount": price - final_price,
+        "final_price": final_price,
+    }
+
+
 SUPPLIER_CATALOG = load_supplier_catalog()
 
 def validate_unlimited_order_payload(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -1892,7 +1925,8 @@ def process_order_selection(
     displayed_price: Optional[int] = None,
     source: str = "bot",
     use_balance: bool = True,
-    show_payment_message: bool = True
+    show_payment_message: bool = True,
+    promo_code: Any = "",
 ) -> None:
     if country == "Russia":
         show_russia_discontinued(chat_id, user_id)
@@ -1915,16 +1949,26 @@ def process_order_selection(
         refresh_tariff_selection(chat_id, user_id, country)
         return
 
+    try:
+        promo = calculate_promo_discount(server_price, promo_code)
+    except ValueError:
+        bot.send_message(chat_id, "Промокод недействителен")
+        return
+
     price = server_price
+    promo_code = promo["promo_code"]
+    promo_percent = promo["discount_percent"]
+    promo_discount = promo["promo_discount"]
+    discounted_price = promo["final_price"]
     text = f"{country_label(country)} | {tariff} — {server_price}₽"
 
     if use_balance:
         balance = get_user_balance(user_id)
-        discount_used = min(balance, price)
-        pay_amount = price - discount_used
+        discount_used = min(balance, discounted_price)
+        pay_amount = discounted_price - discount_used
     else:
         discount_used = 0
-        pay_amount = price
+        pay_amount = discounted_price
 
     if discount_used > 0:
         subtract_balance(user_id, discount_used)
@@ -1948,11 +1992,12 @@ def process_order_selection(
             """
             SELECT id, pay_amount
             FROM orders
-            WHERE user_id=? AND country=? AND tariff=? AND status='awaiting_receipt' AND created_at>=?
+            WHERE user_id=? AND country=? AND tariff=? AND COALESCE(promo_code,'')=?
+              AND pay_amount=? AND status='awaiting_receipt' AND created_at>=?
             ORDER BY id DESC
             LIMIT 1
             """,
-            (user_id, country, tariff, created_at - 10 * 60)
+            (user_id, country, tariff, promo_code, pay_amount, created_at - 10 * 60)
         )
         duplicate_order = cursor.fetchone()
         if duplicate_order:
@@ -1971,10 +2016,17 @@ def process_order_selection(
 
     cursor.execute(
         """
-        INSERT INTO orders (user_id, text, price, pay_amount, discount_used, status, country, tariff, created_at, source_code, partner_code, partner_rate, partner_commission)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO orders (
+            user_id, text, price, pay_amount, discount_used, status, country, tariff, created_at,
+            source_code, partner_code, partner_rate, partner_commission,
+            promo_code, promo_percent, promo_discount
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (user_id, text, price, pay_amount, discount_used, status, country, tariff, created_at, source_code, partner_code, partner_rate, partner_commission)
+        (
+            user_id, text, price, pay_amount, discount_used, status, country, tariff, created_at,
+            source_code, partner_code, partner_rate, partner_commission,
+            promo_code, promo_percent, promo_discount,
+        )
     )
     conn.commit()
     order_id = cursor.lastrowid
@@ -2063,7 +2115,8 @@ def process_unlimited_order_selection(
     order: Dict[str, Any],
     source: str = "miniapp",
     use_balance: bool = False,
-    show_payment_message: bool = False
+    show_payment_message: bool = False,
+    promo_code: Any = "",
 ) -> None:
     country = order["country"]
     tariff = order["tariff"]
@@ -2074,14 +2127,23 @@ def process_unlimited_order_selection(
     post_limit_speed = order["post_limit_speed"]
     daily_high_speed_gb = int(order["daily_high_speed_gb"])
     text = f"{country} | {tariff} — {price}₽"
+    try:
+        promo = calculate_promo_discount(price, promo_code)
+    except ValueError:
+        bot.send_message(chat_id, "Промокод недействителен")
+        return
+    promo_code = promo["promo_code"]
+    promo_percent = promo["discount_percent"]
+    promo_discount = promo["promo_discount"]
+    discounted_price = promo["final_price"]
 
     if use_balance:
         balance = get_user_balance(user_id)
-        discount_used = min(balance, price)
-        pay_amount = price - discount_used
+        discount_used = min(balance, discounted_price)
+        pay_amount = discounted_price - discount_used
     else:
         discount_used = 0
-        pay_amount = price
+        pay_amount = discounted_price
 
     if discount_used > 0:
         subtract_balance(user_id, discount_used)
@@ -2106,11 +2168,13 @@ def process_unlimited_order_selection(
             """
             SELECT id, pay_amount
             FROM orders
-            WHERE user_id=? AND plan_type='unlimited' AND supplier_key=? AND duration_days=? AND status='awaiting_receipt' AND created_at>=?
+            WHERE user_id=? AND plan_type='unlimited' AND supplier_key=? AND duration_days=?
+              AND COALESCE(promo_code,'')=? AND pay_amount=?
+              AND status='awaiting_receipt' AND created_at>=?
             ORDER BY id DESC
             LIMIT 1
             """,
-            (user_id, unlimited_key, days, created_at - 10 * 60)
+            (user_id, unlimited_key, days, promo_code, pay_amount, created_at - 10 * 60)
         )
         duplicate_order = cursor.fetchone()
         if duplicate_order:
@@ -2134,14 +2198,16 @@ def process_unlimited_order_selection(
         INSERT INTO orders (
             user_id, text, price, pay_amount, discount_used, status, country, tariff, created_at,
             source_code, partner_code, partner_rate, partner_commission,
-            plan_type, supplier_key, supplier_tariff, duration_days, post_limit_speed, daily_high_speed_gb
+            plan_type, supplier_key, supplier_tariff, duration_days, post_limit_speed, daily_high_speed_gb,
+            promo_code, promo_percent, promo_discount
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             user_id, text, price, pay_amount, discount_used, status, country, tariff, created_at,
             source_code, partner_code, partner_rate, partner_commission,
-            "unlimited", unlimited_key, supplier_tariff, days, post_limit_speed, daily_high_speed_gb
+            "unlimited", unlimited_key, supplier_tariff, days, post_limit_speed, daily_high_speed_gb,
+            promo_code, promo_percent, promo_discount,
         )
     )
     conn.commit()
@@ -3322,7 +3388,8 @@ def show_admin_order(chat_id: int, user_id: int, order_id: int):
     cursor.execute(
         """
         SELECT o.id, o.user_id, u.username, u.first_name, o.country, o.tariff, o.price, o.pay_amount,
-               o.discount_used, o.status, o.created_at, o.receipt_received_at, o.paid_at, o.esim_sent_at,
+               o.discount_used, o.promo_code, o.promo_percent, o.promo_discount,
+               o.status, o.created_at, o.receipt_received_at, o.paid_at, o.esim_sent_at,
                o.install_confirmed, o.plan_type, o.supplier_key, o.supplier_tariff, o.duration_days,
                o.post_limit_speed, o.daily_high_speed_gb
         FROM orders o
@@ -3338,21 +3405,29 @@ def show_admin_order(chat_id: int, user_id: int, order_id: int):
 
     (
         order_id, order_user_id, username, first_name, country, tariff, price, pay_amount,
-        discount_used, status, created_at, receipt_received_at, paid_at, esim_sent_at,
+        discount_used, promo_code, promo_percent, promo_discount,
+        status, created_at, receipt_received_at, paid_at, esim_sent_at,
         install_confirmed, plan_type, supplier_key, supplier_tariff, duration_days,
         post_limit_speed, daily_high_speed_gb
     ) = row
     unlimited_details = format_unlimited_admin_details(
         plan_type, supplier_key, supplier_tariff, duration_days, post_limit_speed, daily_high_speed_gb
     )
+    promo_details = (
+        f"Промокод: {promo_code.upper()}\n"
+        f"Скидка по промокоду: {promo_discount or 0} ₽\n"
+        f"Цена до скидки: {price} ₽\n"
+        if promo_code else f"Сумма: {price}₽\n"
+    )
+    pay_amount_details = f"К оплате: {pay_amount} ₽\n" if promo_code else f"К оплате: {pay_amount}₽\n"
     text = (
         f"📦 Заказ #{order_id}\n\n"
         f"Покупатель: {format_user_for_admin(order_user_id)}\n"
         f"Страна: {country or 'Не указано'}\n"
         f"Тариф: {tariff or 'Не указано'}\n"
-        f"Сумма: {price}₽\n"
+        f"{promo_details}"
         f"Списано с баланса: {discount_used or 0}₽\n"
-        f"К оплате: {pay_amount}₽\n"
+        f"{pay_amount_details}"
         f"Статус: {status_label(status)}\n"
         f"created_at: {created_at or 0}\n"
         f"receipt_received_at: {receipt_received_at or 0}\n"
@@ -4689,7 +4764,8 @@ def web_app_data_handler(message):
                 order=unlimited_order,
                 source="miniapp",
                 use_balance=False,
-                show_payment_message=False
+                show_payment_message=False,
+                promo_code=payload.get("promo_code", ""),
             )
             return
 
@@ -4734,7 +4810,8 @@ def web_app_data_handler(message):
             displayed_price=displayed_price,
             source="miniapp",
             use_balance=False,
-            show_payment_message=False
+            show_payment_message=False,
+            promo_code=payload.get("promo_code", ""),
         )
     except Exception:
         bot.send_message(message.chat.id, error_text, reply_markup=main_keyboard(message.from_user.id))
@@ -6336,6 +6413,11 @@ def create_mini_app_payment(telegram_user: Dict[str, Any], body: Dict[str, Any])
     order = _validated_api_order(body, user_id)
     if not order:
         raise ApiError(409, "tariff_changed")
+    try:
+        promo = calculate_promo_discount(order["price"], body.get("promo_code", ""))
+    except ValueError as exc:
+        raise ApiError(400, "invalid_promo_code") from exc
+    pay_amount = promo["final_price"]
     if _supplier_item_id(order["supplier_product_id"], order["supplier_variation_id"]) <= 0:
         # Never accept money for a package that cannot be issued through the
         # configured supplier API. Unmapped catalogue rows remain visible until
@@ -6356,10 +6438,14 @@ def create_mini_app_payment(telegram_user: Dict[str, Any], body: Dict[str, Any])
             """
             SELECT id FROM orders
             WHERE user_id=? AND country=? AND tariff=? AND status='paid'
-              AND payment_provider='tochka' AND created_at>=?
+              AND payment_provider='tochka' AND COALESCE(promo_code,'')=?
+              AND pay_amount=? AND created_at>=?
             ORDER BY id DESC LIMIT 1
             """,
-            (user_id, order["country"], order["tariff"], now - 30 * 60),
+            (
+                user_id, order["country"], order["tariff"], promo["promo_code"],
+                pay_amount, now - 30 * 60,
+            ),
         ).fetchone()
         if recent_paid:
             db.commit()
@@ -6369,9 +6455,10 @@ def create_mini_app_payment(telegram_user: Dict[str, Any], body: Dict[str, Any])
             SELECT id, payment_url, payment_status, status FROM orders
             WHERE user_id=? AND country=? AND tariff=? AND status='payment_pending'
               AND payment_provider='tochka' AND COALESCE(order_kind,'esim')='esim'
+              AND COALESCE(promo_code,'')=? AND pay_amount=?
             ORDER BY id DESC LIMIT 1
             """,
-            (user_id, order["country"], order["tariff"])
+            (user_id, order["country"], order["tariff"], promo["promo_code"], pay_amount)
         ).fetchone()
         if duplicate:
             db.commit()
@@ -6385,21 +6472,24 @@ def create_mini_app_payment(telegram_user: Dict[str, Any], body: Dict[str, Any])
         partner_code, partner_rate = get_order_partner(user_id, db)
         if partner_code:
             source_code = ""
-        partner_commission = int(round(order["price"] * partner_rate / 100)) if partner_code else 0
+        partner_commission = int(round(pay_amount * partner_rate / 100)) if partner_code else 0
         text = f"{order['country']} | {order['tariff']} — {order['price']}₽"
         db.execute(
             """
             INSERT INTO orders (
-                user_id, text, price, pay_amount, discount_used, status, country, tariff, created_at,
+                user_id, text, price, pay_amount, discount_used,
+                promo_code, promo_percent, promo_discount, status, country, tariff, created_at,
                 source_code, partner_code, partner_rate, partner_commission, plan_type, supplier_key,
                 supplier_tariff, duration_days, post_limit_speed, daily_high_speed_gb, customer_email,
                 legal_acceptance, payment_provider, payment_link_id, payment_status, payment_created_at,
                 supplier_product_id, supplier_variation_id, supplier_status
-            ) VALUES (?, ?, ?, ?, 0, 'payment_pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, 'payment_pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                       'tochka', '', 'CREATING', ?, ?, ?, '')
             """,
             (
-                user_id, text, order["price"], order["price"], order["country"], order["tariff"], now,
+                user_id, text, order["price"], pay_amount,
+                promo["promo_code"], promo["discount_percent"], promo["promo_discount"],
+                order["country"], order["tariff"], now,
                 source_code, partner_code, partner_rate, partner_commission,
                 order["plan_type"], order["unlimited_key"], order["supplier_tariff"],
                 order["days"], order["post_limit_speed"], order["daily_high_speed_gb"], email,
@@ -6424,7 +6514,7 @@ def create_mini_app_payment(telegram_user: Dict[str, Any], body: Dict[str, Any])
         else f"{fail_redirect}{'&' if '?' in fail_redirect else '?'}order_id={order_id}"
     )
     return _create_bank_payment_for_order(
-        order_id, user_id, order["price"], f"Оплата eSIM, заказ №{order_id}", redirect_url, fail_redirect_url
+        order_id, user_id, pay_amount, f"Оплата eSIM, заказ №{order_id}", redirect_url, fail_redirect_url
     )
 
 
