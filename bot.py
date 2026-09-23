@@ -162,6 +162,27 @@ CREATE TABLE IF NOT EXISTS reminder_jobs (
 """)
 conn.commit()
 
+
+def cancel_obsolete_test_orders(db_conn) -> None:
+    db_conn.execute(
+        """
+        UPDATE orders
+        SET status='cancel', supplier_status='cancelled', supplier_last_error='',
+            supplier_request_id='', supplier_requested_at=0
+        WHERE id IN (41, 42) AND status='paid'
+        """
+    )
+    db_conn.execute(
+        """
+        UPDATE reminder_jobs SET status='cancelled'
+        WHERE order_id IN (41, 42) AND status IN ('pending', 'processing')
+        """
+    )
+    db_conn.commit()
+
+
+cancel_obsolete_test_orders(conn)
+
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS service_alerts (
     alert_key TEXT PRIMARY KEY,

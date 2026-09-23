@@ -230,6 +230,25 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(result['status'],'payment_pending')
         self.assertEqual(self.value(oid,'status'),'payment_pending')
 
+    def test_startup_cancels_only_obsolete_paid_test_orders(self):
+        for order_id in (41,42):
+            self.order(id=order_id,status='paid',supplier_status='error',
+                       supplier_last_error='old',supplier_request_id='request',supplier_requested_at=123)
+            self.db.execute(
+                "INSERT INTO reminder_jobs(user_id,order_id,reminder_type,scheduled_at,status,created_at) "
+                "VALUES(1,?,'payment_30m',1,'pending',1)", (order_id,),
+            )
+        other=self.order(id=43,status='paid',supplier_status='processing')
+        self.db.commit()
+        self.call('cancel_obsolete_test_orders',self.db)
+        self.assertEqual([self.value(order_id,'status') for order_id in (41,42)],['cancel','cancel'])
+        self.assertEqual([self.value(order_id,'supplier_status') for order_id in (41,42)],['cancelled','cancelled'])
+        self.assertEqual(self.value(other,'status'),'paid')
+        statuses=[row[0] for row in self.db.execute(
+            'SELECT status FROM reminder_jobs WHERE order_id IN (41,42) ORDER BY order_id'
+        )]
+        self.assertEqual(statuses,['cancelled','cancelled'])
+
     def test_paid_duplicates_verify_amount_and_operation(self):
         oid=self.order(status='paid')
         self.assertFalse(self.call('_mark_bank_order_paid',oid,'other',920))
