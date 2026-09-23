@@ -1306,6 +1306,27 @@ def get_active_partner_for_user(user_id: int) -> Tuple[str, int]:
         return "", 0
     return code, int(partner[3] or DEFAULT_PARTNER_RATE)
 
+
+def get_order_partner(user_id: int, db_conn=None) -> Tuple[str, int]:
+    """Return a commission partner only when eligible for this new order."""
+    if user_id == ADMIN_ID:
+        return "", 0
+    db = db_conn or conn
+    row = db.execute(
+        "SELECT COALESCE(active_partner_code, ''), COALESCE(active_partner_until, 0) "
+        "FROM users WHERE user_id=?",
+        (user_id,),
+    ).fetchone()
+    if not row or not row[0] or int(row[1] or 0) <= int(time.time()):
+        return "", 0
+    partner = db.execute(
+        "SELECT telegram_user_id, commission_rate FROM partners WHERE code=? AND is_active=1",
+        (row[0],),
+    ).fetchone()
+    if not partner or int(partner[0]) == user_id:
+        return "", 0
+    return row[0], int(partner[1] or DEFAULT_PARTNER_RATE)
+
 def get_partner_amounts(code: str) -> Dict[str, int]:
     cursor.execute(
         "SELECT COUNT(DISTINCT user_id) FROM partner_commissions WHERE partner_code=? AND status IN ('available', 'paid')",
@@ -1638,7 +1659,7 @@ def process_order_selection(
     if show_payment_message:
         show_travel_instruction(chat_id, user_id, add_to_history=False)
 
-    partner_code, partner_rate = get_active_partner_for_user(user_id)
+    partner_code, partner_rate = get_order_partner(user_id)
     if partner_code:
         source_code = ""
         partner_commission = int(round(pay_amount * partner_rate / 100))
@@ -1795,7 +1816,7 @@ def process_unlimited_order_selection(
     if show_payment_message:
         show_travel_instruction(chat_id, user_id, add_to_history=False)
 
-    partner_code, partner_rate = get_active_partner_for_user(user_id)
+    partner_code, partner_rate = get_order_partner(user_id)
     if partner_code:
         source_code = ""
         partner_commission = int(round(pay_amount * partner_rate / 100))
@@ -6026,21 +6047,11 @@ def create_mini_app_payment(telegram_user: Dict[str, Any], body: Dict[str, Any])
             return _pending_payment_response(duplicate)
 
         user_row = db.execute(
-            "SELECT COALESCE(first_source, ''), COALESCE(active_partner_code, ''), COALESCE(active_partner_until, 0) FROM users WHERE user_id=?",
+            "SELECT COALESCE(first_source, '') FROM users WHERE user_id=?",
             (user_id,)
-        ).fetchone() or ("", "", 0)
-        source_code, partner_code, partner_until = user_row
-        partner_rate = 0
-        if partner_code and partner_until > now:
-            partner = db.execute(
-                "SELECT commission_rate FROM partners WHERE code=? AND is_active=1", (partner_code,)
-            ).fetchone()
-            if partner:
-                partner_rate = int(partner[0] or DEFAULT_PARTNER_RATE)
-            else:
-                partner_code = ""
-        else:
-            partner_code = ""
+        ).fetchone() or ("",)
+        source_code = user_row[0]
+        partner_code, partner_rate = get_order_partner(user_id, db)
         if partner_code:
             source_code = ""
         partner_commission = int(round(order["price"] * partner_rate / 100)) if partner_code else 0

@@ -106,6 +106,59 @@ class LifecycleTest(unittest.TestCase):
         return {'country':'Vietnam','tariff':'5GB / 30 дней','displayed_price':920,
                 'legal_acceptance':{'offer_version':'1','personal_data_consent_version':'1','accepted_at':'now'}}
 
+    def set_active_partner(self, user_id, partner_user_id, *, until=None, first_source=''):
+        self.db.execute(
+            "INSERT INTO partners(code,name,telegram_user_id,commission_rate,is_active,created_at) "
+            "VALUES('partner20','Partner',?,20,1,?)",
+            (partner_user_id,int(time.time())),
+        )
+        self.db.execute(
+            "INSERT OR IGNORE INTO users(user_id,balance) VALUES(?,0)", (user_id,),
+        )
+        self.db.execute(
+            "UPDATE users SET active_partner_code='partner20',active_partner_until=?,first_source=? WHERE user_id=?",
+            (until if until is not None else int(time.time())+3600,first_source,user_id),
+        )
+        self.db.commit()
+
+    def create_payment_order(self, user_id):
+        result=self.call('create_mini_app_payment',{'id':user_id},self.payload())
+        return result['order_id']
+
+    def test_admin_order_excludes_active_partner(self):
+        self.set_active_partner(99,50)
+        oid=self.create_payment_order(99)
+        self.assertEqual(self.value(oid,'partner_code'),'')
+        self.assertEqual(self.value(oid,'partner_rate'),0)
+        self.assertEqual(self.value(oid,'partner_commission'),0)
+
+    def test_partner_self_purchase_has_no_commission(self):
+        self.set_active_partner(1,1)
+        oid=self.create_payment_order(1)
+        self.assertEqual(self.value(oid,'partner_code'),'')
+        self.assertEqual(self.value(oid,'partner_commission'),0)
+
+    def test_regular_partner_client_keeps_twenty_percent_commission(self):
+        self.set_active_partner(1,50)
+        oid=self.create_payment_order(1)
+        self.assertEqual(self.value(oid,'partner_code'),'partner20')
+        self.assertEqual(self.value(oid,'partner_rate'),20)
+        self.assertEqual(self.value(oid,'partner_commission'),184)
+
+    def test_expired_partner_window_has_no_commission(self):
+        self.set_active_partner(1,50,until=int(time.time())-1)
+        oid=self.create_payment_order(1)
+        self.assertEqual(self.value(oid,'partner_code'),'')
+        self.assertEqual(self.value(oid,'partner_commission'),0)
+
+    def test_ad_source_is_preserved_without_partner(self):
+        self.db.execute("UPDATE users SET first_source='ad_campaign' WHERE user_id=1")
+        self.db.commit()
+        oid=self.create_payment_order(1)
+        self.assertEqual(self.value(oid,'source_code'),'ad_campaign')
+        self.assertEqual(self.value(oid,'partner_code'),'')
+        self.assertEqual(self.value(oid,'partner_commission'),0)
+
     def test_amount_mismatch_is_not_paid(self):
         oid=self.order()
         self.bank.get_payment.return_value={'status':'APPROVED','amount':919}
