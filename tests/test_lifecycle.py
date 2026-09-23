@@ -6,6 +6,7 @@ Run: python -m unittest discover -s tests -v
 import ast
 import hashlib
 import html
+import io
 import json
 import mimetypes
 import re
@@ -14,7 +15,7 @@ import sqlite3
 import sys
 import time
 import unittest
-from contextlib import closing
+from contextlib import closing, redirect_stdout
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -201,20 +202,19 @@ class LifecycleTest(unittest.TestCase):
         self.bank.create_payment.assert_not_called()
 
     def test_new_vietnam_purchase_gets_bank_link(self):
-        self.supplier.resolve_product.return_value=self.product()
         result=self.call('create_mini_app_payment',{'id':1},self.payload())
         self.assertEqual(result['payment_url'],'https://bank.example/pay')
         self.assertEqual(result['status'],'payment_pending')
         self.assertEqual(self.value(result['order_id'],'supplier_product_id'),796)
+        self.assertEqual(self.value(result['order_id'],'supplier_variation_id'),809)
         self.assertEqual(self.bank.create_payment.call_count,1)
         self.assertEqual(self.bank.create_payment.call_args.args[1],920)
+        self.supplier.resolve_product.assert_not_called()
 
-    def test_alternative_provider_purchase_gets_bank_link(self):
-        product=self.product()
-        product['partner_provider']='supplier_alternative'
-        self.supplier.resolve_product.return_value=product
+    def test_standard_purchase_does_not_require_provider_resolve(self):
         result=self.call('create_mini_app_payment',{'id':1},self.payload())
         self.assertEqual(result['payment_url'],'https://bank.example/pay')
+        self.supplier.resolve_product.assert_not_called()
 
     def test_admin_supplier_test_uses_live_standard_package(self):
         self.supplier.resolve_product.return_value={
@@ -238,7 +238,6 @@ class LifecycleTest(unittest.TestCase):
         }))
 
     def test_standard_purchase_through_issue_and_delivery(self):
-        self.supplier.resolve_product.return_value=self.product()
         result=self.call('create_mini_app_payment',{'id':1},self.payload())
         oid=result['order_id']
         self.bank.get_payment.return_value={'status':'APPROVED','amount':920}
@@ -248,9 +247,14 @@ class LifecycleTest(unittest.TestCase):
         self.telegram.send_photo.return_value=SimpleNamespace(photo=[SimpleNamespace(file_id='qr1')])
         self.assertTrue(self.call('provision_paid_supplier_order',oid))
         self.assertEqual(self.value(oid,'supplier_status'),'issued')
+        self.assertEqual(self.value(oid,'supplier_iccid'),'8985201234567890123')
+        self.assertEqual(self.value(oid,'supplier_line_provider'),'')
+        self.assertIsNone(self.value(oid,'supplier_refillable'))
         self.assertGreater(self.value(oid,'supplier_delivered_at'),0)
         self.assertTrue(self.call('provision_paid_supplier_order',oid))
+        self.supplier.resolve_product.assert_not_called()
         self.assertEqual(self.supplier.create_line.call_count,1)
+        self.supplier.create_line.assert_called_once_with(oid,796,809)
         self.assertEqual(self.telegram.send_photo.call_count,1)
 
     def test_bank_setup_failure_does_not_wait_for_nonexistent_payment(self):
@@ -261,10 +265,12 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(caught.exception.code,'bank_setup_required')
         self.assertEqual(self.value(oid,'status'),'payment_error')
 
-    def test_missing_supplier_product_stops_before_payment(self):
+    def test_catalogued_supplier_product_does_not_require_resolve_before_payment(self):
         self.supplier.resolve_product.side_effect=BananaError('banana_http_404')
-        with self.assertRaises(ApiError):self.call('create_mini_app_payment',{'id':1},self.payload())
-        self.bank.create_payment.assert_not_called()
+        result=self.call('create_mini_app_payment',{'id':1},self.payload())
+        self.assertEqual(result['payment_url'],'https://bank.example/pay')
+        self.supplier.resolve_product.assert_not_called()
+        self.bank.create_payment.assert_called_once()
 
     def test_unmapped_tariff_stops_before_payment(self):
         body={'country':'Vietnam','tariff':'50GB / 90 дней','displayed_price':12390,
@@ -380,6 +386,57 @@ class ClientTest(unittest.TestCase):
     def test_banana_request_ids_stay_stable(self):
         self.assertEqual(BananaClient.request_id(123),hashlib.sha256(b'123/1/standard').hexdigest())
         self.assertNotEqual(BananaClient.request_id(123),BananaClient.request_id(124))
+
+    def test_banana_create_line_retry_reuses_request_id_and_safe_logs(self):
+        client=BananaClient()
+        response={'sim_card':{'iccid':'8985201234567890123','lpa_code':'LPA:1$host$secret'}}
+        client._request=Mock(return_value=(response,200))
+        output=io.StringIO()
+        with redirect_stdout(output):
+            client.create_line(41,317,330)
+            client.create_line(41,317,330)
+        self.assertEqual(client._request.call_count,2)
+        first_headers=client._request.call_args_list[0].args[3]
+        second_headers=client._request.call_args_list[1].args[3]
+        self.assertEqual(first_headers['X-Partner-Request-ID'],second_headers['X-Partner-Request-ID'])
+        self.assertEqual(first_headers['X-Partner-Order-ID'],'41')
+        self.assertNotIn('8985201234567890123',output.getvalue())
+        self.assertNotIn('LPA:1$host$secret',output.getvalue())
+        self.assertEqual(output.getvalue().count('BANANA_CREATE_OK order_id=41 http_status=200'),2)
+
+    def test_banana_create_line_error_log_includes_safe_supplier_detail(self):
+        client=BananaClient()
+        client._request=Mock(side_effect=BananaError(
+            'banana_http_404','Supplier operation is not allowed.',
+            http_status=404,supplier_code='operation_not_allowed',
+        ))
+        output=io.StringIO()
+        with redirect_stdout(output), self.assertRaises(BananaError):
+            client.create_line(41,317,330)
+        self.assertIn(
+            'BANANA_CREATE_ERROR order_id=41 product_id=317 variation_id=330 '
+            'http_status=404 supplier_code="operation_not_allowed" '
+            'message="Supplier operation is not allowed."',
+            output.getvalue(),
+        )
+
+    def test_banana_create_line_error_log_redacts_installation_secrets(self):
+        client=BananaClient()
+        client._request=Mock(side_effect=BananaError(
+            'banana_http_422',
+            'Failed\nLPA:1$host$secret activation_code=very-secret ICCID 8985201234567890123',
+            http_status=422,supplier_code='invalid_product',
+        ))
+        output=io.StringIO()
+        with redirect_stdout(output), self.assertRaises(BananaError):
+            client.create_line(41,317,330)
+        logged=output.getvalue()
+        self.assertIn('[REDACTED_LPA]',logged)
+        self.assertIn('activation_code=[REDACTED_ACTIVATION_CODE]',logged)
+        self.assertIn('[REDACTED_ICCID]',logged)
+        self.assertNotIn('8985201234567890123',output.getvalue())
+        self.assertNotIn('LPA:1$host$secret',output.getvalue())
+        self.assertNotIn('very-secret',output.getvalue())
 
     def test_banana_resolve_accepts_numeric_string_ids(self):
         client=BananaClient()

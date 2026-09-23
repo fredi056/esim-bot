@@ -65,7 +65,7 @@ class BananaClient:
             "X-Partner-Client": self.client_name,
         }
 
-    def _request(self, method, path, data=None, extra_headers=None):
+    def _request(self, method, path, data=None, extra_headers=None, *, return_status=False):
         url = f"{self.base_url}/{path.lstrip('/')}"
         body = None if data is None else json.dumps(data, ensure_ascii=False).encode("utf-8")
         request = Request(url, data=body, method=method)
@@ -77,6 +77,7 @@ class BananaClient:
             request.add_header(name, value)
         try:
             with urlopen(request, timeout=20, context=self._ssl_context) as response:
+                response_status = response.status
                 raw = response.read(1024 * 1024 + 1)
         except HTTPError as exc:
             detail = ""
@@ -102,14 +103,14 @@ class BananaClient:
             raise BananaError("banana_unavailable") from exc
 
         if not raw or len(raw) > 1024 * 1024:
-            raise BananaError("banana_invalid_response")
+            raise BananaError("banana_invalid_response", http_status=response_status)
         try:
             result = json.loads(raw.decode("utf-8"))
         except (UnicodeError, json.JSONDecodeError) as exc:
-            raise BananaError("banana_invalid_response") from exc
+            raise BananaError("banana_invalid_response", http_status=response_status) from exc
         if not isinstance(result, (dict, list)):
-            raise BananaError("banana_invalid_response")
-        return result
+            raise BananaError("banana_invalid_response", http_status=response_status)
+        return (result, response_status) if return_status else result
 
     @staticmethod
     def _iccid(iccid):
@@ -185,6 +186,29 @@ class BananaClient:
             f"invalid boolean field: {type(value).__name__}",
         )
 
+    @staticmethod
+    def _safe_error_detail(detail, fallback):
+        text = str(detail or "")
+        text = re.sub(r"[\r\n\t]+", " ", text)
+        text = re.sub(r"[\x00-\x1f\x7f]+", " ", text).strip()
+        if (not text
+                or "{" in text or "}" in text or "[" in text or "]" in text
+                or re.search(
+                    r"(?i)\b(?:headers?|authorization|bearer|api[_ -]?key|telegram[_ -]?token|"
+                    r"x-partner-(?:key|site|client))\b",
+                    text,
+                )):
+            return str(fallback or "banana_error")[:300]
+        text = re.sub(r"(?i)LPA:1\$[^\s\"'<>]+", "[REDACTED_LPA]", text)
+        text = re.sub(
+            r"(?i)(\bactivation[_\s-]*code\b\s*(?::|=|is)?\s*)[\"']?[^\s,;]+",
+            r"\1[REDACTED_ACTIVATION_CODE]",
+            text,
+        )
+        text = re.sub(r"(?<!\d)\d{15,}(?!\d)", "[REDACTED_ICCID]", text)
+        text = re.sub(r"\s+", " ", text).strip().replace('"', "'")
+        return (text or str(fallback or "banana_error"))[:300]
+
     def resolve_product(self, product_id, variation_id):
         result = self._request(
             "POST",
@@ -230,16 +254,40 @@ class BananaClient:
             raise BananaError("banana_invalid_order")
         payload = self._product_reference(product_id, variation_id)
         payload["count"] = count
-        result = self._request(
-            "POST",
-            "/line/create",
-            payload,
-            {
-                "X-Partner-Request-ID": self.request_id(order_id, item_id),
-                "X-Partner-Order-ID": str(order_id),
-            },
+        print(
+            f"BANANA_CREATE_REQUEST order_id={order_id} product_id={product_id} "
+            f"variation_id={variation_id} count={count}",
+            flush=True,
         )
-        self._validate_sim_card(result.get("sim_card") if isinstance(result, dict) else None, installation=True)
+        http_status = "unknown"
+        try:
+            result, http_status = self._request(
+                "POST",
+                "/line/create",
+                payload,
+                {
+                    "X-Partner-Request-ID": self.request_id(order_id, item_id),
+                    "X-Partner-Order-ID": str(order_id),
+                },
+                return_status=True,
+            )
+            self._validate_sim_card(
+                result.get("sim_card") if isinstance(result, dict) else None,
+                installation=True,
+            )
+        except BananaError as exc:
+            if isinstance(exc.http_status, int):
+                http_status = exc.http_status
+            supplier_code = re.sub(r"[^A-Za-z0-9_.:-]+", "_", exc.supplier_code or "")[:100]
+            message = self._safe_error_detail(exc.detail, exc.code)
+            print(
+                f"BANANA_CREATE_ERROR order_id={order_id} product_id={product_id} "
+                f"variation_id={variation_id} http_status={http_status} "
+                f'supplier_code="{supplier_code}" message="{message}"',
+                flush=True,
+            )
+            raise
+        print(f"BANANA_CREATE_OK order_id={order_id} http_status={http_status}", flush=True)
         return result
 
     def get_details(self, iccid):

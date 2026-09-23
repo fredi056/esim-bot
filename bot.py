@@ -6048,26 +6048,28 @@ def create_mini_app_payment(telegram_user: Dict[str, Any], body: Dict[str, Any])
     order = _validated_api_order(body, user_id)
     if not order:
         raise ApiError(409, "tariff_changed")
-    if _supplier_int(order["supplier_product_id"]) <= 0:
+    if (_supplier_int(order["supplier_product_id"]) <= 0
+            or _supplier_int(order["supplier_variation_id"]) <= 0):
         # Never accept money for a package that cannot be issued through the
         # configured supplier API. Unmapped catalogue rows remain visible until
         # the separate availability/catalogue update, but checkout is blocked.
         raise ApiError(503, "supplier_product_unavailable")
     if not banana.configured:
         raise ApiError(503, "supplier_unavailable")
-    expected = _supplier_catalog_option(
-        order["country"], _topup_option_id(order["supplier_product_id"], order["supplier_variation_id"])
-    )
-    try:
-        product = banana.resolve_product(order["supplier_product_id"], order["supplier_variation_id"])
-        _validate_supplier_product(product, expected)
-    except BananaError as exc:
-        _notify_admin_throttled(
-            f"sale-product:{order['supplier_product_id']}:{order['supplier_variation_id']}:{str(exc)}",
-            f"⚠️ Тариф Banana недоступен до оплаты\n"
-            f"{order['country']} — {order['tariff']}\nКод: {_format_banana_error(exc)}",
+    if order["plan_type"] == "supplier_test":
+        expected = _supplier_catalog_option(
+            order["country"], _topup_option_id(order["supplier_product_id"], order["supplier_variation_id"])
         )
-        raise ApiError(503, "supplier_product_unavailable") from exc
+        try:
+            product = banana.resolve_product(order["supplier_product_id"], order["supplier_variation_id"])
+            _validate_supplier_product(product, expected)
+        except BananaError as exc:
+            _notify_admin_throttled(
+                f"sale-product:{order['supplier_product_id']}:{order['supplier_variation_id']}:{str(exc)}",
+                f"⚠️ Тариф Banana недоступен до оплаты\n"
+                f"{order['country']} — {order['tariff']}\nКод: {_format_banana_error(exc)}",
+            )
+            raise ApiError(503, "supplier_product_unavailable") from exc
 
     now = int(time.time())
     db = _payment_db()
@@ -6375,10 +6377,15 @@ def provision_paid_supplier_order(order_id: int) -> bool:
     user_id, country, tariff, plan_type = row[0], row[2], row[3], row[4]
     product_id, variation_id = _supplier_int(row[5]), _supplier_int(row[6])
     try:
-        product = banana.resolve_product(product_id, variation_id)
-        if not isinstance(product, dict):
-            raise BananaError("banana_invalid_product_response")
-        _validate_supplier_product(product)
+        line_provider = None
+        refillable = None
+        if plan_type == "supplier_test":
+            product = banana.resolve_product(product_id, variation_id)
+            if not isinstance(product, dict):
+                raise BananaError("banana_invalid_product_response")
+            _validate_supplier_product(product)
+            line_provider = product["partner_provider"]
+            refillable = int(product.get("refillable") is True)
         # A stable request ID is derived from this database order ID, so retries
         # return the same line rather than buying a second eSIM.
         result = banana.create_line(order_id, product_id, variation_id)
@@ -6403,7 +6410,8 @@ def provision_paid_supplier_order(order_id: int) -> bool:
                     supplier_provider_status=?, supplier_remaining_usage_kb=?,
                     supplier_allowed_usage_kb=?, supplier_remaining_days=?, supplier_expire_at=?,
                     supplier_issued_at=?, supplier_last_error='', install_url=?, esim_sent_at=?,
-                    supplier_line_provider=?,supplier_refillable=?
+                    supplier_line_provider=COALESCE(?,supplier_line_provider),
+                    supplier_refillable=COALESCE(?,supplier_refillable)
                 WHERE id=? AND supplier_status!='issued'
                 """,
                 (
@@ -6412,7 +6420,7 @@ def provision_paid_supplier_order(order_id: int) -> bool:
                     sim_card.get("allowed_usage_kb"),
                     sim_card.get("remaining_days"),
                     expire_at, issued_at, install_url, issued_at,
-                    product["partner_provider"], int(product.get("refillable") is True), order_id,
+                    line_provider, refillable, order_id,
                 ),
             )
             db.execute(
