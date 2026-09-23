@@ -5979,7 +5979,8 @@ def refresh_mini_app_esim(telegram_user: Dict[str, Any], order_id: int) -> Dict[
             raise BananaError("banana_invalid_line_response")
         _persist_supplier_details(order_id, sim_card, str(row[0]))
     except BananaError as exc:
-        _notify_admin_throttled(
+        _notify_admin_error(
+            str(exc), "silent_retry",
             f"balance-check:{order_id}:{str(exc)}",
             f"⚠️ Не удалось проверить остаток eSIM заказа #{order_id}\n"
             f"Код: {_format_banana_error(exc)}",
@@ -6042,7 +6043,8 @@ def create_mini_app_topup(telegram_user: Dict[str, Any], parent_order_id: int,
         if not _supplier_line_allows_topup(sim_card):
             raise BananaError("banana_refill_line_blocked")
     except BananaError as exc:
-        _notify_admin_throttled(
+        _notify_admin_error(
+            str(exc), "silent_retry",
             f"topup-product:{option['product_id']}:{option['variation_id']}:{str(exc)}",
             f"⚠️ Пакет пополнения Banana недоступен до оплаты\n"
             f"Код: {_format_banana_error(exc)}",
@@ -6173,9 +6175,11 @@ def _create_bank_payment_for_order(order_id, user_id, amount, purpose, redirect_
                        ("payment_error" if definitive else "payment_pending",
                         str(exc) if definitive else "UNKNOWN", order_id))
             db.commit()
-        _notify_admin_throttled(f"payment-create:{str(exc)}",
-                               f"⚠️ Не удалось получить ссылку Точки для заказа #{order_id}\n"
-                               f"Код: {_format_tochka_error(exc)}", cooldown=3600)
+        _notify_admin_error(
+            str(exc), "silent_retry", f"payment-create:{str(exc)}",
+            f"⚠️ Не удалось получить ссылку Точки для заказа #{order_id}\n"
+            f"Код: {_format_tochka_error(exc)}", cooldown=3600,
+        )
         if definitive:
             raise ApiError(503, _payment_api_error(exc)) from exc
         return {"order_id": order_id, "payment_url": "", "status": "payment_pending", "payment_status": "UNKNOWN"}
@@ -6229,8 +6233,11 @@ def _sync_bank_payment(order_id, force=False):
     bank_status = str(info.get("status") or "").upper()
     if bank_status == "APPROVED":
         if not _mark_bank_order_paid(order_id, operation_id, info.get("amount")):
-            _notify_admin_throttled(f"payment-mismatch:{order_id}",
-                                   f"⚠️ Заказ #{order_id}: подтверждение банка не совпало с суммой или операцией. Нужна проверка.", cooldown=3600)
+            _notify_admin_error(
+                "payment_mismatch", "critical", f"payment-mismatch:{order_id}",
+                f"⚠️ Заказ #{order_id}: подтверждение банка не совпало с суммой или операцией. Нужна проверка.",
+                cooldown=3600,
+            )
         return
     terminal = bank_status in {"DECLINED", "REJECTED", "CANCELED", "CANCELLED", "EXPIRED", "FAILED", "REFUNDED"}
     with closing(_payment_db()) as db:
@@ -6296,6 +6303,74 @@ def _notify_admin_throttled(alert_key: str, text: str, cooldown: int = 6 * 60 * 
             db.execute("DELETE FROM service_alerts WHERE alert_key=? AND last_sent_at=?", (key, now))
             db.commit()
     return delivered
+
+
+SILENT_RETRY_ERROR_CODES = {
+    "banana_invalid_line_response",
+    "banana_invalid_refill_response",
+    "banana_invalid_request_response",
+    "banana_request_pending",
+    "banana_unavailable",
+    "banana_invalid_response",
+    "tochka_unavailable",
+    "tochka_invalid_response",
+    "tochka_invalid_payment_response",
+    "tochka_payment_lookup_incomplete",
+    "tochka_public_key_unavailable",
+}
+CRITICAL_ADMIN_ERROR_CODES = {
+    "banana_not_configured",
+    "banana_invalid_config",
+    "banana_invalid_site",
+    "banana_http_400",
+    "banana_http_401",
+    "banana_http_403",
+    "banana_http_404",
+    "banana_http_422",
+    "banana_line_mismatch",
+    "banana_missing_installation_data",
+    "supplier_not_configured",
+    "payment_provider_not_configured",
+    "tochka_not_configured",
+    "tochka_http_400",
+    "tochka_http_401",
+    "tochka_http_403",
+    "tochka_http_404",
+    "tochka_http_422",
+    "tochka_customer_ambiguous",
+    "tochka_retailer_ambiguous",
+    "tochka_retailer_unavailable",
+    "tochka_payment_modes_unavailable",
+    "payment_mismatch",
+    "manual_action_required",
+    "permanent_fulfillment_failure",
+}
+
+
+def classify_admin_error(error_code: Any, context: str = "silent_retry") -> str:
+    code = str(error_code or "").strip().lower()
+    if code in SILENT_RETRY_ERROR_CODES or code.startswith(("banana_http_5", "tochka_http_5")):
+        return "silent_retry"
+    if code in CRITICAL_ADMIN_ERROR_CODES or context == "critical":
+        return "critical"
+    return "silent_retry"
+
+
+def should_notify_admin_error(error_code: Any, context: str = "silent_retry") -> bool:
+    return classify_admin_error(error_code, context) == "critical"
+
+
+def _notify_admin_error(error_code: Any, context: str, alert_key: str, text: str,
+                        cooldown: int = 6 * 60 * 60) -> bool:
+    if should_notify_admin_error(error_code, context):
+        return _notify_admin_throttled(alert_key, text, cooldown=cooldown)
+    safe_code = re.sub(r"[^a-zA-Z0-9:_.-]+", "_", str(error_code or "unknown"))[:120]
+    safe_event = re.sub(r"[^a-zA-Z0-9:_.-]+", "_", str(alert_key or "retry"))[:180]
+    print(
+        f"TECHNICAL_ERROR category=silent_retry event={safe_event} code={safe_code}",
+        flush=True,
+    )
+    return False
 
 
 def _valid_checkout_email(value: Any) -> Optional[str]:
@@ -6571,7 +6646,7 @@ def deliver_supplier_order(order_id: int) -> bool:
                    supplier_provider_status, supplier_remaining_usage_kb,
                    supplier_allowed_usage_kb, supplier_remaining_days, install_url,
                    esim_file_id, supplier_delivered_at, supplier_delivery_photo_at,
-                   supplier_delivery_message_at
+                   supplier_delivery_message_at, supplier_delivery_attempts
             FROM orders
             WHERE id=? AND status='paid' AND supplier_status='issued'
               AND COALESCE(order_kind, 'esim')='esim'
@@ -6591,7 +6666,8 @@ def deliver_supplier_order(order_id: int) -> bool:
     install_url, existing_qr_file_id = row[10], row[11]
     if not iccid or not str(lpa_code or "").startswith("LPA:1$") or not install_url:
         _defer_supplier_delivery(order_id, claim)
-        _notify_admin_throttled(
+        _notify_admin_error(
+            "banana_missing_installation_data", "critical",
             f"supplier-delivery-data:{order_id}",
             f"⚠️ eSIM заказа #{order_id} выпущена, но данные установки неполные.",
             cooldown=60 * 60,
@@ -6673,7 +6749,9 @@ def deliver_supplier_order(order_id: int) -> bool:
                 db.commit()
     except Exception as exc:
         _defer_supplier_delivery(order_id, claim)
-        _notify_admin_throttled(
+        delivery_context = "critical" if _supplier_int(row[15]) >= 5 else "silent_retry"
+        _notify_admin_error(
+            f"telegram_delivery_{type(exc).__name__}", delivery_context,
             f"supplier-delivery-telegram:{order_id}:{type(exc).__name__}",
             f"⚠️ eSIM заказа #{order_id} выпущена, но сообщение не доставлено\n"
             f"Код: telegram_delivery_{type(exc).__name__}\n"
@@ -6706,7 +6784,7 @@ def provision_paid_supplier_order(order_id: int) -> bool:
             """
             SELECT user_id, status, country, tariff, plan_type, supplier_product_id,
                    supplier_variation_id, supplier_status, supplier_requested_at,
-                   supplier_request_id, duration_days
+                   supplier_request_id, duration_days, paid_at
             FROM orders WHERE id=? AND COALESCE(order_kind, 'esim')='esim'
             """,
             (order_id,),
@@ -6805,6 +6883,7 @@ def provision_paid_supplier_order(order_id: int) -> bool:
             db.commit()
     except Exception as exc:
         error = _format_banana_error(exc) if isinstance(exc, BananaError) else "supplier_internal_error"
+        error_code = str(exc) if isinstance(exc, BananaError) else "supplier_internal_error"
         with closing(_payment_db()) as db:
             db.execute(
                 """
@@ -6814,10 +6893,13 @@ def provision_paid_supplier_order(order_id: int) -> bool:
                 (error[:300], order_id),
             )
             db.commit()
-        _notify_admin_throttled(
+        paid_at = _supplier_int(row[11])
+        issue_context = "critical" if paid_at and now - paid_at >= 30 * 60 else "silent_retry"
+        _notify_admin_error(
+            error_code, issue_context,
             f"supplier-issue:{order_id}:{error}",
             f"⚠️ Оплата заказа #{order_id} получена, но Banana не выдал eSIM\n"
-            f"Код: {error}\nПовторная проверка выполнится автоматически.",
+            f"Код: {error}\nТребуется ручная проверка.",
             cooldown=60 * 60,
         )
         return False
@@ -6842,9 +6924,13 @@ def _finish_supplier_topup(order_id):
             with closing(_payment_db()) as db:
                 db.execute("UPDATE orders SET topup_balance_refreshed_at=? WHERE id=?", (int(time.time()),order_id))
                 db.commit()
-        except Exception:
-            _notify_admin_throttled(f"topup-balance:{order_id}",
-                f"ℹ️ Пополнение #{order_id} применено. Обновление остатка пока недоступно; повторим проверку.", cooldown=3600)
+        except Exception as exc:
+            error_code = str(exc) if isinstance(exc, BananaError) else type(exc).__name__
+            _notify_admin_error(
+                error_code, "silent_retry", f"topup-balance:{order_id}",
+                f"ℹ️ Пополнение #{order_id} применено. Обновление остатка пока недоступно; повторим проверку.",
+                cooldown=3600,
+            )
     if row[6]:
         return True
     claim = _claim_supplier_delivery(order_id)
@@ -6869,7 +6955,8 @@ def apply_paid_supplier_topup(order_id: int) -> bool:
     with closing(_payment_db()) as db:
         db.execute("BEGIN IMMEDIATE")
         row = db.execute("""SELECT user_id,status,parent_order_id,supplier_iccid,supplier_product_id,
-                            supplier_variation_id,supplier_status,supplier_requested_at,topup_mb,topup_days
+                            supplier_variation_id,supplier_status,supplier_requested_at,topup_mb,topup_days,
+                            paid_at
                             FROM orders WHERE id=? AND order_kind='topup'""", (order_id,)).fetchone()
         if not row or row[1] != "paid" or not row[3] or _supplier_item_id(row[4], row[5]) <= 0:
             return False
@@ -6897,8 +6984,14 @@ def apply_paid_supplier_topup(order_id: int) -> bool:
         with closing(_payment_db()) as db:
             db.execute("UPDATE orders SET supplier_status='error',supplier_last_error=? WHERE id=? AND supplier_status!='issued'", (error[:300],order_id))
             db.commit()
-        _notify_admin_throttled(f"supplier-topup:{order_id}:{str(exc)}",
-            f"⚠️ Не получено подтверждение пополнения #{order_id}. Код: {error}. Повторим с тем же ID запроса.", cooldown=3600)
+        paid_at = _supplier_int(row[10])
+        topup_context = "critical" if paid_at and now - paid_at >= 30 * 60 else "silent_retry"
+        _notify_admin_error(
+            str(exc) if isinstance(exc, BananaError) else type(exc).__name__, topup_context,
+            f"supplier-topup:{order_id}:{str(exc)}",
+            f"⚠️ Не получено подтверждение пополнения #{order_id}. Код: {error}. Требуется ручная проверка.",
+            cooldown=3600,
+        )
         return False
     return _finish_supplier_topup(order_id)
 
@@ -7082,7 +7175,13 @@ def accept_tochka_webhook(raw_token: str) -> None:
 
 
 def tochka_setup_worker() -> None:
-    if not TOCHKA_PAYMENTS_ENABLED or not tochka.configured:
+    if not TOCHKA_PAYMENTS_ENABLED:
+        return
+    if not tochka.configured:
+        _notify_admin_error(
+            "payment_provider_not_configured", "critical", "tochka-not-configured",
+            "⚠️ API оплаты Точки не настроен\nПроверьте обязательные переменные Точки в Railway.",
+        )
         return
     time.sleep(20)
     api_failure_notified = False
@@ -7093,16 +7192,17 @@ def tochka_setup_worker() -> None:
             break
         except TochkaError as exc:
             if not api_failure_notified:
-                _notify_admin_throttled(
+                api_failure_notified = _notify_admin_error(
+                    str(exc), "silent_retry",
                     f"tochka-setup:{str(exc)}",
                     "⚠️ API оплаты Точки недоступен\n"
                     f"Код: {_format_tochka_error(exc)}",
                 )
-                api_failure_notified = True
             time.sleep(5 * 60)
 
     if not TOCHKA_WEBHOOK_URL:
-        _notify_admin_throttled(
+        _notify_admin_error(
+            "tochka_webhook_domain_missing", "silent_retry",
             "tochka-webhook-domain-missing",
             "⚠️ Для мгновенного подтверждения оплат нужен публичный домен сервиса esim-bot в Railway. "
             "Пока включена автоматическая проверка оплат через API раз в минуту.",
@@ -7119,20 +7219,45 @@ def tochka_setup_worker() -> None:
                 str(exc) == "tochka_http_400"
                 and "Failed to test webhook url accessibility" in (getattr(exc, "detail", "") or "")
             ):
-                _notify_admin_throttled(
+                _notify_admin_error(
+                    str(exc), "silent_retry",
                     "tochka-webhook-inaccessible",
                     "ℹ️ Точка не может открыть webhook на Railway. "
                     "Включена автоматическая проверка оплат через API раз в минуту.",
                 )
                 return
             if not webhook_failure_notified:
-                _notify_admin_throttled(
+                webhook_failure_notified = _notify_admin_error(
+                    str(exc), "silent_retry",
                     f"tochka-webhook:{str(exc)}",
                     "⚠️ Не удалось подключить уведомления Точки\n"
                     f"Код: {_format_tochka_error(exc)}",
                 )
-                webhook_failure_notified = True
             time.sleep(60)
+
+
+def reconcile_pending_payments_once(now: Optional[int] = None) -> None:
+    now = now or int(time.time())
+    with closing(_payment_db()) as db:
+        # Fair scheduling: an unavailable/CREATED payment cannot starve
+        # newer paid orders. Never infer EXPIRED from the local clock.
+        rows = db.execute("""
+            SELECT id FROM orders WHERE payment_provider='tochka' AND (
+              (status='payment_pending' AND COALESCE(payment_last_checked_at,0)<=?)
+              OR (status IN ('payment_failed','payment_error') AND created_at>=?
+                  AND COALESCE(payment_last_checked_at,0)<=?))
+            ORDER BY COALESCE(payment_last_checked_at,0),id LIMIT 20
+        """, (now-60, now-30*86400, now-3600)).fetchall()
+    for (order_id,) in rows:
+        try:
+            _sync_bank_payment(order_id)
+        except Exception as exc:
+            code = str(exc) if isinstance(exc, TochkaError) else type(exc).__name__
+            _notify_admin_error(
+                code, "silent_retry", f"tochka-reconciliation:{code}",
+                f"⚠️ Не удалось проверить оплату заказа #{order_id}. Код: {code}. Проверка продолжится.",
+                cooldown=3600,
+            )
 
 
 def tochka_payment_reconciliation_worker() -> None:
@@ -7141,25 +7266,7 @@ def tochka_payment_reconciliation_worker() -> None:
     time.sleep(10)
     while True:
         try:
-            now = int(time.time())
-            with closing(_payment_db()) as db:
-                # Fair scheduling: an unavailable/CREATED payment cannot starve
-                # newer paid orders. Never infer EXPIRED from the local clock.
-                rows = db.execute("""
-                    SELECT id FROM orders WHERE payment_provider='tochka' AND (
-                      (status='payment_pending' AND COALESCE(payment_last_checked_at,0)<=?)
-                      OR (status IN ('payment_failed','payment_error') AND created_at>=?
-                          AND COALESCE(payment_last_checked_at,0)<=?))
-                    ORDER BY COALESCE(payment_last_checked_at,0),id LIMIT 20
-                """, (now-60, now-30*86400, now-3600)).fetchall()
-            for (order_id,) in rows:
-                try:
-                    _sync_bank_payment(order_id)
-                except Exception as exc:
-                    code = str(exc) if isinstance(exc, TochkaError) else type(exc).__name__
-                    _notify_admin_throttled(f"tochka-reconciliation:{code}",
-                        f"⚠️ Не удалось проверить оплату заказа #{order_id}. Код: {code}. Проверка продолжится.",
-                        cooldown=3600)
+            reconcile_pending_payments_once()
         except Exception:
             pass
         time.sleep(60)
@@ -7193,7 +7300,8 @@ def supplier_fulfillment_worker() -> None:
                     else:
                         provision_paid_supplier_order(order_id)
                 except Exception as exc:
-                    _notify_admin_throttled(f"supplier-worker:{order_id}:{type(exc).__name__}",
+                    _notify_admin_error(type(exc).__name__, "silent_retry",
+                                           f"supplier-worker:{order_id}:{type(exc).__name__}",
                                            f"⚠️ Ошибка обработки eSIM #{order_id}. Проверка продолжится.", cooldown=3600)
         except Exception:
             pass
@@ -7202,7 +7310,8 @@ def supplier_fulfillment_worker() -> None:
 
 def banana_setup_worker() -> None:
     if not banana.configured:
-        _notify_admin_throttled(
+        _notify_admin_error(
+            "banana_not_configured", "critical",
             "banana-not-configured",
             "⚠️ API поставщика Banana не настроен\n"
             "Добавьте BANANA_PARTNER_KEY в Railway для сервиса esim-bot.",
@@ -7212,7 +7321,8 @@ def banana_setup_worker() -> None:
     try:
         banana.health()
     except BananaError as exc:
-        _notify_admin_throttled(
+        _notify_admin_error(
+            str(exc), "silent_retry",
             f"banana-setup:{str(exc)}",
             "⚠️ API поставщика Banana недоступен\n"
             f"Код: {_format_banana_error(exc)}",

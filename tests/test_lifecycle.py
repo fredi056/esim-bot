@@ -63,6 +63,23 @@ class LifecycleTest(unittest.TestCase):
         self.ns.update(__file__=str(ROOT/'bot.py'), ADMIN_ID=99, REF_BONUS=100,
                        DEFAULT_PARTNER_RATE=20, ADMIN_ESIM_15M_DELAY=900, TOCHKA_PAYMENTS_ENABLED=True,
                        PROMO_CODES={'lime10':10,'lime20':20,'lime99':99},
+                       SILENT_RETRY_ERROR_CODES={
+                           'banana_invalid_line_response','banana_invalid_refill_response',
+                           'banana_invalid_request_response','banana_request_pending','banana_unavailable',
+                           'banana_invalid_response','tochka_unavailable','tochka_invalid_response',
+                           'tochka_invalid_payment_response','tochka_payment_lookup_incomplete',
+                           'tochka_public_key_unavailable',
+                       },
+                       CRITICAL_ADMIN_ERROR_CODES={
+                           'banana_not_configured','banana_invalid_config','banana_invalid_site',
+                           'banana_http_400','banana_http_401','banana_http_403','banana_http_404',
+                           'banana_http_422','banana_line_mismatch','banana_missing_installation_data',
+                           'supplier_not_configured','payment_provider_not_configured','tochka_not_configured',
+                           'tochka_http_400','tochka_http_401','tochka_http_403','tochka_http_404',
+                           'tochka_http_422','tochka_customer_ambiguous','tochka_retailer_ambiguous',
+                           'tochka_retailer_unavailable','tochka_payment_modes_unavailable',
+                           'payment_mismatch','manual_action_required','permanent_fulfillment_failure',
+                       },
                        DB_PATH=self.uri, MINI_APP_URL='https://example.com',
                        AVITO_SOURCE_CODE='avito_manual',AVITO_TOKEN_PREFIX='avito_',
                        AVITO_LINK_TTL_SECONDS=7*24*60*60,AVITO_TOKEN_BYTES=24)
@@ -483,6 +500,60 @@ ICCID: {iccid}"""
         result=self.call('read_mini_app_payment',{'id':1},oid)
         self.assertEqual(result['status'],'payment_pending')
         self.assertEqual(self.value(oid,'status'),'payment_pending')
+
+    def test_invalid_line_balance_refresh_does_not_notify_admin(self):
+        self.assertFalse(self.call('should_notify_admin_error','banana_invalid_line_response','critical'))
+        oid=self.issued()
+        self.supplier.get_details.return_value={}
+        with self.assertRaises(ApiError) as caught:
+            self.call('refresh_mini_app_esim',{'id':1},oid)
+        self.assertEqual(caught.exception.code,'balance_check_unavailable')
+        self.ns['_notify_admin_throttled'].assert_not_called()
+
+    def test_invalid_refill_response_does_not_notify_admin(self):
+        self.assertFalse(self.call('should_notify_admin_error','banana_invalid_refill_response','critical'))
+        parent=self.issued()
+        oid=self.order(status='paid',order_kind='topup',parent_order_id=parent,
+                       supplier_status='',supplier_iccid='8985201234567890123')
+        self.supplier.refill.side_effect=BananaError('banana_invalid_refill_response')
+        self.assertFalse(self.call('apply_paid_supplier_topup',oid))
+        self.assertEqual(self.value(oid,'supplier_last_error'),'banana_invalid_refill_response')
+        self.ns['_notify_admin_throttled'].assert_not_called()
+
+    def test_supplier_retry_error_does_not_notify_admin(self):
+        oid=self.order(status='paid',supplier_status='error',supplier_requested_at=0)
+        self.supplier.create_line.side_effect=BananaError('banana_unavailable')
+        self.assertFalse(self.call('provision_paid_supplier_order',oid))
+        self.assertEqual(self.value(oid,'supplier_last_error'),'banana_unavailable')
+        self.ns['_notify_admin_throttled'].assert_not_called()
+
+    def test_temporary_tochka_reconciliation_error_does_not_notify_admin(self):
+        self.order(payment_last_checked_at=0)
+        self.bank.get_payment.side_effect=TochkaError('tochka_unavailable')
+        self.call('reconcile_pending_payments_once',int(time.time()))
+        self.ns['_notify_admin_throttled'].assert_not_called()
+
+    def test_missing_banana_configuration_still_notifies_admin(self):
+        self.supplier.configured=False
+        self.call('banana_setup_worker')
+        self.ns['_notify_admin_throttled'].assert_called_once()
+        self.assertEqual(self.ns['_notify_admin_throttled'].call_args.args[0],'banana-not-configured')
+
+    def test_missing_payment_configuration_still_notifies_admin(self):
+        self.bank.configured=False
+        self.call('tochka_setup_worker')
+        self.ns['_notify_admin_throttled'].assert_called_once()
+        self.assertEqual(self.ns['_notify_admin_throttled'].call_args.args[0],'tochka-not-configured')
+
+    def test_successful_payment_still_queues_admin_notification(self):
+        oid=self.order()
+        self.assertTrue(self.call('_mark_bank_order_paid',oid,'op1',920))
+        row=self.db.execute(
+            'SELECT body FROM payment_notifications WHERE order_id=? AND recipient_id=?',
+            (oid,99),
+        ).fetchone()
+        self.assertIsNotNone(row)
+        self.assertIn('Оплата через Точку подтверждена',row[0])
 
     def test_startup_cancels_only_obsolete_paid_test_orders(self):
         for order_id in (41,42):
