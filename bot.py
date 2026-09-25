@@ -27,6 +27,7 @@ ADMIN_ID_RAW = os.getenv("ADMIN_ID")
 MINI_APP_URL = os.getenv("MINI_APP_URL", "").strip()
 AVITO_REVIEW_URL = os.getenv("AVITO_REVIEW_URL", "").strip()
 TOCHKA_PAYMENTS_ENABLED = os.getenv("TOCHKA_PAYMENTS_ENABLED", "true").strip().lower() in ("1", "true", "yes")
+SALES_PAUSED = True
 RAILWAY_PUBLIC_DOMAIN = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip().strip("/")
 TOCHKA_WEBHOOK_URL = os.getenv("TOCHKA_WEBHOOK_URL", "").strip()
 if not TOCHKA_WEBHOOK_URL and RAILWAY_PUBLIC_DOMAIN:
@@ -1069,6 +1070,30 @@ def claim_external_sale(token: str, message) -> Dict[str, Any]:
     finally:
         db_conn.close()
 
+def sales_are_paused() -> bool:
+    """Temporary production switch. Existing eSIM/account functions stay online."""
+    return bool(globals().get("SALES_PAUSED", False))
+
+
+def sales_paused_keyboard():
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(types.InlineKeyboardButton(
+        "💳 Мои eSIM и остаток", url="https://t.me/esimlimebot?startapp=account"
+    ))
+    kb.add(types.InlineKeyboardButton("💬 Поддержка", url=SUPPORT_URL))
+    return kb
+
+
+def send_sales_paused_message(chat_id: int, user_id: Optional[int] = None) -> None:
+    bot.send_message(
+        chat_id,
+        "⏸ Новые продажи временно приостановлены\n\n"
+        "Купить новую eSIM или пополнить действующую сейчас нельзя.\n\n"
+        "Проверка остатка и данные уже купленных eSIM продолжают работать.",
+        reply_markup=sales_paused_keyboard(),
+    )
+
+
 def external_sale_open_keyboard(label: str = "🌍 Открыть eSIMLime"):
     kb = types.InlineKeyboardMarkup()
     if MINI_APP_URL:
@@ -1082,9 +1107,9 @@ def external_sale_customer_keyboard():
     kb.add(types.InlineKeyboardButton(
         "💳 Мои eSIM и остаток", url="https://t.me/esimlimebot?startapp=account"
     ))
-    if MINI_APP_URL:
+    if MINI_APP_URL and not sales_are_paused():
         kb.add(types.InlineKeyboardButton("🌍 Выбрать eSIM", web_app=types.WebAppInfo(url=MINI_APP_URL)))
-    else:
+    elif not sales_are_paused():
         kb.add(types.InlineKeyboardButton("🌍 Выбрать eSIM", callback_data="visitor_catalog"))
     kb.add(types.InlineKeyboardButton("📱 Установка eSIM", callback_data="avito_install"))
     kb.add(types.InlineKeyboardButton("💬 Поддержка", url=SUPPORT_URL))
@@ -1743,8 +1768,9 @@ def mini_app_receipt_keyboard():
 def main_keyboard(user_id: Optional[int] = None):
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     if MINI_APP_URL:
-        kb.add("🚀 Открыть eSIMLime")
-        kb.add("🎁 Пригласить друга — 100 ₽")
+        kb.add("💳 Мои eSIM и остаток" if sales_are_paused() else "🚀 Открыть eSIMLime")
+        if not sales_are_paused():
+            kb.add("🎁 Пригласить друга — 100 ₽")
         if user_id == ADMIN_ID:
             kb.add("📊 Статистика", "📦 Заказы")
             kb.add("👥 Пользователи")
@@ -1928,6 +1954,9 @@ def process_order_selection(
     show_payment_message: bool = True,
     promo_code: Any = "",
 ) -> None:
+    if sales_are_paused():
+        send_sales_paused_message(chat_id, user_id)
+        return
     if country == "Russia":
         show_russia_discontinued(chat_id, user_id)
         return
@@ -2118,6 +2147,9 @@ def process_unlimited_order_selection(
     show_payment_message: bool = False,
     promo_code: Any = "",
 ) -> None:
+    if sales_are_paused():
+        send_sales_paused_message(chat_id, user_id)
+        return
     country = order["country"]
     tariff = order["tariff"]
     price = int(order["price"])
@@ -3107,7 +3139,14 @@ def show_main(chat_id: int, user_id: int, add_to_history: bool = True):
     if add_to_history:
         reset_to_main(user_id)
 
-    if MINI_APP_URL:
+    if sales_are_paused():
+        text = (
+            "⏸ Новые продажи временно приостановлены\n\n"
+            "Сейчас нельзя купить новую eSIM или пополнить действующую.\n\n"
+            "Если eSIM уже куплена, откройте раздел «Мои eSIM»: проверка остатка, "
+            "данные для установки и инструкции продолжают работать."
+        )
+    elif MINI_APP_URL:
         text = (
             "🌍 eSIMLime\n\n"
             "Интернет для путешествий без дорогого роуминга.\n\n"
@@ -3130,10 +3169,19 @@ def show_main(chat_id: int, user_id: int, add_to_history: bool = True):
     bot.send_message(chat_id, text, reply_markup=main_keyboard(user_id))
     if MINI_APP_URL:
         cabinet_keyboard = types.InlineKeyboardMarkup(row_width=1)
-        cabinet_keyboard.add(types.InlineKeyboardButton(
-            "🚀 Открыть eSIMLime", web_app=types.WebAppInfo(url=MINI_APP_URL)
-        ))
-        bot.send_message(chat_id, "Каталог, ваши eSIM, установка и бонусы:", reply_markup=cabinet_keyboard)
+        if sales_are_paused():
+            cabinet_keyboard.add(types.InlineKeyboardButton(
+                "💳 Мои eSIM и остаток", url="https://t.me/esimlimebot?startapp=account"
+            ))
+        else:
+            cabinet_keyboard.add(types.InlineKeyboardButton(
+                "🚀 Открыть eSIMLime", web_app=types.WebAppInfo(url=MINI_APP_URL)
+            ))
+        bot.send_message(
+            chat_id,
+            "Действующие eSIM и проверка остатка:" if sales_are_paused() else "Каталог, ваши eSIM, установка и бонусы:",
+            reply_markup=cabinet_keyboard,
+        )
 
 def show_referral_link_screen(chat_id: int, user_id: int, add_to_history: bool = True):
     search_mode[user_id] = False
@@ -4739,6 +4787,10 @@ def admin_send_esim_message(message):
 def web_app_data_handler(message):
     remember_user_from_message(message)
 
+    if sales_are_paused():
+        send_sales_paused_message(message.chat.id, message.from_user.id)
+        return
+
     error_text = "Не удалось обработать выбранный тариф. Откройте Mini App и попробуйте ещё раз."
 
     try:
@@ -4825,12 +4877,18 @@ def text_handler(message):
 
     remember_user_from_message(message)
 
-    if text == "🚀 Открыть eSIMLime" and MINI_APP_URL:
+    if text in ("🚀 Открыть eSIMLime", "💳 Мои eSIM и остаток") and MINI_APP_URL:
         launch = types.InlineKeyboardMarkup()
-        launch.add(types.InlineKeyboardButton(
-            "🚀 Открыть eSIMLime", web_app=types.WebAppInfo(url=MINI_APP_URL)
-        ))
-        bot.send_message(chat_id, "Откройте каталог и ваши eSIM:", reply_markup=launch)
+        if sales_are_paused():
+            launch.add(types.InlineKeyboardButton(
+                "💳 Мои eSIM и остаток", url="https://t.me/esimlimebot?startapp=account"
+            ))
+            bot.send_message(chat_id, "Откройте действующие eSIM и проверьте остаток:", reply_markup=launch)
+        else:
+            launch.add(types.InlineKeyboardButton(
+                "🚀 Открыть eSIMLime", web_app=types.WebAppInfo(url=MINI_APP_URL)
+            ))
+            bot.send_message(chat_id, "Откройте каталог и ваши eSIM:", reply_markup=launch)
         return
 
     if text in ("🏠 В начало", "🏠 Главное меню"):
@@ -4884,6 +4942,10 @@ def text_handler(message):
         return
 
     if user_id in selection_mode:
+        if sales_are_paused():
+            selection_mode.pop(user_id, None)
+            send_sales_paused_message(chat_id, user_id)
+            return
         state = selection_mode[user_id]
         step = state.get("step")
 
@@ -4918,10 +4980,16 @@ def text_handler(message):
             return
 
     if text == "✈️ eSIM для путешествий":
+        if sales_are_paused():
+            send_sales_paused_message(chat_id, user_id)
+            return
         show_travel_home(chat_id, user_id, add_to_history=True)
         return
 
     if text == "⚡ Подобрать eSIM":
+        if sales_are_paused():
+            send_sales_paused_message(chat_id, user_id)
+            return
         start_selection(chat_id, user_id)
         return
 
@@ -5003,11 +5071,18 @@ def text_handler(message):
 
     selected_country = normalize_country_text(text)
     if selected_country:
+        if sales_are_paused():
+            send_sales_paused_message(chat_id, user_id)
+            return
         search_mode[user_id] = False
         show_country(chat_id, user_id, selected_country, add_to_history=True)
         return
 
     if search_mode.get(user_id):
+        if sales_are_paused():
+            search_mode[user_id] = False
+            send_sales_paused_message(chat_id, user_id)
+            return
         q = text.lower()
         matches = [country for country in COUNTRY_PRICES.keys() if q in country.lower()]
         if not matches:
@@ -5026,6 +5101,9 @@ def text_handler(message):
         return
 
     if "—" in text and "₽" in text:
+        if sales_are_paused():
+            send_sales_paused_message(chat_id, user_id)
+            return
         displayed_price = parse_price_from_order_text(text)
         if displayed_price is None:
             bot.send_message(chat_id, "Не удалось определить цену.", reply_markup=main_keyboard(user_id))
@@ -5244,6 +5322,9 @@ def callback_handler(call):
 
     if data == "visitor_catalog":
         bot.answer_callback_query(call.id)
+        if sales_are_paused():
+            send_sales_paused_message(call.message.chat.id, call.from_user.id)
+            return
         show_travel_home(call.message.chat.id, call.from_user.id, add_to_history=True)
         return
 
@@ -5845,11 +5926,12 @@ def read_mini_app_account(telegram_user: Dict[str, Any]) -> Dict[str, Any]:
         SUPPORT_URL,
     )
     result["profile"]["is_admin"] = telegram_user["id"] == ADMIN_ID
-    with closing(_payment_db()) as db:
-        for esim in result["esims"]:
-            options = _topup_options_for_order(db, telegram_user["id"], esim["id"])
-            esim["top_up_options"] = options
-            esim["can_top_up"] = bool(options and esim.get("iccid") and esim.get("status") == "issued")
+    if not sales_are_paused():
+        with closing(_payment_db()) as db:
+            for esim in result["esims"]:
+                options = _topup_options_for_order(db, telegram_user["id"], esim["id"])
+                esim["top_up_options"] = options
+                esim["can_top_up"] = bool(options and esim.get("iccid") and esim.get("status") == "issued")
     return result
 
 
@@ -5992,6 +6074,8 @@ def refresh_mini_app_esim(telegram_user: Dict[str, Any], order_id: int) -> Dict[
 
 def create_mini_app_topup(telegram_user: Dict[str, Any], parent_order_id: int,
                           body: Dict[str, Any]) -> Dict[str, Any]:
+    if sales_are_paused():
+        raise ApiError(503, "sales_paused")
     if not TOCHKA_PAYMENTS_ENABLED or not tochka.configured:
         raise ApiError(503, "payments_not_configured")
     if not banana.configured:
@@ -6471,6 +6555,8 @@ def _format_banana_error(exc: BananaError) -> str:
 
 
 def create_mini_app_payment(telegram_user: Dict[str, Any], body: Dict[str, Any]) -> Dict[str, Any]:
+    if sales_are_paused():
+        raise ApiError(503, "sales_paused")
     if not TOCHKA_PAYMENTS_ENABLED:
         raise ApiError(503, "payments_not_enabled")
     if not tochka.configured:
@@ -7345,11 +7431,11 @@ start_account_api(
     TOKEN,
     read_mini_app_account,
     read_mini_app_esim_image,
-    create_mini_app_payment,
+    None if sales_are_paused() else create_mini_app_payment,
     read_mini_app_payment,
     accept_tochka_webhook,
     refresh_mini_app_esim,
-    create_mini_app_topup,
+    None if sales_are_paused() else create_mini_app_topup,
 )
 threading.Thread(target=payment_notification_worker, daemon=True, name="payment-notifications").start()
 threading.Thread(target=tochka_setup_worker, daemon=True, name="tochka-setup").start()
