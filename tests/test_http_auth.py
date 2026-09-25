@@ -20,7 +20,8 @@ class HttpAuthTest(unittest.TestCase):
         self.webhooks = []
         def create(user, body):
             self.created.append(user['id'])
-            return {'order_id':7,'status':'payment_pending','payment_status':'CREATED','payment_url':'https://bank.example/pay'}
+            return {'order_id':7,'status':'awaiting_receipt','payment_provider':'manual_sbp',
+                    'pay_amount':920,'order_kind':'esim'}
         def webhook(body):
             self.webhooks.append(body)
             raise ApiError(503, 'temporary_database_failure')
@@ -54,7 +55,8 @@ class HttpAuthTest(unittest.TestCase):
     def test_signed_telegram_session_can_create_checkout(self):
         status,result=self.post({'init_data':self.signed()})
         self.assertEqual(status,200)
-        self.assertEqual(result['payment_url'],'https://bank.example/pay')
+        self.assertEqual(result['payment_provider'],'manual_sbp')
+        self.assertEqual(result['status'],'awaiting_receipt')
         self.assertEqual(self.created,[123])
 
     def test_missing_or_unsafe_telegram_data_cannot_create_payment(self):

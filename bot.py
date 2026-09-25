@@ -6174,6 +6174,26 @@ def refresh_mini_app_esim(telegram_user: Dict[str, Any], order_id: int) -> Dict[
     return {"account": read_mini_app_account(telegram_user)}
 
 
+def _send_manual_topup_confirmation(
+    user_id: int, order_id: int, country: str, tariff: str, pay_amount: int
+) -> None:
+    try:
+        bot.send_message(
+            user_id,
+            f"✅ Пополнение №{order_id} создано\n\n"
+            f"eSIM: {country}\n"
+            f"Пакет: {tariff}\n"
+            f"К оплате: {pay_amount} ₽\n\n"
+            "Теперь отправьте сюда скриншот или фотографию чека одним сообщением.",
+            reply_markup=mini_app_receipt_keyboard(),
+        )
+    except Exception as exc:
+        print(
+            f"MANUAL_TOPUP_CONFIRMATION_FAILED order_id={order_id} error={type(exc).__name__}",
+            flush=True,
+        )
+
+
 def create_mini_app_topup(telegram_user: Dict[str, Any], parent_order_id: int,
                           body: Dict[str, Any]) -> Dict[str, Any]:
     if sales_are_paused():
@@ -6205,6 +6225,8 @@ def create_mini_app_topup(telegram_user: Dict[str, Any], parent_order_id: int,
     option = _supplier_catalog_option(parent[0], body.get("option_id"))
     if not option:
         raise ApiError(409, "topup_option_changed")
+    label = _format_topup_volume(option["refill_mb"])
+    tariff = f"Пополнение {label} / {option['refill_days']} дн."
     with closing(_payment_db()) as lookup_db:
         duplicate = lookup_db.execute(
             """
@@ -6217,6 +6239,7 @@ def create_mini_app_topup(telegram_user: Dict[str, Any], parent_order_id: int,
             (user_id, parent_order_id, option["product_id"], option["variation_id"], option["refill_days"]),
         ).fetchone()
     if duplicate:
+        _send_manual_topup_confirmation(user_id, duplicate[0], parent[0], tariff, duplicate[1])
         return _manual_payment_response(duplicate[0], duplicate[1], "topup")
     try:
         details = banana.get_details(parent[1])
@@ -6261,9 +6284,8 @@ def create_mini_app_topup(telegram_user: Dict[str, Any], parent_order_id: int,
         ).fetchone()
         if duplicate:
             db.commit()
+            _send_manual_topup_confirmation(user_id, duplicate[0], parent[0], tariff, duplicate[1])
             return _manual_payment_response(duplicate[0], duplicate[1], "topup")
-        label = _format_topup_volume(option["refill_mb"])
-        tariff = f"Пополнение {label} / {option['refill_days']} дн."
         text = f"{current_parent[0]} | {tariff} — {option['price']}₽"
         db.execute(
             """
@@ -6292,6 +6314,7 @@ def create_mini_app_topup(telegram_user: Dict[str, Any], parent_order_id: int,
 
     schedule_reminder(user_id, order_id, "payment_30m", now + 30 * 60)
     schedule_reminder(user_id, order_id, "payment_24h", now + 24 * 60 * 60)
+    _send_manual_topup_confirmation(user_id, order_id, parent[0], tariff, option["price"])
     return _manual_payment_response(order_id, option["price"], "topup")
 
 
@@ -6660,7 +6683,29 @@ def _format_banana_error(exc: BananaError) -> str:
     return f"{str(exc)}{f' — {detail}' if detail else ''}"[:450]
 
 
-def create_mini_app_payment(telegram_user: Dict[str, Any], body: Dict[str, Any]) -> Dict[str, Any]:
+def _send_manual_order_confirmation(
+    user_id: int, order_id: int, order: Dict[str, Any], pay_amount: int
+) -> None:
+    try:
+        bot.send_message(
+            user_id,
+            f"✅ Заказ №{order_id} создан\n\n"
+            f"Страна: {order['country']}\n"
+            f"Тариф: {order['tariff']}\n"
+            f"К оплате: {pay_amount} ₽\n\n"
+            "Отправьте сюда фотографию или скриншот чека одним сообщением.",
+            reply_markup=mini_app_receipt_keyboard(),
+        )
+    except Exception as exc:
+        print(
+            f"MANUAL_ORDER_CONFIRMATION_FAILED order_id={order_id} error={type(exc).__name__}",
+            flush=True,
+        )
+
+
+def create_mini_app_manual_sbp_order(
+    telegram_user: Dict[str, Any], body: Dict[str, Any]
+) -> Dict[str, Any]:
     if sales_are_paused():
         raise ApiError(503, "sales_paused")
     email_value = body.get("customer_email")
@@ -6697,35 +6742,28 @@ def create_mini_app_payment(telegram_user: Dict[str, Any], body: Dict[str, Any])
             "INSERT OR IGNORE INTO users (user_id, balance, ref, username, first_name) VALUES (?, 0, NULL, ?, ?)",
             (user_id, telegram_user.get("username", ""), telegram_user.get("first_name", ""))
         )
-        recent_paid = db.execute(
-            """
-            SELECT id FROM orders
-            WHERE user_id=? AND country=? AND tariff=? AND status='paid'
-              AND payment_provider='manual_sbp' AND COALESCE(promo_code,'')=?
-              AND pay_amount=? AND created_at>=?
-            ORDER BY id DESC LIMIT 1
-            """,
-            (
-                user_id, order["country"], order["tariff"], promo["promo_code"],
-                pay_amount, now - 30 * 60,
-            ),
-        ).fetchone()
-        if recent_paid:
-            db.commit()
-            return {"order_id": recent_paid[0], "status": "paid", "payment_provider": "manual_sbp"}
         duplicate = db.execute(
             """
             SELECT id, pay_amount FROM orders
             WHERE user_id=? AND country=? AND tariff=? AND status='awaiting_receipt'
               AND payment_provider='manual_sbp' AND COALESCE(order_kind,'esim')='esim'
               AND COALESCE(promo_code,'')=? AND pay_amount=?
+              AND created_at>=?
+              AND (? != 'unlimited' OR (
+                    plan_type='unlimited' AND supplier_key=? AND duration_days=?
+                  ))
             ORDER BY id DESC LIMIT 1
             """,
-            (user_id, order["country"], order["tariff"], promo["promo_code"], pay_amount)
+            (
+                user_id, order["country"], order["tariff"], promo["promo_code"], pay_amount,
+                now - 10 * 60, order["plan_type"], order["unlimited_key"], order["days"],
+            ),
         ).fetchone()
         if duplicate:
             db.commit()
-            return _manual_payment_response(duplicate[0], duplicate[1], "esim")
+            response = _manual_payment_response(duplicate[0], duplicate[1], "esim")
+            _send_manual_order_confirmation(user_id, duplicate[0], order, duplicate[1])
+            return response
 
         user_row = db.execute(
             "SELECT COALESCE(first_source, '') FROM users WHERE user_id=?",
@@ -6767,7 +6805,131 @@ def create_mini_app_payment(telegram_user: Dict[str, Any], body: Dict[str, Any])
 
     schedule_reminder(user_id, order_id, "payment_30m", now + 30 * 60)
     schedule_reminder(user_id, order_id, "payment_24h", now + 24 * 60 * 60)
+    _send_manual_order_confirmation(user_id, order_id, order, pay_amount)
     return _manual_payment_response(order_id, pay_amount, "esim")
+
+
+def create_mini_app_payment(telegram_user: Dict[str, Any], body: Dict[str, Any]) -> Dict[str, Any]:
+    """Legacy Tochka checkout kept for a possible future bank-payment return."""
+    if sales_are_paused():
+        raise ApiError(503, "sales_paused")
+    if not TOCHKA_PAYMENTS_ENABLED:
+        raise ApiError(503, "payments_not_enabled")
+    if not tochka.configured:
+        raise ApiError(503, "payments_not_configured")
+    email_value = body.get("customer_email")
+    email = _valid_checkout_email(email_value) if email_value not in (None, "") else ""
+    legal = body.get("legal_acceptance")
+    if (email_value not in (None, "") and not email) or not isinstance(legal, dict):
+        raise ApiError(400, "invalid_checkout_data")
+    if not all(isinstance(legal.get(key), str) and legal[key] for key in (
+        "offer_version", "personal_data_consent_version", "accepted_at"
+    )):
+        raise ApiError(400, "legal_acceptance_required")
+    user_id = telegram_user["id"]
+    order = _validated_api_order(body, user_id)
+    if not order:
+        raise ApiError(409, "tariff_changed")
+    try:
+        promo = calculate_promo_discount(order["price"], body.get("promo_code", ""))
+    except ValueError as exc:
+        raise ApiError(400, "invalid_promo_code") from exc
+    pay_amount = promo["final_price"]
+    if _supplier_item_id(order["supplier_product_id"], order["supplier_variation_id"]) <= 0:
+        raise ApiError(503, "supplier_product_unavailable")
+    if not banana.configured:
+        raise ApiError(503, "supplier_unavailable")
+
+    now = int(time.time())
+    db = _payment_db()
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        db.execute(
+            "INSERT OR IGNORE INTO users (user_id, balance, ref, username, first_name) VALUES (?, 0, NULL, ?, ?)",
+            (user_id, telegram_user.get("username", ""), telegram_user.get("first_name", ""))
+        )
+        recent_paid = db.execute(
+            """
+            SELECT id FROM orders
+            WHERE user_id=? AND country=? AND tariff=? AND status='paid'
+              AND payment_provider='tochka' AND COALESCE(promo_code,'')=?
+              AND pay_amount=? AND created_at>=?
+            ORDER BY id DESC LIMIT 1
+            """,
+            (
+                user_id, order["country"], order["tariff"], promo["promo_code"],
+                pay_amount, now - 30 * 60,
+            ),
+        ).fetchone()
+        if recent_paid:
+            db.commit()
+            return {"order_id": recent_paid[0], "payment_url": "", "status": "paid"}
+        duplicate = db.execute(
+            """
+            SELECT id, payment_url, payment_status, status FROM orders
+            WHERE user_id=? AND country=? AND tariff=? AND status='payment_pending'
+              AND payment_provider='tochka' AND COALESCE(order_kind,'esim')='esim'
+              AND COALESCE(promo_code,'')=? AND pay_amount=?
+            ORDER BY id DESC LIMIT 1
+            """,
+            (user_id, order["country"], order["tariff"], promo["promo_code"], pay_amount)
+        ).fetchone()
+        if duplicate:
+            db.commit()
+            return _pending_payment_response(duplicate)
+
+        user_row = db.execute(
+            "SELECT COALESCE(first_source, '') FROM users WHERE user_id=?",
+            (user_id,)
+        ).fetchone() or ("",)
+        source_code = user_row[0]
+        partner_code, partner_rate = get_order_partner(user_id, db)
+        if partner_code:
+            source_code = ""
+        partner_commission = int(round(pay_amount * partner_rate / 100)) if partner_code else 0
+        text = f"{order['country']} | {order['tariff']} — {order['price']}₽"
+        db.execute(
+            """
+            INSERT INTO orders (
+                user_id, text, price, pay_amount, discount_used,
+                promo_code, promo_percent, promo_discount, status, country, tariff, created_at,
+                source_code, partner_code, partner_rate, partner_commission, plan_type, supplier_key,
+                supplier_tariff, duration_days, post_limit_speed, daily_high_speed_gb, customer_email,
+                legal_acceptance, payment_provider, payment_link_id, payment_status, payment_created_at,
+                supplier_product_id, supplier_variation_id, supplier_status
+            ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, 'payment_pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                      'tochka', '', 'CREATING', ?, ?, ?, '')
+            """,
+            (
+                user_id, text, order["price"], pay_amount,
+                promo["promo_code"], promo["discount_percent"], promo["promo_discount"],
+                order["country"], order["tariff"], now,
+                source_code, partner_code, partner_rate, partner_commission,
+                order["plan_type"], order["unlimited_key"], order["supplier_tariff"],
+                order["days"], order["post_limit_speed"], order["daily_high_speed_gb"], email,
+                json.dumps({**legal, "recorded_at": now}, ensure_ascii=False), now,
+                order["supplier_product_id"], order["supplier_variation_id"],
+            )
+        )
+        order_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+        db.execute("UPDATE orders SET payment_link_id=? WHERE id=?", (f"esimlime-{order_id}", order_id))
+        db.commit()
+    finally:
+        db.close()
+
+    redirect_base = "https://t.me/esimlimebot?startapp=account"
+    fail_redirect = "https://t.me/esimlimebot?startapp=purchase"
+    redirect_url = (
+        redirect_base if redirect_base.startswith("https://t.me/")
+        else f"{redirect_base}{'&' if '?' in redirect_base else '?'}order_id={order_id}"
+    )
+    fail_redirect_url = (
+        fail_redirect if fail_redirect.startswith("https://t.me/")
+        else f"{fail_redirect}{'&' if '?' in fail_redirect else '?'}order_id={order_id}"
+    )
+    return _create_bank_payment_for_order(
+        order_id, user_id, pay_amount, f"Оплата eSIM, заказ №{order_id}", redirect_url, fail_redirect_url
+    )
 
 
 
@@ -7522,7 +7684,7 @@ start_account_api(
     TOKEN,
     read_mini_app_account,
     read_mini_app_esim_image,
-    None if sales_are_paused() else create_mini_app_payment,
+    None if sales_are_paused() else create_mini_app_manual_sbp_order,
     read_mini_app_payment,
     accept_tochka_webhook,
     refresh_mini_app_esim,
