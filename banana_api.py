@@ -208,6 +208,83 @@ class BananaClient:
         text = re.sub(r"\s+", " ", text).strip().replace('"', "'")
         return (text or str(fallback or "banana_error"))[:300]
 
+    @staticmethod
+    def _safe_log_keys(value):
+        if not isinstance(value, dict):
+            return "none"
+        keys = []
+        for key in value.keys():
+            raw = str(key)
+            if re.search(r"(?<!\d)\d{15,}(?!\d)", raw) or "LPA:1$" in raw.upper():
+                raw = "redacted_key"
+            keys.append(re.sub(r"[^A-Za-z0-9_.:-]+", "_", raw)[:80] or "empty_key")
+        return ",".join(sorted(keys))[:500] or "none"
+
+    @classmethod
+    def _log_details_response(cls, result):
+        if isinstance(result, dict):
+            sim_card_present = "sim_card" in result
+            card = result.get("sim_card") if sim_card_present else None
+            card_is_dict = isinstance(card, dict)
+            iccid_present = card_is_dict and "iccid" in card
+            iccid_length = len(str(card.get("iccid") or "").strip()) if iccid_present else 0
+
+            def field_type(key):
+                return type(card[key]).__name__ if card_is_dict and key in card else "missing"
+
+            print(
+                f"BANANA_DETAILS_RESPONSE response_type=dict keys={cls._safe_log_keys(result)} "
+                f"sim_card_present={str(sim_card_present).lower()} "
+                f"sim_card_type={type(card).__name__ if sim_card_present else 'missing'} "
+                f"sim_card_keys={cls._safe_log_keys(card) if card_is_dict else 'none'} "
+                f"iccid_present={str(iccid_present).lower()} iccid_length={iccid_length} "
+                f"remaining_usage_type={field_type('remaining_usage_kb')} "
+                f"allowed_usage_type={field_type('allowed_usage_kb')} "
+                f"remaining_days_type={field_type('remaining_days')} "
+                f"status_present={str(card_is_dict and 'status' in card).lower()} "
+                f"refillable_type={field_type('refillable')}",
+                flush=True,
+            )
+            return
+        if isinstance(result, list):
+            print(
+                f"BANANA_DETAILS_RESPONSE response_type=list count={len(result)}",
+                flush=True,
+            )
+            return
+        print(
+            f"BANANA_DETAILS_RESPONSE response_type={type(result).__name__}",
+            flush=True,
+        )
+
+    @classmethod
+    def _details_invalid_reason(cls, result, expected_iccid):
+        if not isinstance(result, dict) or "sim_card" not in result:
+            return "missing_sim_card"
+        card = result.get("sim_card")
+        if not isinstance(card, dict):
+            return "invalid_sim_card_type"
+        raw_iccid = card.get("iccid")
+        if raw_iccid is None or not str(raw_iccid).strip():
+            return "missing_iccid"
+        try:
+            normalized_iccid = cls._iccid(raw_iccid)
+        except BananaError:
+            return "invalid_iccid"
+        if normalized_iccid != expected_iccid:
+            return "iccid_mismatch"
+        for key, reason in (
+            ("remaining_usage_kb", "invalid_remaining_usage_type"),
+            ("allowed_usage_kb", "invalid_allowed_usage_type"),
+            ("remaining_days", "invalid_remaining_days_type"),
+        ):
+            field = card.get(key)
+            if field is not None and (
+                isinstance(field, bool) or not isinstance(field, int) or field < 0
+            ):
+                return reason
+        return "unknown_validation_error"
+
     def create_line(self, order_id, item_id, count=1, period_days=None):
         if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
             raise BananaError("banana_invalid_order")
@@ -307,10 +384,22 @@ class BananaClient:
 
     def get_details(self, iccid):
         value = self._iccid(iccid)
-        result = self._unwrap_response(
-            self._request("GET", f"/line/{quote(value, safe='')}/get_details")
-        )
-        self._validate_sim_card(result.get("sim_card") if isinstance(result, dict) else None, expected_iccid=value)
+        raw_result = self._request("GET", f"/line/{quote(value, safe='')}/get_details")
+        try:
+            result = self._unwrap_response(raw_result)
+        except BananaError:
+            self._log_details_response(raw_result)
+            raise
+        self._log_details_response(result)
+        reason = self._details_invalid_reason(result, value)
+        try:
+            self._validate_sim_card(
+                result.get("sim_card") if isinstance(result, dict) else None,
+                expected_iccid=value,
+            )
+        except BananaError:
+            print(f"BANANA_DETAILS_INVALID reason={reason}", flush=True)
+            raise
         return result
 
     def refill(self, order_id, iccid, item_id, period_days=None):
