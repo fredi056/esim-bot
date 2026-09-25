@@ -85,7 +85,11 @@ class LifecycleTest(unittest.TestCase):
                        AVITO_LINK_TTL_SECONDS=7*24*60*60,AVITO_TOKEN_BYTES=24)
         exec(compile(ast.Module(body=definitions, type_ignores=[]), str(ROOT/'bot.py'), 'exec'), self.ns)
         self.ns['_payment_db'] = lambda: sqlite3.connect(self.uri, uri=True)
-        self.ns.update(conn=self.db,cursor=self.db.cursor(),avito_sale_mode={},EMOJI={})
+        self.ns.update(conn=self.db,cursor=self.db.cursor(),avito_sale_mode={},partner_message_mode={},EMOJI={})
+        self.ns['types'] = SimpleNamespace(
+            InlineKeyboardMarkup=lambda: SimpleNamespace(add=lambda *args, **kwargs: None),
+            InlineKeyboardButton=lambda *args, **kwargs: SimpleNamespace(args=args, kwargs=kwargs),
+        )
         self.bank = Mock(configured=True)
         self.supplier = Mock(configured=True)
         self.telegram = Mock()
@@ -358,6 +362,16 @@ ICCID: {iccid}"""
         for code in ('LIME20','lime20',' lime20 '):
             self.assertEqual(self.call('calculate_promo_discount',1000,code)['promo_code'],'lime20')
 
+    def test_manual_sbp_orders_keep_all_supported_promos_and_admin_amount(self):
+        for user_id,code in ((10,'lime10'),(20,'lime20'),(30,'lime99')):
+            with self.subTest(code=code):
+                body=self.payload();body['promo_code']=code
+                result=self.call('create_mini_app_payment',{'id':user_id},body)
+                promo=self.call('calculate_promo_discount',920,code)
+                self.assertEqual(result['pay_amount'],promo['final_price'])
+                self.assertEqual(self.value(result['order_id'],'pay_amount'),promo['final_price'])
+                self.assertEqual(self.value(result['order_id'],'payment_provider'),'manual_sbp')
+
     def test_invalid_promo_is_rejected(self):
         body=self.payload();body['promo_code']='lime100'
         with self.assertRaises(ApiError) as caught:
@@ -372,7 +386,8 @@ ICCID: {iccid}"""
         self.assertEqual(self.value(oid,'promo_percent'),20)
         self.assertEqual(self.value(oid,'promo_discount'),184)
         self.assertEqual(self.value(oid,'pay_amount'),736)
-        self.assertEqual(self.bank.create_payment.call_args.args[1],736)
+        self.assertEqual(self.value(oid,'payment_provider'),'manual_sbp')
+        self.bank.create_payment.assert_not_called()
 
     def test_unlimited_order_applies_promo(self):
         plan=next(iter(self.ns['UNLIMITED_PLANS'].values()))
@@ -638,16 +653,18 @@ ICCID: {iccid}"""
         self.assertTrue(self.call('_mark_bank_order_paid',oid,'op1',920))
         self.assertEqual(self.value(oid,'payment_operation_id'),'op1')
 
-    def test_duplicate_during_creation_does_not_create_another_payment(self):
+    def test_manual_order_does_not_reuse_tochka_order_during_creation(self):
         oid=self.order(payment_operation_id='',payment_url='',payment_status='CREATING')
         result=self.call('create_mini_app_payment',{'id':1},self.payload())
-        self.assertEqual(result['order_id'],oid)
+        self.assertNotEqual(result['order_id'],oid)
+        self.assertEqual(self.value(result['order_id'],'payment_provider'),'manual_sbp')
         self.bank.create_payment.assert_not_called()
 
-    def test_duplicate_after_twenty_minutes_reuses_link(self):
+    def test_manual_order_does_not_reuse_old_tochka_link(self):
         oid=self.order(created_at=int(time.time())-3600,payment_url='https://bank.example/pay')
         result=self.call('create_mini_app_payment',{'id':1},self.payload())
-        self.assertEqual(result['order_id'],oid)
+        self.assertNotEqual(result['order_id'],oid)
+        self.assertEqual(result['status'],'awaiting_receipt')
         self.bank.create_payment.assert_not_called()
 
     def test_wrong_price_is_rejected(self):
@@ -655,18 +672,19 @@ ICCID: {iccid}"""
         with self.assertRaises(ApiError): self.call('create_mini_app_payment',{'id':1},body)
         self.bank.create_payment.assert_not_called()
 
-    def test_new_vietnam_purchase_gets_bank_link(self):
+    def test_new_vietnam_purchase_creates_manual_sbp_order(self):
         result=self.call('create_mini_app_payment',{'id':1},self.payload())
-        self.assertEqual(result['payment_url'],'https://bank.example/pay')
-        self.assertEqual(result['status'],'payment_pending')
+        self.assertEqual(result['payment_provider'],'manual_sbp')
+        self.assertEqual(result['status'],'awaiting_receipt')
+        self.assertEqual(result['pay_amount'],920)
+        self.assertEqual(self.value(result['order_id'],'payment_url'),'')
         self.assertEqual(self.value(result['order_id'],'supplier_product_id'),796)
         self.assertEqual(self.value(result['order_id'],'supplier_variation_id'),809)
-        self.assertEqual(self.bank.create_payment.call_count,1)
-        self.assertEqual(self.bank.create_payment.call_args.args[1],920)
+        self.bank.create_payment.assert_not_called()
 
     def test_standard_purchase_uses_catalog_without_supplier_lookup(self):
         result=self.call('create_mini_app_payment',{'id':1},self.payload())
-        self.assertEqual(result['payment_url'],'https://bank.example/pay')
+        self.assertEqual(result['payment_provider'],'manual_sbp')
         self.supplier.assert_not_called()
 
     def test_admin_supplier_test_uses_live_standard_package(self):
@@ -675,10 +693,10 @@ ICCID: {iccid}"""
             'plan_type':'supplier_test','legal_acceptance':self.payload()['legal_acceptance'],
         }
         result=self.call('create_mini_app_payment',{'id':99},body)
-        self.assertEqual(result['payment_url'],'https://bank.example/pay')
+        self.assertEqual(result['payment_provider'],'manual_sbp')
         self.assertEqual(self.value(result['order_id'],'supplier_product_id'),317)
         self.assertEqual(self.value(result['order_id'],'supplier_variation_id'),330)
-        self.assertEqual(self.bank.create_payment.call_args.args[1],14)
+        self.bank.create_payment.assert_not_called()
         self.supplier.assert_not_called()
 
     def test_active_refillable_line_allows_topup(self):
@@ -686,14 +704,28 @@ ICCID: {iccid}"""
             'refillable':True,'status':'active',
         }))
 
-    def test_standard_purchase_through_issue_and_delivery(self):
+    def test_standard_purchase_does_not_issue_before_manual_confirmation(self):
         result=self.call('create_mini_app_payment',{'id':1},self.payload())
         oid=result['order_id']
-        self.bank.get_payment.return_value={'status':'APPROVED','amount':920}
-        self.assertEqual(self.call('read_mini_app_payment',{'id':1},oid)['status'],'paid')
+        self.assertEqual(self.value(oid,'status'),'awaiting_receipt')
+        self.supplier.create_line.assert_not_called()
         self.supplier.create_line.return_value={'sim_card':{'iccid':'8985201234567890123',
             'lpa_code':'LPA:1$host$code','status':'active','remaining_usage_kb':5242880,'allowed_usage_kb':5242880,'remaining_days':30}}
         self.telegram.send_photo.return_value=SimpleNamespace(photo=[SimpleNamespace(file_id='qr1')])
+        self.call('photo_handler',SimpleNamespace(
+            from_user=SimpleNamespace(id=1,username='client',first_name='Client'),
+            chat=SimpleNamespace(id=1),photo=[SimpleNamespace(file_id='receipt')],
+        ))
+        self.assertEqual(self.value(oid,'status'),'pending_review')
+        receipt_texts=[call.args[1] for call in self.telegram.send_message.call_args_list if call.args and call.args[0]==99]
+        self.assertTrue(any('Тип: новая eSIM' in text and 'К оплате: 920₽' in text for text in receipt_texts))
+        class ImmediateThread:
+            def __init__(thread_self,target,args=(),**kwargs): thread_self.target=target; thread_self.args=args
+            def start(thread_self): thread_self.target(*thread_self.args)
+        self.ns['threading']=SimpleNamespace(Thread=ImmediateThread)
+        confirm=SimpleNamespace(data=f'ok_{oid}_1_920',from_user=SimpleNamespace(id=99),id='confirm')
+        self.call('callback_handler',confirm)
+        self.assertEqual(self.value(oid,'status'),'paid')
         self.assertTrue(self.call('provision_paid_supplier_order',oid))
         self.assertEqual(self.value(oid,'supplier_status'),'issued')
         self.assertEqual(self.value(oid,'supplier_iccid'),'8985201234567890123')
@@ -703,7 +735,24 @@ ICCID: {iccid}"""
         self.assertTrue(self.call('provision_paid_supplier_order',oid))
         self.assertEqual(self.supplier.create_line.call_count,1)
         self.supplier.create_line.assert_called_once_with(oid,809,period_days=None)
-        self.assertEqual(self.telegram.send_photo.call_count,1)
+        self.assertEqual(self.telegram.send_photo.call_count,2)
+        self.call('callback_handler',confirm)
+        self.assertEqual(self.supplier.create_line.call_count,1)
+        admin_texts=[call.args[1] for call in self.telegram.send_message.call_args_list if call.args and call.args[0]==99]
+        self.assertTrue(any('Автоматическая выдача Banana запущена' in text for text in admin_texts))
+        self.assertFalse(any('/sendqr' in text for text in admin_texts))
+
+    def test_rejected_manual_esim_never_issues(self):
+        result=self.call('create_mini_app_payment',{'id':1},self.payload())
+        oid=result['order_id']
+        self.call('photo_handler',SimpleNamespace(
+            from_user=SimpleNamespace(id=1,username='client',first_name='Client'),
+            chat=SimpleNamespace(id=1),photo=[SimpleNamespace(file_id='receipt')],
+        ))
+        reject=SimpleNamespace(data=f'no_{oid}_1',from_user=SimpleNamespace(id=99),id='reject')
+        self.call('callback_handler',reject)
+        self.assertEqual(self.value(oid,'status'),'cancel')
+        self.supplier.create_line.assert_not_called()
 
     def test_item_id_prefers_variation_and_falls_back_to_product(self):
         self.assertEqual(self.call('_supplier_item_id',317,330),330)
@@ -744,9 +793,9 @@ ICCID: {iccid}"""
 
     def test_catalogued_supplier_product_does_not_call_supplier_before_payment(self):
         result=self.call('create_mini_app_payment',{'id':1},self.payload())
-        self.assertEqual(result['payment_url'],'https://bank.example/pay')
+        self.assertEqual(result['status'],'awaiting_receipt')
         self.supplier.assert_not_called()
-        self.bank.create_payment.assert_called_once()
+        self.bank.create_payment.assert_not_called()
 
     def test_unmapped_tariff_stops_before_payment(self):
         body={'country':'Vietnam','tariff':'50GB / 90 дней','displayed_price':12390,
@@ -772,7 +821,52 @@ ICCID: {iccid}"""
         result=self.call('create_mini_app_topup',{'id':1},parent,body)
         self.assertEqual(self.value(result['order_id'],'order_kind'),'topup')
         self.assertEqual(self.value(result['order_id'],'parent_order_id'),parent)
-        self.assertEqual(result['payment_url'],'https://bank.example/pay')
+        self.assertEqual(result['payment_provider'],'manual_sbp')
+        self.assertEqual(result['status'],'awaiting_receipt')
+        self.assertEqual(self.value(result['order_id'],'supplier_iccid'),'8985201234567890123')
+        self.assertEqual(self.value(result['order_id'],'supplier_product_id'),796)
+        self.assertEqual(self.value(result['order_id'],'supplier_variation_id'),809)
+        self.bank.create_payment.assert_not_called()
+
+    def test_manual_topup_confirms_once_and_reject_never_refills(self):
+        parent=self.issued()
+        self.supplier.get_details.return_value={'sim_card':{
+            'iccid':'8985201234567890123','status':'active','refillable':True,
+        }}
+        body={'option_id':'p796v809','promo_code':'lime99','legal_acceptance':self.payload()['legal_acceptance']}
+        result=self.call('create_mini_app_topup',{'id':1},parent,body)
+        oid=result['order_id']
+        self.assertEqual(self.value(oid,'pay_amount'),920)
+        self.supplier.refill.assert_not_called()
+        self.call('photo_handler',SimpleNamespace(
+            from_user=SimpleNamespace(id=1,username='client',first_name='Client'),
+            chat=SimpleNamespace(id=1),photo=[SimpleNamespace(file_id='receipt')],
+        ))
+        self.assertEqual(self.value(oid,'status'),'pending_review')
+        receipt_texts=[call.args[1] for call in self.telegram.send_message.call_args_list if call.args and call.args[0]==99]
+        self.assertTrue(any('Тип: пополнение' in text and 'ICCID: …0123' in text for text in receipt_texts))
+        class ImmediateThread:
+            def __init__(thread_self,target,args=(),**kwargs): thread_self.target=target; thread_self.args=args
+            def start(thread_self): thread_self.target(*thread_self.args)
+        self.ns['threading']=SimpleNamespace(Thread=ImmediateThread)
+        confirm=SimpleNamespace(data=f'ok_{oid}_1_920',from_user=SimpleNamespace(id=99),id='confirm')
+        self.call('callback_handler',confirm)
+        self.assertEqual(self.value(oid,'status'),'paid')
+        self.supplier.refill.assert_called_once_with(oid,'8985201234567890123',809)
+        self.call('callback_handler',confirm)
+        self.assertEqual(self.supplier.refill.call_count,1)
+
+        rejected=self.call('create_mini_app_topup',{'id':1},parent,body)['order_id']
+        self.call('photo_handler',SimpleNamespace(
+            from_user=SimpleNamespace(id=1,username='client',first_name='Client'),
+            chat=SimpleNamespace(id=1),photo=[SimpleNamespace(file_id='receipt2')],
+        ))
+        self.call('callback_handler',SimpleNamespace(
+            data=f'no_{rejected}_1',from_user=SimpleNamespace(id=99),id='reject',
+        ))
+        self.assertEqual(self.value(rejected,'status'),'cancel')
+        self.assertEqual(self.supplier.refill.call_count,1)
+        self.assertEqual(self.value(parent,'supplier_status'),'issued')
 
     def test_expired_line_cannot_create_topup_payment(self):
         parent=self.issued()

@@ -27,7 +27,7 @@ ADMIN_ID_RAW = os.getenv("ADMIN_ID")
 MINI_APP_URL = os.getenv("MINI_APP_URL", "").strip()
 AVITO_REVIEW_URL = os.getenv("AVITO_REVIEW_URL", "").strip()
 TOCHKA_PAYMENTS_ENABLED = os.getenv("TOCHKA_PAYMENTS_ENABLED", "true").strip().lower() in ("1", "true", "yes")
-SALES_PAUSED = True
+SALES_PAUSED = False
 RAILWAY_PUBLIC_DOMAIN = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip().strip("/")
 TOCHKA_WEBHOOK_URL = os.getenv("TOCHKA_WEBHOOK_URL", "").strip()
 if not TOCHKA_WEBHOOK_URL and RAILWAY_PUBLIC_DOMAIN:
@@ -1961,13 +1961,28 @@ def process_order_selection(
         show_russia_discontinued(chat_id, user_id)
         return
 
-    server_price = get_valid_plan_price(country, tariff)
+    if user_id == ADMIN_ID and country == "Технический тест" and tariff == "Тех тариф":
+        server_price = 14
+    else:
+        server_price = get_valid_plan_price(country, tariff)
     if server_price is None:
         bot.send_message(
             chat_id,
             "Не удалось проверить выбранный тариф. Пожалуйста, выберите его заново."
         )
         refresh_tariff_selection(chat_id, user_id, country)
+        return
+
+    supplier_item = next(
+        (item for item in SUPPLIER_CATALOG if item["country"] == country and item["tariff"] == tariff),
+        None,
+    )
+    if not supplier_item:
+        bot.send_message(
+            chat_id,
+            "Поставщик временно не подтверждает этот тариф. Выберите другой пакет или попробуйте позже.",
+            reply_markup=main_keyboard(user_id),
+        )
         return
 
     if displayed_price is not None and displayed_price != server_price:
@@ -2022,7 +2037,8 @@ def process_order_selection(
             SELECT id, pay_amount
             FROM orders
             WHERE user_id=? AND country=? AND tariff=? AND COALESCE(promo_code,'')=?
-              AND pay_amount=? AND status='awaiting_receipt' AND created_at>=?
+              AND pay_amount=? AND status='awaiting_receipt' AND payment_provider='manual_sbp'
+              AND COALESCE(order_kind,'esim')='esim' AND created_at>=?
             ORDER BY id DESC
             LIMIT 1
             """,
@@ -2048,13 +2064,15 @@ def process_order_selection(
         INSERT INTO orders (
             user_id, text, price, pay_amount, discount_used, status, country, tariff, created_at,
             source_code, partner_code, partner_rate, partner_commission,
-            promo_code, promo_percent, promo_discount
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            promo_code, promo_percent, promo_discount, payment_provider, order_kind,
+            supplier_product_id, supplier_variation_id, supplier_status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual_sbp', 'esim', ?, ?, '')
         """,
         (
             user_id, text, price, pay_amount, discount_used, status, country, tariff, created_at,
             source_code, partner_code, partner_rate, partner_commission,
             promo_code, promo_percent, promo_discount,
+            supplier_item["product_id"], supplier_item["variation_id"],
         )
     )
     conn.commit()
@@ -2158,6 +2176,9 @@ def process_unlimited_order_selection(
     supplier_tariff = order["supplier_tariff"]
     post_limit_speed = order["post_limit_speed"]
     daily_high_speed_gb = int(order["daily_high_speed_gb"])
+    plan = order.get("plan") or {}
+    supplier_product_id = plan.get("product_id") or plan.get("item_id", 0)
+    supplier_variation_id = plan.get("variation_id", 0)
     text = f"{country} | {tariff} — {price}₽"
     try:
         promo = calculate_promo_discount(price, promo_code)
@@ -2202,7 +2223,8 @@ def process_unlimited_order_selection(
             FROM orders
             WHERE user_id=? AND plan_type='unlimited' AND supplier_key=? AND duration_days=?
               AND COALESCE(promo_code,'')=? AND pay_amount=?
-              AND status='awaiting_receipt' AND created_at>=?
+              AND status='awaiting_receipt' AND payment_provider='manual_sbp'
+              AND COALESCE(order_kind,'esim')='esim' AND created_at>=?
             ORDER BY id DESC
             LIMIT 1
             """,
@@ -2231,15 +2253,18 @@ def process_unlimited_order_selection(
             user_id, text, price, pay_amount, discount_used, status, country, tariff, created_at,
             source_code, partner_code, partner_rate, partner_commission,
             plan_type, supplier_key, supplier_tariff, duration_days, post_limit_speed, daily_high_speed_gb,
-            promo_code, promo_percent, promo_discount
+            promo_code, promo_percent, promo_discount, payment_provider, order_kind,
+            supplier_product_id, supplier_variation_id, supplier_status
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                'manual_sbp', 'esim', ?, ?, '')
         """,
         (
             user_id, text, price, pay_amount, discount_used, status, country, tariff, created_at,
             source_code, partner_code, partner_rate, partner_commission,
             "unlimited", unlimited_key, supplier_tariff, days, post_limit_speed, daily_high_speed_gb,
             promo_code, promo_percent, promo_discount,
+            supplier_product_id, supplier_variation_id,
         )
     )
     conn.commit()
@@ -3151,8 +3176,8 @@ def show_main(chat_id: int, user_id: int, add_to_history: bool = True):
             "🌍 eSIMLime\n\n"
             "Интернет для путешествий без дорогого роуминга.\n\n"
             "Выберите страну и тариф в приложении.\n"
-            "Оплата проходит на защищённой странице Точки и подтверждается автоматически.\n"
-            "Отправлять чек или скриншот не нужно.\n\n"
+            "Оплатите заказ по СБП и отправьте чек в этот чат.\n"
+            "После проверки eSIM выпустится автоматически.\n\n"
             "Нажмите кнопку ниже 👇"
         )
     else:
@@ -3284,8 +3309,8 @@ def show_how_it_works(chat_id: int, user_id: int, add_to_history: bool = True):
         chat_id,
         "❓ Как работает eSIM\n\n"
         "1. Вы выбираете страну или тариф\n"
-        "2. Переходите на защищённую страницу Точки и оплачиваете заказ\n"
-        "3. Банк подтверждает оплату автоматически — чек отправлять не нужно\n"
+        "2. Оплачиваете точную сумму по СБП\n"
+        "3. Отправляете чек в бот — администратор подтверждает оплату\n"
         "4. Получаете ссылку установки и/или QR-код\n"
         "5. Открываете ссылку на телефоне и следуете подсказкам\n"
         "6. Если ссылка не поддерживается, устанавливаете eSIM через QR-код\n"
@@ -4247,7 +4272,7 @@ def show_travel_instruction(chat_id: int, user_id: int, add_to_history: bool = T
         "✈️ Инструкция для путешествий\n\n"
         "1. Выберите страну и тариф.\n"
         "2. Проверьте, что телефон поддерживает eSIM.\n"
-        "3. Оплатите заказ на странице Точки — подтверждение придёт автоматически.\n"
+        "3. Оплатите заказ по СБП и отправьте чек в бот.\n"
         "4. Получите ссылку установки и/или QR-код.\n"
         "5. Если пришла ссылка и телефон её поддерживает, откройте её на нужном устройстве.\n"
         "6. Если ссылка не работает или её нет, используйте QR-код.\n"
@@ -4821,6 +4846,20 @@ def web_app_data_handler(message):
             )
             return
 
+        if plan_type == "supplier_test" and message.from_user.id == ADMIN_ID:
+            process_order_selection(
+                chat_id=message.chat.id,
+                user_id=message.from_user.id,
+                country=payload.get("country", ""),
+                tariff=payload.get("tariff", ""),
+                displayed_price=payload.get("displayed_price"),
+                source="miniapp",
+                use_balance=False,
+                show_payment_message=False,
+                promo_code=payload.get("promo_code", ""),
+            )
+            return
+
         if plan_type not in ("", None):
             bot.send_message(message.chat.id, error_text, reply_markup=main_keyboard(message.from_user.id))
             return
@@ -5152,7 +5191,8 @@ def photo_handler(message):
 
     cursor.execute("""
         SELECT id, text, price, pay_amount, discount_used, country, tariff,
-               plan_type, supplier_key, supplier_tariff, duration_days, post_limit_speed, daily_high_speed_gb
+               plan_type, supplier_key, supplier_tariff, duration_days, post_limit_speed, daily_high_speed_gb,
+               COALESCE(order_kind, 'esim'), supplier_iccid, topup_mb, topup_days
         FROM orders
         WHERE user_id=? AND status='awaiting_receipt'
         ORDER BY id DESC
@@ -5166,13 +5206,18 @@ def photo_handler(message):
 
     (
         order_id, order_text, price, pay_amount, discount_used, country, tariff,
-        plan_type, supplier_key, supplier_tariff, duration_days, post_limit_speed, daily_high_speed_gb
+        plan_type, supplier_key, supplier_tariff, duration_days, post_limit_speed, daily_high_speed_gb,
+        order_kind, supplier_iccid, topup_mb, topup_days,
     ) = row
     receipt_received_at = int(time.time())
     cursor.execute(
-        "UPDATE orders SET status='pending_review', receipt_received_at=? WHERE id=?",
+        "UPDATE orders SET status='pending_review', receipt_received_at=? WHERE id=? AND status='awaiting_receipt'",
         (receipt_received_at, order_id)
     )
+    if cursor.rowcount != 1:
+        conn.rollback()
+        bot.send_message(message.chat.id, "Этот чек уже принят в обработку.", reply_markup=main_keyboard(user_id))
+        return
     conn.commit()
     cancel_reminders_by_type(order_id, ["payment_30m", "payment_24h"])
 
@@ -5189,13 +5234,25 @@ def photo_handler(message):
     unlimited_admin_details = format_unlimited_admin_details(
         plan_type, supplier_key, supplier_tariff, duration_days, post_limit_speed, daily_high_speed_gb
     )
+    if order_kind == "topup":
+        receipt_details = (
+            "Тип: пополнение\n"
+            f"eSIM: {country}\n"
+            f"ICCID: …{str(supplier_iccid)[-4:]}\n"
+            f"Пакет: {_format_topup_volume(topup_mb)} / {format_days(topup_days)}\n"
+        )
+    else:
+        receipt_details = (
+            "Тип: новая eSIM\n"
+            f"Страна: {country}\n"
+            f"Тариф: {tariff}\n"
+        )
 
     bot.send_message(
         ADMIN_ID,
         f"Детали чека по заказу #{order_id}\n"
         f"Покупатель: {format_user_for_admin(user_id)}\n"
-        f"Страна: {country}\n"
-        f"Тариф: {tariff}\n"
+        f"{receipt_details}"
         f"Сумма: {price}₽\n"
         f"К оплате: {pay_amount}₽"
         f"{unlimited_admin_details}"
@@ -5208,7 +5265,8 @@ def photo_handler(message):
             f"🧾 Новый чек\n\n"
             f"Покупатель: {user_text}\n"
             f"ID: {user_id}\n"
-            f"Заказ: {order_text}\n"
+            f"Заказ #{order_id}\n"
+            f"{receipt_details}"
             f"Стоимость: {price}₽\n"
             f"Списано с баланса: {discount_used}₽\n"
             f"К оплате: {pay_amount}₽"
@@ -5743,6 +5801,9 @@ def callback_handler(call):
 
         referral_bonus_job_order_id = None
         partner_sale_job_order_id = None
+        fulfillment_target = None
+        is_topup = False
+        is_supplier_order = False
         try:
             now = int(time.time())
             cursor.execute("BEGIN IMMEDIATE")
@@ -5750,7 +5811,9 @@ def callback_handler(call):
                 """
                 SELECT user_id, status, country, tariff, price, pay_amount, partner_code, partner_rate,
                        partner_commission, ref_bonus_given, plan_type, supplier_key, supplier_tariff,
-                       duration_days, post_limit_speed, daily_high_speed_gb
+                       duration_days, post_limit_speed, daily_high_speed_gb,
+                       COALESCE(order_kind, 'esim'), supplier_product_id, supplier_variation_id,
+                       supplier_status
                 FROM orders
                 WHERE id=? AND user_id=?
                 """,
@@ -5765,8 +5828,13 @@ def callback_handler(call):
             (
                 order_user_id, _status, country, tariff, price, pay_amount, partner_code, partner_rate,
                 partner_commission, ref_bonus_given, plan_type, supplier_key, supplier_tariff,
-                duration_days, post_limit_speed, daily_high_speed_gb
+                duration_days, post_limit_speed, daily_high_speed_gb,
+                order_kind, supplier_product_id, supplier_variation_id, supplier_status,
             ) = order_row
+            is_topup = order_kind == "topup"
+            is_supplier_order = (
+                not is_topup and _supplier_item_id(supplier_product_id, supplier_variation_id) > 0
+            )
             cursor.execute("SELECT COUNT(*) FROM orders WHERE user_id=? AND status='paid' AND id!=?", (user_id, order_id))
             already_had_paid_orders = cursor.fetchone()[0] > 0
 
@@ -5779,17 +5847,18 @@ def callback_handler(call):
                 "UPDATE reminder_jobs SET status='cancelled' WHERE order_id=? AND reminder_type IN ('payment_30m', 'payment_24h', 'review_15m') AND status IN ('pending', 'processing')",
                 (order_id,)
             )
-            schedule_reminder(
-                ADMIN_ID,
-                order_id,
-                "admin_esim_15m",
-                now + ADMIN_ESIM_15M_DELAY,
-                db_cursor=cursor,
-                db_conn=conn,
-                commit=False
-            )
+            if not is_topup and not is_supplier_order:
+                schedule_reminder(
+                    ADMIN_ID,
+                    order_id,
+                    "admin_esim_15m",
+                    now + ADMIN_ESIM_15M_DELAY,
+                    db_cursor=cursor,
+                    db_conn=conn,
+                    commit=False
+                )
 
-            if partner_code:
+            if not is_topup and partner_code:
                 if partner_commission > 0:
                     cursor.execute(
                         """
@@ -5810,7 +5879,7 @@ def callback_handler(call):
                         )
                         schedule_partner_sale_job(order_id, now, db_cursor=cursor, db_conn=conn, commit=False)
                         partner_sale_job_order_id = order_id
-            else:
+            elif not is_topup:
                 cursor.execute("SELECT ref FROM users WHERE user_id=?", (user_id,))
                 row = cursor.fetchone()
                 ref = row[0] if row else None
@@ -5823,9 +5892,21 @@ def callback_handler(call):
                         referral_bonus_job_order_id = order_id
 
             conn.commit()
+            if is_topup and supplier_status != "issued":
+                fulfillment_target = apply_paid_supplier_topup
+            elif is_supplier_order and supplier_status != "issued":
+                fulfillment_target = provision_paid_supplier_order
         except Exception:
             conn.rollback()
             raise
+
+        if fulfillment_target:
+            threading.Thread(
+                target=fulfillment_target,
+                args=(order_id,),
+                daemon=True,
+                name=(f"supplier-topup-{order_id}" if is_topup else f"supplier-order-{order_id}"),
+            ).start()
 
         if partner_sale_job_order_id:
             process_engagement_job_now("partner_sale", partner_sale_job_order_id, "partner_sale")
@@ -5833,31 +5914,52 @@ def callback_handler(call):
         if referral_bonus_job_order_id:
             process_engagement_job_now("order", referral_bonus_job_order_id, "referral_bonus_awarded")
 
-        bot.send_message(
-            user_id,
-            "✅ Заказ принят\n\n"
-            "Мы проверили оплату и подготовим данные для установки eSIM: ссылку и/или QR-код с инструкцией.\n\n"
-            "Обычно это занимает 5–15 минут.\n\n"
-            "Если есть вопросы — напишите @F_Evdokimov",
-            reply_markup=main_keyboard(user_id)
-        )
+        if is_topup:
+            customer_text = (
+                "✅ Оплата пополнения подтверждена. Передаём пакет поставщику; "
+                "подтверждение придёт сюда."
+            )
+        elif is_supplier_order:
+            customer_text = (
+                "✅ Оплата подтверждена. Выпускаем eSIM автоматически; "
+                "данные установки появятся здесь и в «Мои eSIM»."
+            )
+        else:
+            customer_text = (
+                "✅ Заказ принят\n\n"
+                "Мы проверили оплату и подготовим данные для установки eSIM: ссылку и/или QR-код с инструкцией.\n\n"
+                "Обычно это занимает 5–15 минут.\n\n"
+                "Если есть вопросы — напишите @F_Evdokimov"
+            )
+        bot.send_message(user_id, customer_text, reply_markup=main_keyboard(user_id))
 
         unlimited_admin_details = format_unlimited_admin_details(
             plan_type, supplier_key, supplier_tariff, duration_days, post_limit_speed, daily_high_speed_gb
         )
 
+        if is_topup:
+            admin_action = "Автоматическое пополнение Banana запущено."
+            admin_order = f"Пополнение #{order_id}"
+        elif is_supplier_order:
+            admin_action = "Автоматическая выдача Banana запущена."
+            admin_order = f"Заказ #{order_id}"
+        else:
+            admin_action = (
+                "Чтобы отправить eSIM этому пользователю, отправь команду:\n"
+                f"/sendqr {user_id} {order_id}"
+            )
+            admin_order = f"Заказ #{order_id}"
         bot.send_message(
             ADMIN_ID,
-            f"✅ Оплата подтверждена\n\n"
-            f"Заказ #{order_id}\n"
+            "✅ Оплата подтверждена\n\n"
+            f"{admin_order}\n"
             f"Покупатель: {format_user_for_admin(user_id)}\n"
             f"Страна: {country}\n"
             f"Тариф: {tariff}\n"
             f"Сумма: {price}₽\n"
             f"К оплате: {pay_amount}₽"
             f"{unlimited_admin_details}\n\n"
-            f"Чтобы отправить eSIM этому пользователю, отправь команду:\n"
-            f"/sendqr {user_id} {order_id}"
+            f"{admin_action}"
         )
 
         bot.answer_callback_query(call.id, "Оплата подтверждена")
@@ -6076,8 +6178,6 @@ def create_mini_app_topup(telegram_user: Dict[str, Any], parent_order_id: int,
                           body: Dict[str, Any]) -> Dict[str, Any]:
     if sales_are_paused():
         raise ApiError(503, "sales_paused")
-    if not TOCHKA_PAYMENTS_ENABLED or not tochka.configured:
-        raise ApiError(503, "payments_not_configured")
     if not banana.configured:
         raise ApiError(503, "supplier_unavailable")
     legal = body.get("legal_acceptance")
@@ -6108,16 +6208,16 @@ def create_mini_app_topup(telegram_user: Dict[str, Any], parent_order_id: int,
     with closing(_payment_db()) as lookup_db:
         duplicate = lookup_db.execute(
             """
-            SELECT id, payment_url, payment_status, status FROM orders
+            SELECT id, pay_amount FROM orders
             WHERE user_id=? AND parent_order_id=? AND supplier_product_id=?
-              AND supplier_variation_id=? AND topup_days=? AND status='payment_pending'
-              AND order_kind='topup' AND payment_provider='tochka'
+              AND supplier_variation_id=? AND topup_days=? AND status='awaiting_receipt'
+              AND order_kind='topup' AND payment_provider='manual_sbp'
             ORDER BY id DESC LIMIT 1
             """,
             (user_id, parent_order_id, option["product_id"], option["variation_id"], option["refill_days"]),
         ).fetchone()
     if duplicate:
-        return _pending_payment_response(duplicate)
+        return _manual_payment_response(duplicate[0], duplicate[1], "topup")
     try:
         details = banana.get_details(parent[1])
         sim_card = details.get("sim_card") if isinstance(details, dict) else None
@@ -6151,17 +6251,17 @@ def create_mini_app_topup(telegram_user: Dict[str, Any], parent_order_id: int,
             raise ApiError(409, "topup_option_changed")
         duplicate = db.execute(
             """
-            SELECT id, payment_url, payment_status, status FROM orders
+            SELECT id, pay_amount FROM orders
             WHERE user_id=? AND parent_order_id=? AND supplier_product_id=?
-              AND supplier_variation_id=? AND topup_days=? AND status='payment_pending'
-              AND order_kind='topup' AND payment_provider='tochka'
+              AND supplier_variation_id=? AND topup_days=? AND status='awaiting_receipt'
+              AND order_kind='topup' AND payment_provider='manual_sbp'
             ORDER BY id DESC LIMIT 1
             """,
             (user_id, parent_order_id, option["product_id"], option["variation_id"], option["refill_days"]),
         ).fetchone()
         if duplicate:
             db.commit()
-            return _pending_payment_response(duplicate)
+            return _manual_payment_response(duplicate[0], duplicate[1], "topup")
         label = _format_topup_volume(option["refill_mb"])
         tariff = f"Пополнение {label} / {option['refill_days']} дн."
         text = f"{current_parent[0]} | {tariff} — {option['price']}₽"
@@ -6169,22 +6269,20 @@ def create_mini_app_topup(telegram_user: Dict[str, Any], parent_order_id: int,
             """
             INSERT INTO orders (
                 user_id, text, price, pay_amount, status, country, tariff, created_at,
-                plan_type, customer_email, legal_acceptance, payment_provider, payment_link_id,
-                payment_status, payment_created_at, supplier_product_id, supplier_variation_id,
+                plan_type, customer_email, legal_acceptance, payment_provider,
+                supplier_product_id, supplier_variation_id,
                 supplier_status, supplier_iccid, order_kind, parent_order_id, topup_mb, topup_days
-            ) VALUES (?, ?, ?, ?, 'payment_pending', ?, ?, ?, 'topup', '', ?, 'tochka', '',
-                      'CREATING', ?, ?, ?, '', ?, 'topup', ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, 'awaiting_receipt', ?, ?, ?, 'topup', '', ?, 'manual_sbp',
+                      ?, ?, '', ?, 'topup', ?, ?, ?)
             """,
             (
                 user_id, text, option["price"], option["price"], current_parent[0], tariff, now,
-                json.dumps({**legal, "recorded_at": now}, ensure_ascii=False), now,
+                json.dumps({**legal, "recorded_at": now}, ensure_ascii=False),
                 option["product_id"], option["variation_id"], current_parent[1], parent_order_id,
                 option["refill_mb"], option["refill_days"],
             ),
         )
         order_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-        db.execute("UPDATE orders SET payment_link_id=? WHERE id=?",
-                   (f"esimlime-{order_id}", order_id))
         db.commit()
     except ApiError:
         db.rollback()
@@ -6192,11 +6290,9 @@ def create_mini_app_topup(telegram_user: Dict[str, Any], parent_order_id: int,
     finally:
         db.close()
 
-    return _create_bank_payment_for_order(
-        order_id, user_id, option["price"], f"Пополнение eSIM, заказ №{order_id}",
-        "https://t.me/esimlimebot?startapp=account",
-        "https://t.me/esimlimebot?startapp=account",
-    )
+    schedule_reminder(user_id, order_id, "payment_30m", now + 30 * 60)
+    schedule_reminder(user_id, order_id, "payment_24h", now + 24 * 60 * 60)
+    return _manual_payment_response(order_id, option["price"], "topup")
 
 
 def read_mini_app_esim_image(user_id: int, order_id: int):
@@ -6232,6 +6328,16 @@ def _payment_db():
 def _pending_payment_response(row) -> Dict[str, Any]:
     return {"order_id": row[0], "payment_url": row[1] or "",
             "payment_status": row[2] or "CREATING", "status": row[3]}
+
+
+def _manual_payment_response(order_id: int, pay_amount: int, order_kind: str) -> Dict[str, Any]:
+    return {
+        "order_id": order_id,
+        "status": "awaiting_receipt",
+        "payment_provider": "manual_sbp",
+        "pay_amount": pay_amount,
+        "order_kind": order_kind,
+    }
 
 
 def _same_payment_amount(expected, received) -> bool:
@@ -6557,10 +6663,6 @@ def _format_banana_error(exc: BananaError) -> str:
 def create_mini_app_payment(telegram_user: Dict[str, Any], body: Dict[str, Any]) -> Dict[str, Any]:
     if sales_are_paused():
         raise ApiError(503, "sales_paused")
-    if not TOCHKA_PAYMENTS_ENABLED:
-        raise ApiError(503, "payments_not_enabled")
-    if not tochka.configured:
-        raise ApiError(503, "payments_not_configured")
     email_value = body.get("customer_email")
     email = _valid_checkout_email(email_value) if email_value not in (None, "") else ""
     legal = body.get("legal_acceptance")
@@ -6599,7 +6701,7 @@ def create_mini_app_payment(telegram_user: Dict[str, Any], body: Dict[str, Any])
             """
             SELECT id FROM orders
             WHERE user_id=? AND country=? AND tariff=? AND status='paid'
-              AND payment_provider='tochka' AND COALESCE(promo_code,'')=?
+              AND payment_provider='manual_sbp' AND COALESCE(promo_code,'')=?
               AND pay_amount=? AND created_at>=?
             ORDER BY id DESC LIMIT 1
             """,
@@ -6610,12 +6712,12 @@ def create_mini_app_payment(telegram_user: Dict[str, Any], body: Dict[str, Any])
         ).fetchone()
         if recent_paid:
             db.commit()
-            return {"order_id": recent_paid[0], "payment_url": "", "status": "paid"}
+            return {"order_id": recent_paid[0], "status": "paid", "payment_provider": "manual_sbp"}
         duplicate = db.execute(
             """
-            SELECT id, payment_url, payment_status, status FROM orders
-            WHERE user_id=? AND country=? AND tariff=? AND status='payment_pending'
-              AND payment_provider='tochka' AND COALESCE(order_kind,'esim')='esim'
+            SELECT id, pay_amount FROM orders
+            WHERE user_id=? AND country=? AND tariff=? AND status='awaiting_receipt'
+              AND payment_provider='manual_sbp' AND COALESCE(order_kind,'esim')='esim'
               AND COALESCE(promo_code,'')=? AND pay_amount=?
             ORDER BY id DESC LIMIT 1
             """,
@@ -6623,7 +6725,7 @@ def create_mini_app_payment(telegram_user: Dict[str, Any], body: Dict[str, Any])
         ).fetchone()
         if duplicate:
             db.commit()
-            return _pending_payment_response(duplicate)
+            return _manual_payment_response(duplicate[0], duplicate[1], "esim")
 
         user_row = db.execute(
             "SELECT COALESCE(first_source, '') FROM users WHERE user_id=?",
@@ -6642,10 +6744,10 @@ def create_mini_app_payment(telegram_user: Dict[str, Any], body: Dict[str, Any])
                 promo_code, promo_percent, promo_discount, status, country, tariff, created_at,
                 source_code, partner_code, partner_rate, partner_commission, plan_type, supplier_key,
                 supplier_tariff, duration_days, post_limit_speed, daily_high_speed_gb, customer_email,
-                legal_acceptance, payment_provider, payment_link_id, payment_status, payment_created_at,
-                supplier_product_id, supplier_variation_id, supplier_status
-            ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, 'payment_pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                      'tochka', '', 'CREATING', ?, ?, ?, '')
+                legal_acceptance, payment_provider, supplier_product_id, supplier_variation_id,
+                supplier_status, order_kind
+            ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, 'awaiting_receipt', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                      'manual_sbp', ?, ?, '', 'esim')
             """,
             (
                 user_id, text, order["price"], pay_amount,
@@ -6654,29 +6756,18 @@ def create_mini_app_payment(telegram_user: Dict[str, Any], body: Dict[str, Any])
                 source_code, partner_code, partner_rate, partner_commission,
                 order["plan_type"], order["unlimited_key"], order["supplier_tariff"],
                 order["days"], order["post_limit_speed"], order["daily_high_speed_gb"], email,
-                json.dumps({**legal, "recorded_at": now}, ensure_ascii=False), now,
+                json.dumps({**legal, "recorded_at": now}, ensure_ascii=False),
                 order["supplier_product_id"], order["supplier_variation_id"],
             )
         )
         order_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
-        db.execute("UPDATE orders SET payment_link_id=? WHERE id=?", (f"esimlime-{order_id}", order_id))
         db.commit()
     finally:
         db.close()
 
-    redirect_base = "https://t.me/esimlimebot?startapp=account"
-    fail_redirect = "https://t.me/esimlimebot?startapp=purchase"
-    redirect_url = (
-        redirect_base if redirect_base.startswith("https://t.me/")
-        else f"{redirect_base}{'&' if '?' in redirect_base else '?'}order_id={order_id}"
-    )
-    fail_redirect_url = (
-        fail_redirect if fail_redirect.startswith("https://t.me/")
-        else f"{fail_redirect}{'&' if '?' in fail_redirect else '?'}order_id={order_id}"
-    )
-    return _create_bank_payment_for_order(
-        order_id, user_id, pay_amount, f"Оплата eSIM, заказ №{order_id}", redirect_url, fail_redirect_url
-    )
+    schedule_reminder(user_id, order_id, "payment_30m", now + 30 * 60)
+    schedule_reminder(user_id, order_id, "payment_24h", now + 24 * 60 * 60)
+    return _manual_payment_response(order_id, pay_amount, "esim")
 
 
 
