@@ -525,15 +525,53 @@ ICCID: {iccid}"""
         self.assertEqual(caught.exception.code,'balance_check_unavailable')
         self.ns['_notify_admin_throttled'].assert_not_called()
 
-    def test_invalid_refill_response_does_not_notify_admin(self):
+    def test_invalid_refill_response_becomes_terminal_manual_review(self):
         self.assertFalse(self.call('should_notify_admin_error','banana_invalid_refill_response','critical'))
         parent=self.issued()
         oid=self.order(status='paid',order_kind='topup',parent_order_id=parent,
                        supplier_status='',supplier_iccid='8985201234567890123')
         self.supplier.refill.side_effect=BananaError('banana_invalid_refill_response')
         self.assertFalse(self.call('apply_paid_supplier_topup',oid))
+        self.assertEqual(self.value(oid,'supplier_status'),'refill_ambiguous')
         self.assertEqual(self.value(oid,'supplier_last_error'),'banana_invalid_refill_response')
-        self.ns['_notify_admin_throttled'].assert_not_called()
+        self.ns['_notify_admin_throttled'].assert_called_once()
+        self.assertFalse(self.call('apply_paid_supplier_topup',oid))
+        self.assertEqual(self.supplier.refill.call_count,1)
+
+    def test_refill_ambiguous_is_skipped_by_worker_cycle(self):
+        parent=self.issued(supplier_delivered_at=1)
+        oid=self.order(status='paid',order_kind='topup',parent_order_id=parent,
+                       supplier_status='refill_ambiguous',supplier_iccid='8985201234567890123',
+                       supplier_last_error='banana_invalid_refill_response',supplier_requested_at=0)
+        self.call('process_supplier_fulfillment_once')
+        self.supplier.refill.assert_not_called()
+        self.assertEqual(self.value(oid,'supplier_status'),'refill_ambiguous')
+
+    def test_startup_migrates_old_invalid_refill_without_post(self):
+        parent=self.issued(supplier_delivered_at=1)
+        oid=self.order(id=47,status='paid',order_kind='topup',parent_order_id=parent,
+                       supplier_status='error',supplier_iccid='8985201234567890123',
+                       supplier_last_error='banana_invalid_refill_response',supplier_requested_at=0)
+        self.assertEqual(self.call('mark_ambiguous_refills_for_manual_review',self.db),(47,))
+        self.assertEqual(self.value(oid,'supplier_status'),'refill_ambiguous')
+        self.call('process_supplier_fulfillment_once')
+        self.supplier.refill.assert_not_called()
+
+    def test_refill_transport_errors_remain_retryable(self):
+        for code in ('banana_unavailable','banana_http_502'):
+            with self.subTest(code=code):
+                self.supplier.refill.reset_mock()
+                self.supplier.refill.side_effect=BananaError(code)
+                parent=self.issued(supplier_delivered_at=1)
+                oid=self.order(status='paid',order_kind='topup',parent_order_id=parent,
+                               supplier_status='',supplier_iccid='8985201234567890123')
+                self.assertFalse(self.call('apply_paid_supplier_topup',oid))
+                self.assertEqual(self.value(oid,'supplier_status'),'error')
+                self.assertEqual(self.value(oid,'supplier_last_error'),code)
+                self.db.execute('UPDATE orders SET supplier_requested_at=0 WHERE id=?',(oid,))
+                self.db.commit()
+                self.call('process_supplier_fulfillment_once')
+                self.assertEqual(self.supplier.refill.call_count,2)
 
     def test_supplier_retry_error_does_not_notify_admin(self):
         oid=self.order(status='paid',supplier_status='error',supplier_requested_at=0)

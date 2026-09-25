@@ -185,7 +185,33 @@ def cancel_obsolete_test_orders(db_conn) -> None:
     db_conn.commit()
 
 
+def mark_ambiguous_refills_for_manual_review(db_conn) -> tuple:
+    """Make previously ambiguous refill responses terminal before workers start."""
+    rows = db_conn.execute(
+        """
+        SELECT id FROM orders
+        WHERE status='paid' AND order_kind='topup'
+          AND COALESCE(supplier_status, '')!='issued'
+          AND supplier_last_error='banana_invalid_refill_response'
+        ORDER BY id
+        """
+    ).fetchall()
+    order_ids = tuple(int(row[0]) for row in rows)
+    if order_ids:
+        db_conn.execute(
+            """
+            UPDATE orders SET supplier_status='refill_ambiguous'
+            WHERE status='paid' AND order_kind='topup'
+              AND COALESCE(supplier_status, '')!='issued'
+              AND supplier_last_error='banana_invalid_refill_response'
+            """
+        )
+    db_conn.commit()
+    return order_ids
+
+
 cancel_obsolete_test_orders(conn)
+mark_ambiguous_refills_for_manual_review(conn)
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS service_alerts (
@@ -7299,6 +7325,9 @@ def apply_paid_supplier_topup(order_id: int) -> bool:
                             FROM orders WHERE id=? AND order_kind='topup'""", (order_id,)).fetchone()
         if not row or row[1] != "paid" or not row[3] or _supplier_item_id(row[4], row[5]) <= 0:
             return False
+        if row[6] == "refill_ambiguous":
+            db.rollback()
+            return False
         if row[6] != "issued":
             if row[6] == "processing" and row[7] > now-300:
                 return False
@@ -7320,9 +7349,26 @@ def apply_paid_supplier_topup(order_id: int) -> bool:
             db.commit()
     except Exception as exc:
         error = _format_banana_error(exc) if isinstance(exc,BananaError) else type(exc).__name__
+        refill_ambiguous = (
+            isinstance(exc, BananaError)
+            and exc.code == "banana_invalid_refill_response"
+        )
+        supplier_status = "refill_ambiguous" if refill_ambiguous else "error"
         with closing(_payment_db()) as db:
-            db.execute("UPDATE orders SET supplier_status='error',supplier_last_error=? WHERE id=? AND supplier_status!='issued'", (error[:300],order_id))
+            db.execute(
+                "UPDATE orders SET supplier_status=?,supplier_last_error=? "
+                "WHERE id=? AND supplier_status!='issued'",
+                (supplier_status, error[:300], order_id),
+            )
             db.commit()
+        if refill_ambiguous:
+            _notify_admin_throttled(
+                f"supplier-topup-ambiguous:{order_id}",
+                f"⚠️ Пополнение #{order_id}: Banana вернул неоднозначный ответ. "
+                "Повторный refill отключён; требуется ручная проверка.",
+                cooldown=365 * 24 * 60 * 60,
+            )
+            return False
         paid_at = _supplier_int(row[10])
         topup_context = "critical" if paid_at and now - paid_at >= 30 * 60 else "silent_retry"
         _notify_admin_error(
@@ -7611,37 +7657,41 @@ def tochka_payment_reconciliation_worker() -> None:
         time.sleep(60)
 
 
+def process_supplier_fulfillment_once() -> None:
+    now = int(time.time())
+    with closing(_payment_db()) as db:
+        rows = db.execute("""
+            SELECT id,supplier_status,COALESCE(order_kind,'esim') FROM orders
+            WHERE status='paid' AND COALESCE(supplier_product_id,0)>0 AND (
+              (COALESCE(supplier_status,'') NOT IN ('issued','refill_ambiguous') AND
+               COALESCE(supplier_requested_at,0)<=?)
+              OR (supplier_status='issued' AND COALESCE(supplier_delivered_at,0)=0
+                  AND COALESCE(supplier_delivery_next_at,0)<=? AND COALESCE(supplier_delivery_lease_until,0)<=?)
+              OR (order_kind='topup' AND supplier_status='issued' AND COALESCE(topup_balance_refreshed_at,0)=0
+                  AND COALESCE(supplier_requested_at,0)<=?))
+            ORDER BY COALESCE(supplier_requested_at,0),id LIMIT 20
+        """, (now-300,now,now,now-300)).fetchall()
+    for order_id, status, kind in rows:
+        try:
+            if kind == "topup":
+                apply_paid_supplier_topup(order_id)
+            elif status == "issued":
+                deliver_supplier_order(order_id)
+            else:
+                provision_paid_supplier_order(order_id)
+        except Exception as exc:
+            _notify_admin_error(type(exc).__name__, "silent_retry",
+                                   f"supplier-worker:{order_id}:{type(exc).__name__}",
+                                   f"⚠️ Ошибка обработки eSIM #{order_id}. Проверка продолжится.", cooldown=3600)
+
+
 def supplier_fulfillment_worker() -> None:
     if not banana.configured:
         return
     time.sleep(20)
     while True:
         try:
-            now = int(time.time())
-            with closing(_payment_db()) as db:
-                rows = db.execute("""
-                    SELECT id,supplier_status,COALESCE(order_kind,'esim') FROM orders
-                    WHERE status='paid' AND COALESCE(supplier_product_id,0)>0 AND (
-                      (COALESCE(supplier_status,'')!='issued' AND
-                       COALESCE(supplier_requested_at,0)<=?)
-                      OR (supplier_status='issued' AND COALESCE(supplier_delivered_at,0)=0
-                          AND COALESCE(supplier_delivery_next_at,0)<=? AND COALESCE(supplier_delivery_lease_until,0)<=?)
-                      OR (order_kind='topup' AND supplier_status='issued' AND COALESCE(topup_balance_refreshed_at,0)=0
-                          AND COALESCE(supplier_requested_at,0)<=?))
-                    ORDER BY COALESCE(supplier_requested_at,0),id LIMIT 20
-                """, (now-300,now,now,now-300)).fetchall()
-            for order_id, status, kind in rows:
-                try:
-                    if kind == "topup":
-                        apply_paid_supplier_topup(order_id)
-                    elif status == "issued":
-                        deliver_supplier_order(order_id)
-                    else:
-                        provision_paid_supplier_order(order_id)
-                except Exception as exc:
-                    _notify_admin_error(type(exc).__name__, "silent_retry",
-                                           f"supplier-worker:{order_id}:{type(exc).__name__}",
-                                           f"⚠️ Ошибка обработки eSIM #{order_id}. Проверка продолжится.", cooldown=3600)
+            process_supplier_fulfillment_once()
         except Exception:
             pass
         time.sleep(60)

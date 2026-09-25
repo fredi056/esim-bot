@@ -209,16 +209,50 @@ class BananaClient:
         return (text or str(fallback or "banana_error"))[:300]
 
     @staticmethod
-    def _safe_log_keys(value):
+    def _safe_log_key(key):
+        raw = str(key)
+        if (
+            re.search(r"(?<!\d)\d{15,}(?!\d)", raw)
+            or "LPA:1$" in raw.upper()
+            or re.search(r"(?i)https?://", raw)
+        ):
+            raw = "redacted_key"
+        return re.sub(r"[^A-Za-z0-9_.:-]+", "_", raw)[:80] or "empty_key"
+
+    @classmethod
+    def _safe_log_keys(cls, value):
         if not isinstance(value, dict):
             return "none"
-        keys = []
-        for key in value.keys():
-            raw = str(key)
-            if re.search(r"(?<!\d)\d{15,}(?!\d)", raw) or "LPA:1$" in raw.upper():
-                raw = "redacted_key"
-            keys.append(re.sub(r"[^A-Za-z0-9_.:-]+", "_", raw)[:80] or "empty_key")
+        keys = [cls._safe_log_key(key) for key in value.keys()]
         return ",".join(sorted(keys))[:500] or "none"
+
+    @classmethod
+    def _safe_log_field_types(cls, value):
+        if not isinstance(value, dict):
+            return "none"
+        fields = [
+            f"{cls._safe_log_key(key)}:{type(field).__name__}"
+            for key, field in value.items()
+        ]
+        return ",".join(sorted(fields))[:1000] or "none"
+
+    @classmethod
+    def _safe_log_nested_shapes(cls, value):
+        if not isinstance(value, dict):
+            return "none"
+        shapes = []
+        for key, field in value.items():
+            safe_key = cls._safe_log_key(key)
+            if isinstance(field, dict):
+                shapes.append(f"{safe_key}:dict(keys={cls._safe_log_keys(field)})")
+            elif isinstance(field, list):
+                first = field[0] if field else None
+                first_keys = cls._safe_log_keys(first) if isinstance(first, dict) else "none"
+                shapes.append(
+                    f"{safe_key}:list(count={len(field)},first_type={type(first).__name__ if field else 'missing'},"
+                    f"first_keys={first_keys})"
+                )
+        return ";".join(sorted(shapes))[:1500] or "none"
 
     @classmethod
     def _log_details_response(cls, result):
@@ -228,6 +262,11 @@ class BananaClient:
             card_is_dict = isinstance(card, dict)
             iccid_present = card_is_dict and "iccid" in card
             iccid_length = len(str(card.get("iccid") or "").strip()) if iccid_present else 0
+            esim_list_present = "esimList" in result
+            esim_list = result.get("esimList") if esim_list_present else None
+            esim_list_is_list = isinstance(esim_list, list)
+            esim_first = esim_list[0] if esim_list_is_list and esim_list else None
+            esim_first_is_dict = isinstance(esim_first, dict)
 
             def field_type(key):
                 return type(card[key]).__name__ if card_is_dict and key in card else "missing"
@@ -242,7 +281,14 @@ class BananaClient:
                 f"allowed_usage_type={field_type('allowed_usage_kb')} "
                 f"remaining_days_type={field_type('remaining_days')} "
                 f"status_present={str(card_is_dict and 'status' in card).lower()} "
-                f"refillable_type={field_type('refillable')}",
+                f"refillable_type={field_type('refillable')} "
+                f"esimList_present={str(esim_list_present).lower()} "
+                f"esimList_type={type(esim_list).__name__ if esim_list_present else 'missing'} "
+                f"esimList_count={len(esim_list) if esim_list_is_list else 0} "
+                f"esimList_first_type={type(esim_first).__name__ if esim_list_is_list and esim_list else 'missing'} "
+                f"esimList_first_keys={cls._safe_log_keys(esim_first) if esim_first_is_dict else 'none'} "
+                f"esimList_first_field_types={cls._safe_log_field_types(esim_first) if esim_first_is_dict else 'none'} "
+                f"esimList_first_nested={cls._safe_log_nested_shapes(esim_first) if esim_first_is_dict else 'none'}",
                 flush=True,
             )
             return
@@ -256,6 +302,47 @@ class BananaClient:
             f"BANANA_DETAILS_RESPONSE response_type={type(result).__name__}",
             flush=True,
         )
+
+    @classmethod
+    def _log_refill_response(cls, result, http_status="unknown"):
+        status = http_status if isinstance(http_status, int) else "unknown"
+        if isinstance(result, dict):
+            print(
+                f"BANANA_REFILL_RESPONSE http_status={status} response_type=dict "
+                f"keys={cls._safe_log_keys(result)} "
+                f"field_types={cls._safe_log_field_types(result)} "
+                f"nested={cls._safe_log_nested_shapes(result)}",
+                flush=True,
+            )
+            return
+        if isinstance(result, list):
+            first = result[0] if result else None
+            first_is_dict = isinstance(first, dict)
+            print(
+                f"BANANA_REFILL_RESPONSE http_status={status} response_type=list "
+                f"count={len(result)} first_type={type(first).__name__ if result else 'missing'} "
+                f"first_keys={cls._safe_log_keys(first) if first_is_dict else 'none'} "
+                f"first_field_types={cls._safe_log_field_types(first) if first_is_dict else 'none'} "
+                f"first_nested={cls._safe_log_nested_shapes(first) if first_is_dict else 'none'}",
+                flush=True,
+            )
+            return
+        print(
+            f"BANANA_REFILL_RESPONSE http_status={status} response_type={type(result).__name__}",
+            flush=True,
+        )
+
+    @staticmethod
+    def _refill_invalid_reason(result):
+        if not isinstance(result, dict):
+            return "unexpected_response_shape"
+        if "success" not in result:
+            return "missing_success"
+        if not isinstance(result["success"], bool):
+            return "success_wrong_type"
+        if result["success"] is False:
+            return "success_false"
+        return "unknown_validation_error"
 
     @classmethod
     def _details_invalid_reason(cls, result, expected_iccid):
@@ -408,7 +495,7 @@ class BananaClient:
         payload = {"item_id": item_id}
         if period_days is not None:
             payload["period_days"] = self._period_days(period_days)
-        result = self._unwrap_response(self._request(
+        response = self._request(
             "POST",
             f"/line/{quote(value, safe='')}/refill",
             payload,
@@ -417,8 +504,35 @@ class BananaClient:
                     order_id, item_id, self.REFILL_REQUEST_ID_VERSION
                 )
             },
-        ))
-        if not isinstance(result, dict) or result.get("success") is not True:
+            return_status=True,
+        )
+        if (
+            isinstance(response, tuple) and len(response) == 2
+            and isinstance(response[1], int)
+        ):
+            raw_result, http_status = response
+        else:
+            # Keep compatibility with injected test clients that predate
+            # return_status while production always returns the tuple.
+            raw_result, http_status = response, "unknown"
+        try:
+            result = self._unwrap_response(raw_result)
+        except BananaError as exc:
+            self._log_refill_response(raw_result, http_status)
+            if exc.code == "banana_invalid_response":
+                print(
+                    "BANANA_REFILL_INVALID reason=unexpected_response_shape",
+                    flush=True,
+                )
+                raise BananaError(
+                    "banana_invalid_refill_response",
+                    http_status=http_status if isinstance(http_status, int) else None,
+                ) from exc
+            raise
+        self._log_refill_response(result, http_status)
+        reason = self._refill_invalid_reason(result)
+        if result.get("success") is not True:
+            print(f"BANANA_REFILL_INVALID reason={reason}", flush=True)
             raise BananaError("banana_invalid_refill_response")
         if result.get("iccid") is not None and self._iccid(result["iccid"]) != value:
             raise BananaError("banana_line_mismatch")
