@@ -158,6 +158,125 @@ class BananaDetailsDiagnosticsTest(unittest.TestCase):
         for secret in (*secrets, "token-very-secret"):
             self.assertNotIn(secret, logged)
 
+    def test_single_esim_list_entry_is_normalized(self):
+        response = {
+            "esimList": [{
+                "iccid": self.ICCID,
+                "esimStatus": "IN_USE",
+                "totalVolume": 10 * 1024 + 511,
+                "orderUsage": 3 * 1024 + 256,
+                "expiredTime": "2030-12-31T23:59:59Z",
+                "totalDuration": 30,
+                "durationUnit": "DAY",
+                "supportTopUpType": 2,
+                "packageList": [{"packageCode": "secret-package"}],
+            }],
+            "pager": {"page": 1, "total": 1},
+        }
+        with redirect_stdout(io.StringIO()):
+            result = self.client_with_response(response).get_details(self.ICCID)
+        self.assertEqual(result["pager"], response["pager"])
+        self.assertEqual(result["sim_card"], {
+            "iccid": self.ICCID,
+            "allowed_usage_kb": 10,
+            "remaining_usage_kb": 7,
+            "status": "IN_USE",
+            "refillable": True,
+            "expires_at": "2030-12-31T23:59:59Z",
+        })
+        self.assertNotIn("remaining_days", result["sim_card"])
+
+    def test_esim_list_selects_exact_matching_iccid_not_first(self):
+        other_iccid = "8985201234567890999"
+        response = {
+            "esimList": [
+                {
+                    "iccid": other_iccid,
+                    "esimStatus": "IN_USE",
+                    "totalVolume": 999 * 1024,
+                    "orderUsage": 1,
+                    "supportTopUpType": 3,
+                },
+                {
+                    "iccid": self.ICCID,
+                    "esimStatus": "GOT_RESOURCE",
+                    "totalVolume": 2048,
+                    "orderUsage": 1024,
+                    "supportTopUpType": 1,
+                },
+            ],
+            "pager": {"page": 1, "total": 2},
+        }
+        with redirect_stdout(io.StringIO()):
+            card = self.client_with_response(response).get_details(self.ICCID)["sim_card"]
+        self.assertEqual(card["iccid"], self.ICCID)
+        self.assertEqual(card["allowed_usage_kb"], 2)
+        self.assertEqual(card["remaining_usage_kb"], 1)
+        self.assertEqual(card["status"], "GOT_RESOURCE")
+        self.assertFalse(card["refillable"])
+
+    def test_esim_list_without_matching_iccid_is_rejected(self):
+        response = {
+            "esimList": [{
+                "iccid": "8985201234567890999",
+                "totalVolume": 2048,
+                "orderUsage": 0,
+                "supportTopUpType": 2,
+            }],
+            "pager": {},
+        }
+        output = io.StringIO()
+        with redirect_stdout(output), self.assertRaises(BananaError) as caught:
+            self.client_with_response(response).get_details(self.ICCID)
+        self.assertEqual(caught.exception.code, "banana_invalid_line_response")
+        self.assertIn(
+            "BANANA_DETAILS_INVALID reason=esim_iccid_not_found",
+            output.getvalue(),
+        )
+
+    def test_esim_list_usage_values_are_strict_nonnegative_integers(self):
+        cases = (
+            (True, 0, "invalid_total_volume_type"),
+            ("2048", 0, "invalid_total_volume_type"),
+            (-1, 0, "invalid_total_volume_type"),
+            (2048, True, "invalid_order_usage_type"),
+            (2048, "1024", "invalid_order_usage_type"),
+            (2048, -1, "invalid_order_usage_type"),
+            (1024, 1025, "order_usage_exceeds_total_volume"),
+        )
+        for total_volume, order_usage, reason in cases:
+            with self.subTest(total_volume=total_volume, order_usage=order_usage):
+                response = {
+                    "esimList": [{
+                        "iccid": self.ICCID,
+                        "totalVolume": total_volume,
+                        "orderUsage": order_usage,
+                        "supportTopUpType": 2,
+                    }],
+                    "pager": {},
+                }
+                output = io.StringIO()
+                with redirect_stdout(output), self.assertRaises(BananaError) as caught:
+                    self.client_with_response(response).get_details(self.ICCID)
+                self.assertEqual(caught.exception.code, "banana_invalid_line_response")
+                self.assertIn(f"BANANA_DETAILS_INVALID reason={reason}", output.getvalue())
+
+    def test_esim_list_support_topup_type_mapping_is_conservative(self):
+        for support_type, expected in ((1, False), (2, True), (3, True), (0, False), (True, False), ("2", False)):
+            with self.subTest(support_type=support_type):
+                response = {
+                    "esimList": [{
+                        "iccid": self.ICCID,
+                        "totalVolume": 1024,
+                        "orderUsage": 1024,
+                        "supportTopUpType": support_type,
+                    }],
+                    "pager": {},
+                }
+                with redirect_stdout(io.StringIO()):
+                    card = self.client_with_response(response).get_details(self.ICCID)["sim_card"]
+                self.assertIs(card["refillable"], expected)
+
     def test_refill_dict_is_logged_structurally_without_values(self):
         response = {
             "result": {
@@ -209,6 +328,58 @@ class BananaDetailsDiagnosticsTest(unittest.TestCase):
         logged = output.getvalue()
         self.assertIn("BANANA_REFILL_RESPONSE http_status=200 response_type=dict", logged)
         self.assertNotIn(self.ICCID, logged)
+
+    def test_wrapper_refill_success_with_matching_iccid_passes(self):
+        response = {
+            "success": True,
+            "errorCode": 0,
+            "errorMsg": "",
+            "obj": {"iccid": self.ICCID, "refillId": "secret-refill-id"},
+        }
+        client = self.client_with_response((response, 200))
+        output = io.StringIO()
+        with redirect_stdout(output):
+            result = client.refill(48, self.ICCID, 330)
+        self.assertEqual(result, response["obj"])
+        self.assertNotIn(self.ICCID, output.getvalue())
+        self.assertNotIn("secret-refill-id", output.getvalue())
+
+    def test_wrapper_refill_success_without_iccid_passes(self):
+        response = {
+            "success": True,
+            "errorCode": 0,
+            "errorMsg": "",
+            "obj": {"refillId": "secret-refill-id"},
+        }
+        client = self.client_with_response((response, 200))
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(client.refill(48, self.ICCID, 330), response["obj"])
+
+    def test_wrapper_refill_success_with_mismatched_iccid_is_rejected(self):
+        for returned_iccid in ("8985201234567890999", None, 8985201234567890123):
+            with self.subTest(returned_iccid=returned_iccid):
+                response = {
+                    "success": True,
+                    "errorCode": 0,
+                    "errorMsg": "",
+                    "obj": {"iccid": returned_iccid},
+                }
+                client = self.client_with_response((response, 200))
+                with redirect_stdout(io.StringIO()), self.assertRaises(BananaError) as caught:
+                    client.refill(48, self.ICCID, 330)
+                self.assertEqual(caught.exception.code, "banana_line_mismatch")
+
+    def test_wrapper_refill_success_false_is_not_accepted(self):
+        response = {
+            "success": False,
+            "errorCode": "refill_rejected",
+            "errorMsg": "rejected",
+            "obj": {"iccid": self.ICCID},
+        }
+        client = self.client_with_response((response, 200))
+        with redirect_stdout(io.StringIO()), self.assertRaises(BananaError) as caught:
+            client.refill(48, self.ICCID, 330)
+        self.assertEqual(caught.exception.code, "refill_rejected")
 
     def test_refill_invalid_reasons_distinguish_type_and_false(self):
         for value, reason in ((1, "success_wrong_type"), (False, "success_false")):

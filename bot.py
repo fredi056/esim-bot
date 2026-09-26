@@ -6080,7 +6080,10 @@ def _supplier_line_allows_topup(sim_card: Dict[str, Any]) -> bool:
     if sim_card.get("refillable") is False or sim_card.get("refillable") == 0:
         return False
     status = str(sim_card.get("status") or "").strip().lower()
-    if status in {"expired", "blocked", "deleted", "cancelled", "canceled", "terminated", "disabled"}:
+    if status in {
+        "expired", "blocked", "deleted", "cancelled", "canceled", "terminated", "disabled",
+        "cancel", "unused_expired", "used_expired", "revoke", "revoked", "suspended",
+    }:
         return False
     expiry = sim_card.get("expire_at") or sim_card.get("expires_at")
     if expiry:

@@ -4,6 +4,7 @@ import json
 import os
 import re
 import ssl
+from datetime import datetime
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlsplit
 from urllib.request import Request, urlopen
@@ -372,6 +373,75 @@ class BananaClient:
                 return reason
         return "unknown_validation_error"
 
+    @staticmethod
+    def _valid_expiry(value):
+        if not isinstance(value, str):
+            return None
+        expiry = value.strip()
+        if not expiry or len(expiry) > 100 or not expiry.isprintable():
+            return None
+        try:
+            datetime.fromisoformat(expiry.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return expiry
+
+    @classmethod
+    def _normalize_esim_list_response(cls, result, expected_iccid):
+        esim_list = result.get("esimList")
+        if not isinstance(esim_list, list):
+            return None, "invalid_esim_list_type"
+
+        matched = None
+        for candidate in esim_list:
+            if (
+                isinstance(candidate, dict)
+                and isinstance(candidate.get("iccid"), str)
+                and candidate["iccid"] == expected_iccid
+            ):
+                matched = candidate
+                break
+        if matched is None:
+            return None, "esim_iccid_not_found"
+
+        total_volume = matched.get("totalVolume")
+        if (
+            isinstance(total_volume, bool)
+            or not isinstance(total_volume, int)
+            or total_volume < 0
+        ):
+            return None, "invalid_total_volume_type"
+        order_usage = matched.get("orderUsage")
+        if (
+            isinstance(order_usage, bool)
+            or not isinstance(order_usage, int)
+            or order_usage < 0
+        ):
+            return None, "invalid_order_usage_type"
+        if order_usage > total_volume:
+            return None, "order_usage_exceeds_total_volume"
+
+        support_topup_type = matched.get("supportTopUpType")
+        refillable = (
+            isinstance(support_topup_type, int)
+            and not isinstance(support_topup_type, bool)
+            and support_topup_type in (2, 3)
+        )
+        card = {
+            "iccid": expected_iccid,
+            "allowed_usage_kb": total_volume // 1024,
+            "remaining_usage_kb": (total_volume - order_usage) // 1024,
+            "status": matched.get("esimStatus"),
+            "refillable": refillable,
+        }
+        expiry = cls._valid_expiry(matched.get("expiredTime"))
+        if expiry is not None:
+            card["expires_at"] = expiry
+
+        normalized = dict(result)
+        normalized["sim_card"] = card
+        return normalized, None
+
     def create_line(self, order_id, item_id, count=1, period_days=None):
         if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
             raise BananaError("banana_invalid_order")
@@ -478,6 +548,16 @@ class BananaClient:
             self._log_details_response(raw_result)
             raise
         self._log_details_response(result)
+        if "sim_card" not in result and "esimList" in result:
+            result, normalization_error = self._normalize_esim_list_response(
+                result, value
+            )
+            if normalization_error:
+                print(
+                    f"BANANA_DETAILS_INVALID reason={normalization_error}",
+                    flush=True,
+                )
+                raise BananaError("banana_invalid_line_response")
         reason = self._details_invalid_reason(result, value)
         try:
             self._validate_sim_card(
@@ -515,6 +595,12 @@ class BananaClient:
             # Keep compatibility with injected test clients that predate
             # return_status while production always returns the tuple.
             raw_result, http_status = response, "unknown"
+        wrapper_success = (
+            isinstance(raw_result, dict)
+            and any(key in raw_result for key in ("obj", "errorCode", "errorMsg"))
+            and raw_result.get("success") is True
+            and isinstance(raw_result.get("obj"), dict)
+        )
         try:
             result = self._unwrap_response(raw_result)
         except BananaError as exc:
@@ -530,6 +616,10 @@ class BananaClient:
                 ) from exc
             raise
         self._log_refill_response(result, http_status)
+        if wrapper_success:
+            if "iccid" in result and result["iccid"] != value:
+                raise BananaError("banana_line_mismatch")
+            return result
         reason = self._refill_invalid_reason(result)
         if result.get("success") is not True:
             print(f"BANANA_REFILL_INVALID reason={reason}", flush=True)

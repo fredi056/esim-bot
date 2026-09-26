@@ -786,6 +786,21 @@ ICCID: {iccid}"""
             'refillable':True,'status':'active',
         }))
 
+    def test_second_api_terminal_statuses_block_topup(self):
+        for status in ('CANCEL','UNUSED_EXPIRED','USED_EXPIRED','REVOKE','REVOKED','SUSPENDED'):
+            with self.subTest(status=status):
+                self.assertFalse(self.call('_supplier_line_allows_topup',{
+                    'refillable':True,'status':status,
+                }))
+
+    def test_second_api_active_statuses_allow_exhausted_refillable_line(self):
+        for status in ('GOT_RESOURCE','IN_USE'):
+            with self.subTest(status=status):
+                self.assertTrue(self.call('_supplier_line_allows_topup',{
+                    'refillable':True,'status':status,'remaining_usage_kb':0,
+                    'expires_at':'2035-01-01T00:00:00Z',
+                }))
+
     def test_standard_purchase_does_not_issue_before_manual_confirmation(self):
         result=self.call('create_mini_app_manual_sbp_order',{'id':1},self.payload())
         oid=result['order_id']
