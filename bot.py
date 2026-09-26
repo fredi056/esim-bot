@@ -6254,6 +6254,11 @@ def create_mini_app_topup(telegram_user: Dict[str, Any], parent_order_id: int,
     option = _supplier_catalog_option(parent[0], body.get("option_id"))
     if not option:
         raise ApiError(409, "topup_option_changed")
+    try:
+        promo = calculate_promo_discount(option["price"], body.get("promo_code", ""))
+    except ValueError as exc:
+        raise ApiError(400, "invalid_promo_code") from exc
+    pay_amount = promo["final_price"]
     label = _format_topup_volume(option["refill_mb"])
     tariff = f"Пополнение {label} / {option['refill_days']} дн."
     with closing(_payment_db()) as lookup_db:
@@ -6263,9 +6268,13 @@ def create_mini_app_topup(telegram_user: Dict[str, Any], parent_order_id: int,
             WHERE user_id=? AND parent_order_id=? AND supplier_product_id=?
               AND supplier_variation_id=? AND topup_days=? AND status='awaiting_receipt'
               AND order_kind='topup' AND payment_provider='manual_sbp'
+              AND COALESCE(promo_code, '')=? AND pay_amount=?
             ORDER BY id DESC LIMIT 1
             """,
-            (user_id, parent_order_id, option["product_id"], option["variation_id"], option["refill_days"]),
+            (
+                user_id, parent_order_id, option["product_id"], option["variation_id"],
+                option["refill_days"], promo["promo_code"], pay_amount,
+            ),
         ).fetchone()
     if duplicate:
         _send_manual_topup_confirmation(user_id, duplicate[0], parent[0], tariff, duplicate[1])
@@ -6307,9 +6316,13 @@ def create_mini_app_topup(telegram_user: Dict[str, Any], parent_order_id: int,
             WHERE user_id=? AND parent_order_id=? AND supplier_product_id=?
               AND supplier_variation_id=? AND topup_days=? AND status='awaiting_receipt'
               AND order_kind='topup' AND payment_provider='manual_sbp'
+              AND COALESCE(promo_code, '')=? AND pay_amount=?
             ORDER BY id DESC LIMIT 1
             """,
-            (user_id, parent_order_id, option["product_id"], option["variation_id"], option["refill_days"]),
+            (
+                user_id, parent_order_id, option["product_id"], option["variation_id"],
+                option["refill_days"], promo["promo_code"], pay_amount,
+            ),
         ).fetchone()
         if duplicate:
             db.commit()
@@ -6319,15 +6332,18 @@ def create_mini_app_topup(telegram_user: Dict[str, Any], parent_order_id: int,
         db.execute(
             """
             INSERT INTO orders (
-                user_id, text, price, pay_amount, status, country, tariff, created_at,
+                user_id, text, price, pay_amount, promo_code, promo_percent, promo_discount,
+                status, country, tariff, created_at,
                 plan_type, customer_email, legal_acceptance, payment_provider,
                 supplier_product_id, supplier_variation_id,
                 supplier_status, supplier_iccid, order_kind, parent_order_id, topup_mb, topup_days
-            ) VALUES (?, ?, ?, ?, 'awaiting_receipt', ?, ?, ?, 'topup', '', ?, 'manual_sbp',
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'awaiting_receipt', ?, ?, ?, 'topup', '', ?, 'manual_sbp',
                       ?, ?, '', ?, 'topup', ?, ?, ?)
             """,
             (
-                user_id, text, option["price"], option["price"], current_parent[0], tariff, now,
+                user_id, text, option["price"], pay_amount,
+                promo["promo_code"], promo["discount_percent"], promo["promo_discount"],
+                current_parent[0], tariff, now,
                 json.dumps({**legal, "recorded_at": now}, ensure_ascii=False),
                 option["product_id"], option["variation_id"], current_parent[1], parent_order_id,
                 option["refill_mb"], option["refill_days"],
@@ -6343,8 +6359,8 @@ def create_mini_app_topup(telegram_user: Dict[str, Any], parent_order_id: int,
 
     schedule_reminder(user_id, order_id, "payment_30m", now + 30 * 60)
     schedule_reminder(user_id, order_id, "payment_24h", now + 24 * 60 * 60)
-    _send_manual_topup_confirmation(user_id, order_id, parent[0], tariff, option["price"])
-    return _manual_payment_response(order_id, option["price"], "topup")
+    _send_manual_topup_confirmation(user_id, order_id, parent[0], tariff, pay_amount)
+    return _manual_payment_response(order_id, pay_amount, "topup")
 
 
 def read_mini_app_esim_image(user_id: int, order_id: int):

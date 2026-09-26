@@ -923,6 +923,11 @@ ICCID: {iccid}"""
         self.assertEqual(self.value(result['order_id'],'supplier_iccid'),'8985201234567890123')
         self.assertEqual(self.value(result['order_id'],'supplier_product_id'),796)
         self.assertEqual(self.value(result['order_id'],'supplier_variation_id'),809)
+        self.assertEqual(self.value(result['order_id'],'price'),920)
+        self.assertEqual(self.value(result['order_id'],'pay_amount'),920)
+        self.assertEqual(self.value(result['order_id'],'promo_code'),'')
+        self.assertEqual(self.value(result['order_id'],'promo_percent'),0)
+        self.assertEqual(self.value(result['order_id'],'promo_discount'),0)
         self.bank.create_payment.assert_not_called()
         client_messages=[call.args[1] for call in self.telegram.send_message.call_args_list
                          if call.args and call.args[0]==1]
@@ -943,6 +948,73 @@ ICCID: {iccid}"""
             self.db.execute("SELECT COUNT(*) FROM orders WHERE order_kind='topup'").fetchone()[0],1,
         )
 
+    def test_topup_promo_uses_server_price_and_discounted_confirmation(self):
+        parent=self.issued()
+        self.supplier.get_details.return_value={'sim_card':{
+            'iccid':'8985201234567890123','status':'active','refillable':True,
+        }}
+        body={
+            'option_id':'p796v809','promo_code':' LiMe10 ',
+            'price':1,'pay_amount':1,'promo_discount':919,
+            'legal_acceptance':self.payload()['legal_acceptance'],
+        }
+        result=self.call('create_mini_app_topup',{'id':1},parent,body)
+        oid=result['order_id']
+        self.assertEqual(self.value(oid,'price'),920)
+        self.assertEqual(self.value(oid,'pay_amount'),828)
+        self.assertEqual(self.value(oid,'promo_code'),'lime10')
+        self.assertEqual(self.value(oid,'promo_percent'),10)
+        self.assertEqual(self.value(oid,'promo_discount'),92)
+        self.assertEqual(result['pay_amount'],828)
+        client_messages=[call.args[1] for call in self.telegram.send_message.call_args_list
+                         if call.args and call.args[0]==1]
+        self.assertTrue(any('К оплате: 828 ₽' in text for text in client_messages))
+        self.supplier.refill.assert_not_called()
+
+    def test_unknown_topup_promo_is_rejected_before_order_or_supplier_check(self):
+        parent=self.issued()
+        body={
+            'option_id':'p796v809','promo_code':'unknown',
+            'legal_acceptance':self.payload()['legal_acceptance'],
+        }
+        with self.assertRaises(ApiError) as caught:
+            self.call('create_mini_app_topup',{'id':1},parent,body)
+        self.assertEqual(caught.exception.status,400)
+        self.assertEqual(caught.exception.code,'invalid_promo_code')
+        self.assertEqual(
+            self.db.execute("SELECT COUNT(*) FROM orders WHERE order_kind='topup'").fetchone()[0],0,
+        )
+        self.supplier.get_details.assert_not_called()
+        self.supplier.refill.assert_not_called()
+
+    def test_topup_duplicate_identity_includes_normalized_promo_and_pay_amount(self):
+        parent=self.issued()
+        self.supplier.get_details.return_value={'sim_card':{
+            'iccid':'8985201234567890123','status':'active','refillable':True,
+        }}
+        legal=self.payload()['legal_acceptance']
+        full=self.call('create_mini_app_topup',{'id':1},parent,{
+            'option_id':'p796v809','legal_acceptance':legal,
+        })
+        lime10=self.call('create_mini_app_topup',{'id':1},parent,{
+            'option_id':'p796v809','promo_code':'lime10','legal_acceptance':legal,
+        })
+        lime10_duplicate=self.call('create_mini_app_topup',{'id':1},parent,{
+            'option_id':'p796v809','promo_code':' LIME10 ','legal_acceptance':legal,
+        })
+        lime20=self.call('create_mini_app_topup',{'id':1},parent,{
+            'option_id':'p796v809','promo_code':'lime20','legal_acceptance':legal,
+        })
+        self.assertNotEqual(full['order_id'],lime10['order_id'])
+        self.assertEqual(lime10_duplicate['order_id'],lime10['order_id'])
+        self.assertNotEqual(lime20['order_id'],lime10['order_id'])
+        self.assertEqual([full['pay_amount'],lime10['pay_amount'],lime20['pay_amount']],[920,828,736])
+        self.assertEqual(
+            self.db.execute("SELECT COUNT(*) FROM orders WHERE order_kind='topup'").fetchone()[0],3,
+        )
+        self.assertEqual(self.supplier.get_details.call_count,3)
+        self.supplier.refill.assert_not_called()
+
     def test_manual_topup_confirms_once_and_reject_never_refills(self):
         parent=self.issued()
         self.supplier.get_details.return_value={'sim_card':{
@@ -951,7 +1023,7 @@ ICCID: {iccid}"""
         body={'option_id':'p796v809','promo_code':'lime99','legal_acceptance':self.payload()['legal_acceptance']}
         result=self.call('create_mini_app_topup',{'id':1},parent,body)
         oid=result['order_id']
-        self.assertEqual(self.value(oid,'pay_amount'),920)
+        self.assertEqual(self.value(oid,'pay_amount'),9)
         self.supplier.refill.assert_not_called()
         self.call('photo_handler',SimpleNamespace(
             from_user=SimpleNamespace(id=1,username='client',first_name='Client'),
@@ -964,7 +1036,7 @@ ICCID: {iccid}"""
             def __init__(thread_self,target,args=(),**kwargs): thread_self.target=target; thread_self.args=args
             def start(thread_self): thread_self.target(*thread_self.args)
         self.ns['threading']=SimpleNamespace(Thread=ImmediateThread)
-        confirm=SimpleNamespace(data=f'ok_{oid}_1_920',from_user=SimpleNamespace(id=99),id='confirm')
+        confirm=SimpleNamespace(data=f'ok_{oid}_1_9',from_user=SimpleNamespace(id=99),id='confirm')
         self.call('callback_handler',confirm)
         self.assertEqual(self.value(oid,'status'),'paid')
         self.supplier.refill.assert_called_once_with(oid,'8985201234567890123',809)
