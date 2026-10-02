@@ -185,33 +185,42 @@ def cancel_obsolete_test_orders(db_conn) -> None:
     db_conn.commit()
 
 
+def _is_blank_refill_transaction_error(error: str) -> bool:
+    """Match only the supplier's permanent missing-transaction validation error."""
+    return bool(re.search(r"(?<!\d)000105(?!\d)", str(error))) and bool(
+        re.search(r"transactionId\s*:\s*must\s+not\s+be\s+blank", str(error), re.I)
+    )
+
+
 def mark_ambiguous_refills_for_manual_review(db_conn) -> tuple:
     """Make previously ambiguous refill responses terminal before workers start."""
     rows = db_conn.execute(
         """
-        SELECT id FROM orders
+        SELECT id, supplier_last_error FROM orders
         WHERE status='paid' AND order_kind='topup'
-          AND COALESCE(supplier_status, '')!='issued'
-          AND supplier_last_error='banana_invalid_refill_response'
+          AND COALESCE(supplier_status, '') NOT IN ('issued', 'refill_ambiguous')
         ORDER BY id
         """
     ).fetchall()
-    order_ids = tuple(int(row[0]) for row in rows)
+    order_ids = tuple(int(row[0]) for row in rows if
+                      row[1] == 'banana_invalid_refill_response'
+                      or _is_blank_refill_transaction_error(row[1]))
     if order_ids:
-        db_conn.execute(
+        db_conn.executemany(
             """
             UPDATE orders SET supplier_status='refill_ambiguous'
-            WHERE status='paid' AND order_kind='topup'
-              AND COALESCE(supplier_status, '')!='issued'
-              AND supplier_last_error='banana_invalid_refill_response'
-            """
+            WHERE id=? AND status='paid' AND order_kind='topup'
+              AND COALESCE(supplier_status, '') NOT IN ('issued', 'refill_ambiguous')
+            """, ((order_id,) for order_id in order_ids)
         )
     db_conn.commit()
     return order_ids
 
 
 cancel_obsolete_test_orders(conn)
-mark_ambiguous_refills_for_manual_review(conn)
+for _manual_review_order_id in mark_ambiguous_refills_for_manual_review(conn):
+    print(f"TOPUP_MANUAL_REVIEW order_id={_manual_review_order_id} "
+          "supplier_status=refill_ambiguous retry_disabled=1", flush=True)
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS service_alerts (
@@ -7370,7 +7379,8 @@ def apply_paid_supplier_topup(order_id: int) -> bool:
         error = _format_banana_error(exc) if isinstance(exc,BananaError) else type(exc).__name__
         refill_ambiguous = (
             isinstance(exc, BananaError)
-            and exc.code == "banana_invalid_refill_response"
+            and (exc.code == "banana_invalid_refill_response"
+                 or _is_blank_refill_transaction_error(error))
         )
         supplier_status = "refill_ambiguous" if refill_ambiguous else "error"
         with closing(_payment_db()) as db:
@@ -7383,7 +7393,7 @@ def apply_paid_supplier_topup(order_id: int) -> bool:
         if refill_ambiguous:
             _notify_admin_throttled(
                 f"supplier-topup-ambiguous:{order_id}",
-                f"⚠️ Пополнение #{order_id}: Banana вернул неоднозначный ответ. "
+                f"⚠️ Пополнение #{order_id}: {error}. "
                 "Повторный refill отключён; требуется ручная проверка.",
                 cooldown=365 * 24 * 60 * 60,
             )
