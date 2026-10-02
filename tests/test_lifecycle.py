@@ -557,6 +557,49 @@ ICCID: {iccid}"""
         self.call('process_supplier_fulfillment_once')
         self.supplier.refill.assert_not_called()
 
+    def test_blank_transaction_refill_stops_posts_and_notifications(self):
+        parent=self.issued(supplier_delivered_at=1)
+        oid=self.order(status='paid',order_kind='topup',parent_order_id=parent,
+                       supplier_iccid='8985201234567890123')
+        self.supplier.refill.side_effect=BananaError('000105','transactionId:must not be blank')
+        self.assertFalse(self.call('apply_paid_supplier_topup',oid))
+        self.assertEqual(self.value(oid,'supplier_status'),'refill_ambiguous')
+        self.assertEqual(self.value(oid,'status'),'paid')
+        self.ns['_notify_admin_throttled'].assert_called_once()
+        self.db.execute('UPDATE orders SET supplier_requested_at=0 WHERE id=?',(oid,))
+        self.db.commit()
+        self.call('process_supplier_fulfillment_once')
+        self.assertFalse(self.call('apply_paid_supplier_topup',oid))
+        self.assertEqual(self.supplier.refill.call_count,1)
+        self.ns['_notify_admin_throttled'].assert_called_once()
+
+    def test_startup_stops_order_65_without_post_or_alert(self):
+        parent=self.issued(supplier_delivered_at=1)
+        oid=self.order(id=65,status='paid',order_kind='topup',parent_order_id=parent,
+                       supplier_status='error',supplier_iccid='8985201234567890123',
+                       supplier_last_error='000105 — transactionId:must not be blank')
+        self.assertEqual(self.call('mark_ambiguous_refills_for_manual_review',self.db),(65,))
+        self.assertEqual(self.call('mark_ambiguous_refills_for_manual_review',self.db),())
+        self.assertEqual(self.value(oid,'supplier_status'),'refill_ambiguous')
+        self.call('process_supplier_fulfillment_once')
+        self.call('apply_paid_supplier_topup',oid)
+        self.supplier.refill.assert_not_called()
+        self.ns['_notify_admin_throttled'].assert_not_called()
+
+    def test_startup_preserves_unrelated_and_successful_orders(self):
+        cases=[('paid','topup','error','000105 — otherField:must not be blank'),
+               ('paid','topup','error','000106 — transactionId:must not be blank'),
+               ('paid','topup','issued','000105 — transactionId:must not be blank'),
+               ('paid','esim','error','000105 — transactionId:must not be blank'),
+               ('pending_review','topup','error','000105 — transactionId:must not be blank'),
+               ('paid','topup','error','banana_http_502')]
+        ids=[self.order(status=s,order_kind=k,supplier_status=ss,supplier_last_error=e)
+             for s,k,ss,e in cases]
+        self.assertEqual(self.call('mark_ambiguous_refills_for_manual_review',self.db),())
+        for oid,(_,_,ss,e) in zip(ids,cases):
+            self.assertEqual(self.value(oid,'supplier_status'),ss)
+            self.assertEqual(self.value(oid,'supplier_last_error'),e)
+
     def test_refill_transport_errors_remain_retryable(self):
         for code in ('banana_unavailable','banana_http_502'):
             with self.subTest(code=code):
