@@ -572,18 +572,17 @@ class BananaClient:
     def refill(self, order_id, iccid, item_id, period_days=None):
         value = self._iccid(iccid)
         item_id = self._item_id(item_id)
-        payload = {"item_id": item_id}
+        transaction_id = self.request_id(
+            order_id, item_id, self.REFILL_REQUEST_ID_VERSION
+        )
+        payload = {"item_id": item_id, "transactionId": transaction_id}
         if period_days is not None:
             payload["period_days"] = self._period_days(period_days)
         response = self._request(
             "POST",
             f"/line/{quote(value, safe='')}/refill",
             payload,
-            {
-                "X-Partner-Request-ID": self.request_id(
-                    order_id, item_id, self.REFILL_REQUEST_ID_VERSION
-                )
-            },
+            {"X-Partner-Request-ID": transaction_id},
             return_status=True,
         )
         if (
