@@ -734,6 +734,40 @@ ICCID: {iccid}"""
         self.assertTrue(self.call('_mark_bank_order_paid',oid,'op1',920))
         self.assertEqual(self.value(oid,'payment_operation_id'),'op1')
 
+    def test_webhook_rechecks_approved_payment_with_bank_api(self):
+        oid=self.order()
+        self.bank.decode_webhook.return_value={
+            'webhookType':'acquiringInternetPayment','status':'APPROVED',
+            'operationId':'op1','paymentLinkId':f'esimlime-{oid}','amount':920,
+        }
+        self.bank.get_payment.return_value={
+            'operationId':'op1','paymentLinkId':f'esimlime-{oid}',
+            'status':'APPROVED','amount':920,
+        }
+        self.call('accept_tochka_webhook','signed-token')
+        self.assertEqual(self.value(oid,'status'),'paid')
+        self.bank.get_payment.assert_called_once_with('op1')
+        self.call('accept_tochka_webhook','signed-token')
+        self.assertEqual(
+            self.db.execute('SELECT count(*) FROM payment_notifications WHERE order_id=?',(oid,)).fetchone()[0],
+            2,
+        )
+
+    def test_webhook_does_not_settle_until_bank_api_is_approved(self):
+        oid=self.order()
+        self.bank.decode_webhook.return_value={
+            'webhookType':'acquiringInternetPayment','status':'APPROVED',
+            'operationId':'op1','paymentLinkId':f'esimlime-{oid}','amount':920,
+        }
+        self.bank.get_payment.return_value={
+            'operationId':'op1','paymentLinkId':f'esimlime-{oid}',
+            'status':'PROCESSING','amount':920,
+        }
+        with self.assertRaises(ApiError) as caught:
+            self.call('accept_tochka_webhook','signed-token')
+        self.assertEqual(caught.exception.status,503)
+        self.assertEqual(self.value(oid,'status'),'payment_pending')
+
     def test_manual_order_does_not_reuse_tochka_order_during_creation(self):
         oid=self.order(payment_operation_id='',payment_url='',payment_status='CREATING')
         result=self.call('create_mini_app_manual_sbp_order',{'id':1},self.payload())
@@ -803,9 +837,9 @@ ICCID: {iccid}"""
         self.assertEqual(self.value(result['order_id'],'status'),'payment_pending')
         self.bank.create_payment.assert_called_once()
 
-    def test_account_api_startup_uses_manual_sbp_callback(self):
+    def test_account_api_startup_uses_tochka_callback(self):
         source=(ROOT/'bot.py').read_text(encoding='utf-8')
-        self.assertIn('None if sales_are_paused() else create_mini_app_manual_sbp_order,',source)
+        self.assertIn('None if sales_are_paused() else create_mini_app_payment,',source)
 
     def test_standard_purchase_uses_catalog_without_supplier_lookup(self):
         result=self.call('create_mini_app_manual_sbp_order',{'id':1},self.payload())
@@ -961,8 +995,8 @@ ICCID: {iccid}"""
         result=self.call('create_mini_app_topup',{'id':1},parent,body)
         self.assertEqual(self.value(result['order_id'],'order_kind'),'topup')
         self.assertEqual(self.value(result['order_id'],'parent_order_id'),parent)
-        self.assertEqual(result['payment_provider'],'manual_sbp')
-        self.assertEqual(result['status'],'awaiting_receipt')
+        self.assertEqual(self.value(result['order_id'],'payment_provider'),'tochka')
+        self.assertEqual(result['status'],'payment_pending')
         self.assertEqual(self.value(result['order_id'],'supplier_iccid'),'8985201234567890123')
         self.assertEqual(self.value(result['order_id'],'supplier_product_id'),796)
         self.assertEqual(self.value(result['order_id'],'supplier_variation_id'),809)
@@ -971,13 +1005,11 @@ ICCID: {iccid}"""
         self.assertEqual(self.value(result['order_id'],'promo_code'),'')
         self.assertEqual(self.value(result['order_id'],'promo_percent'),0)
         self.assertEqual(self.value(result['order_id'],'promo_discount'),0)
-        self.bank.create_payment.assert_not_called()
-        client_messages=[call.args[1] for call in self.telegram.send_message.call_args_list
-                         if call.args and call.args[0]==1]
-        self.assertTrue(any('✅ Пополнение №' in text and 'К оплате: 920 ₽' in text
-                            for text in client_messages))
+        self.bank.create_payment.assert_called_once()
+        self.assertEqual(self.bank.create_payment.call_args.args[1],920)
+        self.telegram.send_message.assert_not_called()
 
-    def test_topup_duplicate_click_returns_same_manual_order(self):
+    def test_topup_duplicate_click_returns_same_bank_order(self):
         parent=self.issued()
         self.supplier.get_details.return_value={'sim_card':{
             'iccid':'8985201234567890123','status':'active','refillable':True,
@@ -990,8 +1022,25 @@ ICCID: {iccid}"""
         self.assertEqual(
             self.db.execute("SELECT COUNT(*) FROM orders WHERE order_kind='topup'").fetchone()[0],1,
         )
+        self.assertEqual(self.bank.create_payment.call_count,1)
 
-    def test_topup_promo_uses_server_price_and_discounted_confirmation(self):
+    def test_recent_paid_topup_is_not_charged_twice(self):
+        parent=self.issued()
+        self.supplier.get_details.return_value={'sim_card':{
+            'iccid':'8985201234567890123','status':'active','refillable':True,
+        }}
+        body={'option_id':'p796v809','legal_acceptance':self.payload()['legal_acceptance']}
+        first=self.call('create_mini_app_topup',{'id':1},parent,body)
+        self.assertTrue(self.call('_mark_bank_order_paid',first['order_id'],'op1',920))
+        second=self.call('create_mini_app_topup',{'id':1},parent,body)
+        self.assertEqual(second['order_id'],first['order_id'])
+        self.assertEqual(second['status'],'paid')
+        self.assertEqual(self.bank.create_payment.call_count,1)
+        self.assertEqual(
+            self.db.execute("SELECT COUNT(*) FROM orders WHERE order_kind='topup'").fetchone()[0],1,
+        )
+
+    def test_topup_promo_uses_server_price_and_discounted_bank_amount(self):
         parent=self.issued()
         self.supplier.get_details.return_value={'sim_card':{
             'iccid':'8985201234567890123','status':'active','refillable':True,
@@ -1008,10 +1057,8 @@ ICCID: {iccid}"""
         self.assertEqual(self.value(oid,'promo_code'),'lime10')
         self.assertEqual(self.value(oid,'promo_percent'),10)
         self.assertEqual(self.value(oid,'promo_discount'),92)
-        self.assertEqual(result['pay_amount'],828)
-        client_messages=[call.args[1] for call in self.telegram.send_message.call_args_list
-                         if call.args and call.args[0]==1]
-        self.assertTrue(any('К оплате: 828 ₽' in text for text in client_messages))
+        self.assertEqual(self.bank.create_payment.call_args.args[1],828)
+        self.telegram.send_message.assert_not_called()
         self.supplier.refill.assert_not_called()
 
     def test_unknown_topup_promo_is_rejected_before_order_or_supplier_check(self):
@@ -1051,14 +1098,18 @@ ICCID: {iccid}"""
         self.assertNotEqual(full['order_id'],lime10['order_id'])
         self.assertEqual(lime10_duplicate['order_id'],lime10['order_id'])
         self.assertNotEqual(lime20['order_id'],lime10['order_id'])
-        self.assertEqual([full['pay_amount'],lime10['pay_amount'],lime20['pay_amount']],[920,828,736])
+        self.assertEqual(
+            [self.value(item['order_id'],'pay_amount') for item in (full,lime10,lime20)],
+            [920,828,736],
+        )
         self.assertEqual(
             self.db.execute("SELECT COUNT(*) FROM orders WHERE order_kind='topup'").fetchone()[0],3,
         )
         self.assertEqual(self.supplier.get_details.call_count,3)
+        self.assertEqual(self.bank.create_payment.call_count,3)
         self.supplier.refill.assert_not_called()
 
-    def test_manual_topup_confirms_once_and_reject_never_refills(self):
+    def test_automatic_topup_settlement_is_idempotent(self):
         parent=self.issued()
         self.supplier.get_details.return_value={'sim_card':{
             'iccid':'8985201234567890123','status':'active','refillable':True,
@@ -1068,33 +1119,18 @@ ICCID: {iccid}"""
         oid=result['order_id']
         self.assertEqual(self.value(oid,'pay_amount'),9)
         self.supplier.refill.assert_not_called()
-        self.call('photo_handler',SimpleNamespace(
-            from_user=SimpleNamespace(id=1,username='client',first_name='Client'),
-            chat=SimpleNamespace(id=1),photo=[SimpleNamespace(file_id='receipt')],
-        ))
-        self.assertEqual(self.value(oid,'status'),'pending_review')
-        receipt_texts=[call.args[1] for call in self.telegram.send_message.call_args_list if call.args and call.args[0]==99]
-        self.assertTrue(any('Тип: пополнение' in text and 'ICCID: …0123' in text for text in receipt_texts))
         class ImmediateThread:
             def __init__(thread_self,target,args=(),**kwargs): thread_self.target=target; thread_self.args=args
             def start(thread_self): thread_self.target(*thread_self.args)
         self.ns['threading']=SimpleNamespace(Thread=ImmediateThread)
-        confirm=SimpleNamespace(data=f'ok_{oid}_1_9',from_user=SimpleNamespace(id=99),id='confirm')
-        self.call('callback_handler',confirm)
+        self.supplier.refill.return_value={'success':True,'iccid':'8985201234567890123'}
+        self.supplier.get_details.return_value={'sim_card':{
+            'iccid':'8985201234567890123','status':'active','refillable':True,
+        }}
+        self.assertTrue(self.call('_mark_bank_order_paid',oid,'op1',9))
         self.assertEqual(self.value(oid,'status'),'paid')
         self.supplier.refill.assert_called_once_with(oid,'8985201234567890123',809)
-        self.call('callback_handler',confirm)
-        self.assertEqual(self.supplier.refill.call_count,1)
-
-        rejected=self.call('create_mini_app_topup',{'id':1},parent,body)['order_id']
-        self.call('photo_handler',SimpleNamespace(
-            from_user=SimpleNamespace(id=1,username='client',first_name='Client'),
-            chat=SimpleNamespace(id=1),photo=[SimpleNamespace(file_id='receipt2')],
-        ))
-        self.call('callback_handler',SimpleNamespace(
-            data=f'no_{rejected}_1',from_user=SimpleNamespace(id=99),id='reject',
-        ))
-        self.assertEqual(self.value(rejected,'status'),'cancel')
+        self.assertTrue(self.call('_mark_bank_order_paid',oid,'op1',9))
         self.assertEqual(self.supplier.refill.call_count,1)
         self.assertEqual(self.value(parent,'supplier_status'),'issued')
 
@@ -1363,18 +1399,20 @@ class ClientTest(unittest.TestCase):
         client._request=Mock(return_value={'success':True,'iccid':'8985201234567890123'})
         client.refill(1,'8985201234567890123',807)
         payload=client._request.call_args.args[2]
-        self.assertEqual(payload,{'item_id':807})
+        request_id=hashlib.sha256(b'1/807/topup-v2').hexdigest()
+        self.assertEqual(payload,{'item_id':807,'transactionId':request_id})
         headers=client._request.call_args.args[3]
-        self.assertEqual(
-            headers['X-Partner-Request-ID'],
-            hashlib.sha256(b'1/807/topup-v2').hexdigest(),
-        )
+        self.assertEqual(headers['X-Partner-Request-ID'],request_id)
 
     def test_banana_refill_unlimited_payload_includes_period_days(self):
         client=BananaClient()
         client._request=Mock(return_value={'success':True,'iccid':'8985201234567890123'})
         client.refill(1,'8985201234567890123',900,period_days=7)
-        self.assertEqual(client._request.call_args.args[2],{'item_id':900,'period_days':7})
+        self.assertEqual(client._request.call_args.args[2],{
+            'item_id':900,
+            'transactionId':hashlib.sha256(b'1/900/topup-v2').hexdigest(),
+            'period_days':7,
+        })
 
     def test_banana_rejects_false_refill_success(self):
         client=BananaClient();client._request=Mock(return_value={'success':False})

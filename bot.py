@@ -3211,8 +3211,8 @@ def show_main(chat_id: int, user_id: int, add_to_history: bool = True):
             "🌍 eSIMLime\n\n"
             "Интернет для путешествий без дорогого роуминга.\n\n"
             "Выберите страну и тариф в приложении.\n"
-            "Оплатите заказ по СБП и отправьте чек в этот чат.\n"
-            "После проверки eSIM выпустится автоматически.\n\n"
+            "Оплата проходит на защищённой странице Точки и подтверждается автоматически.\n"
+            "Отправлять чек или скриншот не нужно.\n\n"
             "Нажмите кнопку ниже 👇"
         )
     else:
@@ -3344,8 +3344,8 @@ def show_how_it_works(chat_id: int, user_id: int, add_to_history: bool = True):
         chat_id,
         "❓ Как работает eSIM\n\n"
         "1. Вы выбираете страну или тариф\n"
-        "2. Оплачиваете точную сумму по СБП\n"
-        "3. Отправляете чек в бот — администратор подтверждает оплату\n"
+        "2. Переходите на защищённую страницу Точки и оплачиваете заказ\n"
+        "3. Банк подтверждает оплату автоматически — чек отправлять не нужно\n"
         "4. Получаете ссылку установки и/или QR-код\n"
         "5. Открываете ссылку на телефоне и следуете подсказкам\n"
         "6. Если ссылка не поддерживается, устанавливаете eSIM через QR-код\n"
@@ -4307,7 +4307,7 @@ def show_travel_instruction(chat_id: int, user_id: int, add_to_history: bool = T
         "✈️ Инструкция для путешествий\n\n"
         "1. Выберите страну и тариф.\n"
         "2. Проверьте, что телефон поддерживает eSIM.\n"
-        "3. Оплатите заказ по СБП и отправьте чек в бот.\n"
+        "3. Оплатите заказ на странице Точки — подтверждение придёт автоматически.\n"
         "4. Получите ссылку установки и/или QR-код.\n"
         "5. Если пришла ссылка и телефон её поддерживает, откройте её на нужном устройстве.\n"
         "6. Если ссылка не работает или её нет, используйте QR-код.\n"
@@ -6236,6 +6236,8 @@ def create_mini_app_topup(telegram_user: Dict[str, Any], parent_order_id: int,
                           body: Dict[str, Any]) -> Dict[str, Any]:
     if sales_are_paused():
         raise ApiError(503, "sales_paused")
+    if not TOCHKA_PAYMENTS_ENABLED or not tochka.configured:
+        raise ApiError(503, "payments_not_configured")
     if not banana.configured:
         raise ApiError(503, "supplier_unavailable")
     legal = body.get("legal_acceptance")
@@ -6271,12 +6273,29 @@ def create_mini_app_topup(telegram_user: Dict[str, Any], parent_order_id: int,
     label = _format_topup_volume(option["refill_mb"])
     tariff = f"Пополнение {label} / {option['refill_days']} дн."
     with closing(_payment_db()) as lookup_db:
+        recent_paid = lookup_db.execute(
+            """
+            SELECT id FROM orders
+            WHERE user_id=? AND parent_order_id=? AND supplier_product_id=?
+              AND supplier_variation_id=? AND topup_days=? AND status='paid'
+              AND order_kind='topup' AND payment_provider='tochka'
+              AND COALESCE(promo_code, '')=? AND pay_amount=? AND created_at>=?
+            ORDER BY id DESC LIMIT 1
+            """,
+            (
+                user_id, parent_order_id, option["product_id"], option["variation_id"],
+                option["refill_days"], promo["promo_code"], pay_amount, now - 30 * 60,
+            ),
+        ).fetchone()
+        if recent_paid:
+            return {"order_id": recent_paid[0], "payment_url": "", "status": "paid",
+                    "order_kind": "topup"}
         duplicate = lookup_db.execute(
             """
-            SELECT id, pay_amount FROM orders
+            SELECT id, payment_url, payment_status, status FROM orders
             WHERE user_id=? AND parent_order_id=? AND supplier_product_id=?
-              AND supplier_variation_id=? AND topup_days=? AND status='awaiting_receipt'
-              AND order_kind='topup' AND payment_provider='manual_sbp'
+              AND supplier_variation_id=? AND topup_days=? AND status='payment_pending'
+              AND order_kind='topup' AND payment_provider='tochka'
               AND COALESCE(promo_code, '')=? AND pay_amount=?
             ORDER BY id DESC LIMIT 1
             """,
@@ -6286,8 +6305,9 @@ def create_mini_app_topup(telegram_user: Dict[str, Any], parent_order_id: int,
             ),
         ).fetchone()
     if duplicate:
-        _send_manual_topup_confirmation(user_id, duplicate[0], parent[0], tariff, duplicate[1])
-        return _manual_payment_response(duplicate[0], duplicate[1], "topup")
+        result = _pending_payment_response(duplicate)
+        result["order_kind"] = "topup"
+        return result
     try:
         details = banana.get_details(parent[1])
         sim_card = details.get("sim_card") if isinstance(details, dict) else None
@@ -6319,12 +6339,30 @@ def create_mini_app_topup(telegram_user: Dict[str, Any], parent_order_id: int,
             raise ApiError(404, "esim_not_found")
         if current_parent[0] != parent[0] or current_parent[1] != parent[1]:
             raise ApiError(409, "topup_option_changed")
+        recent_paid = db.execute(
+            """
+            SELECT id FROM orders
+            WHERE user_id=? AND parent_order_id=? AND supplier_product_id=?
+              AND supplier_variation_id=? AND topup_days=? AND status='paid'
+              AND order_kind='topup' AND payment_provider='tochka'
+              AND COALESCE(promo_code, '')=? AND pay_amount=? AND created_at>=?
+            ORDER BY id DESC LIMIT 1
+            """,
+            (
+                user_id, parent_order_id, option["product_id"], option["variation_id"],
+                option["refill_days"], promo["promo_code"], pay_amount, now - 30 * 60,
+            ),
+        ).fetchone()
+        if recent_paid:
+            db.commit()
+            return {"order_id": recent_paid[0], "payment_url": "", "status": "paid",
+                    "order_kind": "topup"}
         duplicate = db.execute(
             """
-            SELECT id, pay_amount FROM orders
+            SELECT id, payment_url, payment_status, status FROM orders
             WHERE user_id=? AND parent_order_id=? AND supplier_product_id=?
-              AND supplier_variation_id=? AND topup_days=? AND status='awaiting_receipt'
-              AND order_kind='topup' AND payment_provider='manual_sbp'
+              AND supplier_variation_id=? AND topup_days=? AND status='payment_pending'
+              AND order_kind='topup' AND payment_provider='tochka'
               AND COALESCE(promo_code, '')=? AND pay_amount=?
             ORDER BY id DESC LIMIT 1
             """,
@@ -6335,8 +6373,9 @@ def create_mini_app_topup(telegram_user: Dict[str, Any], parent_order_id: int,
         ).fetchone()
         if duplicate:
             db.commit()
-            _send_manual_topup_confirmation(user_id, duplicate[0], parent[0], tariff, duplicate[1])
-            return _manual_payment_response(duplicate[0], duplicate[1], "topup")
+            result = _pending_payment_response(duplicate)
+            result["order_kind"] = "topup"
+            return result
         text = f"{current_parent[0]} | {tariff} — {option['price']}₽"
         db.execute(
             """
@@ -6344,21 +6383,24 @@ def create_mini_app_topup(telegram_user: Dict[str, Any], parent_order_id: int,
                 user_id, text, price, pay_amount, promo_code, promo_percent, promo_discount,
                 status, country, tariff, created_at,
                 plan_type, customer_email, legal_acceptance, payment_provider,
+                payment_link_id, payment_status, payment_created_at,
                 supplier_product_id, supplier_variation_id,
                 supplier_status, supplier_iccid, order_kind, parent_order_id, topup_mb, topup_days
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'awaiting_receipt', ?, ?, ?, 'topup', '', ?, 'manual_sbp',
-                      ?, ?, '', ?, 'topup', ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'payment_pending', ?, ?, ?, 'topup', '', ?, 'tochka',
+                      '', 'CREATING', ?, ?, ?, '', ?, 'topup', ?, ?, ?)
             """,
             (
                 user_id, text, option["price"], pay_amount,
                 promo["promo_code"], promo["discount_percent"], promo["promo_discount"],
                 current_parent[0], tariff, now,
-                json.dumps({**legal, "recorded_at": now}, ensure_ascii=False),
+                json.dumps({**legal, "recorded_at": now}, ensure_ascii=False), now,
                 option["product_id"], option["variation_id"], current_parent[1], parent_order_id,
                 option["refill_mb"], option["refill_days"],
             ),
         )
         order_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+        db.execute("UPDATE orders SET payment_link_id=? WHERE id=?",
+                   (f"esimlime-{order_id}", order_id))
         db.commit()
     except ApiError:
         db.rollback()
@@ -6366,10 +6408,11 @@ def create_mini_app_topup(telegram_user: Dict[str, Any], parent_order_id: int,
     finally:
         db.close()
 
-    schedule_reminder(user_id, order_id, "payment_30m", now + 30 * 60)
-    schedule_reminder(user_id, order_id, "payment_24h", now + 24 * 60 * 60)
-    _send_manual_topup_confirmation(user_id, order_id, parent[0], tariff, pay_amount)
-    return _manual_payment_response(order_id, pay_amount, "topup")
+    return _create_bank_payment_for_order(
+        order_id, user_id, pay_amount, f"Пополнение eSIM, заказ №{order_id}",
+        "https://t.me/esimlimebot?startapp=account",
+        "https://t.me/esimlimebot?startapp=account",
+    )
 
 
 def read_mini_app_esim_image(user_id: int, order_id: int):
@@ -6864,7 +6907,7 @@ def create_mini_app_manual_sbp_order(
 
 
 def create_mini_app_payment(telegram_user: Dict[str, Any], body: Dict[str, Any]) -> Dict[str, Any]:
-    """Legacy Tochka checkout kept for a possible future bank-payment return."""
+    """Create or resume a server-priced Tochka checkout for a Mini App order."""
     if sales_are_paused():
         raise ApiError(503, "sales_paused")
     if not TOCHKA_PAYMENTS_ENABLED:
@@ -7584,7 +7627,22 @@ def accept_tochka_webhook(raw_token: str) -> None:
     match = re.fullmatch(r"esimlime-([1-9][0-9]*)", str(payment_link_id or ""))
     if not match or not isinstance(operation_id, str) or amount is None:
         raise ApiError(400, "invalid_payment_webhook")
-    if not _mark_bank_order_paid(int(match.group(1)), operation_id, amount):
+    try:
+        bank_payment = tochka.get_payment(operation_id)
+    except TochkaError as exc:
+        raise ApiError(503, "payment_verification_unavailable") from exc
+    bank_status = str(bank_payment.get("status") or "").upper()
+    if bank_status != "APPROVED":
+        terminal = bank_status in {
+            "DECLINED", "REJECTED", "CANCELED", "CANCELLED", "EXPIRED", "FAILED", "REFUNDED"
+        }
+        raise ApiError(409 if terminal else 503, "payment_not_approved")
+    bank_link_id = bank_payment.get("paymentLinkId")
+    bank_amount = bank_payment.get("amount")
+    if ((bank_link_id is not None and bank_link_id != payment_link_id)
+            or not _same_payment_amount(amount, bank_amount)):
+        raise ApiError(409, "payment_mismatch")
+    if not _mark_bank_order_paid(int(match.group(1)), operation_id, bank_amount):
         raise ApiError(409, "payment_mismatch")
 
 
@@ -7763,7 +7821,7 @@ start_account_api(
     TOKEN,
     read_mini_app_account,
     read_mini_app_esim_image,
-    None if sales_are_paused() else create_mini_app_manual_sbp_order,
+    None if sales_are_paused() else create_mini_app_payment,
     read_mini_app_payment,
     accept_tochka_webhook,
     refresh_mini_app_esim,
