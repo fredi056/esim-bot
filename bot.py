@@ -4809,12 +4809,32 @@ def admin_send_esim_message(message):
     order_id = admin_send_qr_order_id
 
     try:
+        bot.send_message(
+            target_user_id,
+            "<b>📶 Перед установкой</b>\n\n"
+            "Используйте домашний Wi-Fi или мобильный интернет, например раздачу с другого телефона. "
+            "Wi-Fi аэропорта и другие общественные сети могут помешать установке eSIM.",
+            parse_mode="HTML"
+        )
         bot.copy_message(
             chat_id=target_user_id,
             from_chat_id=message.chat.id,
             message_id=message.message_id
         )
         bot.send_message(target_user_id, install_instruction_text())
+        bot.send_message(
+            target_user_id,
+            "<b>✅ Появилась ошибка активации?</b>\n\n"
+            "Проверьте по инструкции ниже, установилась ли eSIM. Если её ICCID отображается в настройках телефона, "
+            "eSIM установлена и активируется в стране назначения. Не удаляйте её.\n\n"
+            "<b>Как проверить, установилась ли eSIM</b>\n\n"
+            "ICCID — уникальный номер eSIM. Сравните его с ICCID в нужной карточке выше.\n\n"
+            "<b>iPhone:</b> включайте каждую eSIM по очереди — в том числе с названиями «Основная», «Рабочая» и другими. "
+            "Для каждой откройте Настройки → Основные → Об этом устройстве, прокрутите вниз до ICCID и сравните номер "
+            "с карточкой выше.\n\n"
+            "<b>Android:</b> проверьте ICCID согласно инструкции производителя вашего телефона.",
+            parse_mode="HTML"
+        )
 
         cursor.execute("SELECT COALESCE(esim_sent_at, 0) FROM orders WHERE id=? AND user_id=?", (order_id, target_user_id))
         row = cursor.fetchone()
@@ -5199,12 +5219,32 @@ def photo_handler(message):
         target_user_id = admin_send_qr_target
         order_id = admin_send_qr_order_id
         try:
+            bot.send_message(
+                target_user_id,
+                "<b>📶 Перед установкой</b>\n\n"
+                "Используйте домашний Wi-Fi или мобильный интернет, например раздачу с другого телефона. "
+                "Wi-Fi аэропорта и другие общественные сети могут помешать установке eSIM.",
+                parse_mode="HTML"
+            )
             bot.copy_message(
                 chat_id=target_user_id,
                 from_chat_id=message.chat.id,
                 message_id=message.message_id
             )
             bot.send_message(target_user_id, install_instruction_text())
+            bot.send_message(
+                target_user_id,
+                "<b>✅ Появилась ошибка активации?</b>\n\n"
+                "Проверьте по инструкции ниже, установилась ли eSIM. Если её ICCID отображается в настройках телефона, "
+                "eSIM установлена и активируется в стране назначения. Не удаляйте её.\n\n"
+                "<b>Как проверить, установилась ли eSIM</b>\n\n"
+                "ICCID — уникальный номер eSIM. Сравните его с ICCID в нужной карточке выше.\n\n"
+                "<b>iPhone:</b> включайте каждую eSIM по очереди — в том числе с названиями «Основная», «Рабочая» и другими. "
+                "Для каждой откройте Настройки → Основные → Об этом устройстве, прокрутите вниз до ICCID и сравните номер "
+                "с карточкой выше.\n\n"
+                "<b>Android:</b> проверьте ICCID согласно инструкции производителя вашего телефона.",
+                parse_mode="HTML"
+            )
             cursor.execute("SELECT COALESCE(esim_sent_at, 0) FROM orders WHERE id=? AND user_id=?", (order_id, target_user_id))
             row = cursor.fetchone()
             already_sent = bool(row and row[0])
@@ -7121,7 +7161,12 @@ def deliver_supplier_order(order_id: int) -> bool:
     traffic_mb = traffic_kb // 1024
     remaining_days = _supplier_int(row[9])
     plan_summary = f"{remaining_days} дн / {traffic_mb} МБ" if remaining_days or traffic_mb else ""
-    title = f"Ваши eSIM по заказу #{order_id}\n\n<b>eSIM #1</b>\n{html.escape(country)} — {html.escape(tariff)}"
+    title = (
+        "<b>📶 Перед установкой</b>\n\n"
+        "Используйте домашний Wi-Fi или мобильный интернет, например раздачу с другого телефона. "
+        "Wi-Fi аэропорта и другие общественные сети могут помешать установке eSIM.\n\n"
+        f"Ваши eSIM по заказу #{order_id}\n\n<b>eSIM #1</b>\n{html.escape(country)} — {html.escape(tariff)}"
+    )
     if plan_summary:
         title += f"\n{html.escape(plan_summary)}"
     title += "\n\n<b>📱 Установка через QR:</b>"
@@ -7171,6 +7216,17 @@ def deliver_supplier_order(order_id: int) -> bool:
         )
         if plan_type == "supplier_test":
             details += "\n\n⚠️ Это техническая тестовая eSIM. Не устанавливайте её на телефон."
+        details += (
+            "\n\n<b>✅ Появилась ошибка активации?</b>\n\n"
+            "Проверьте по инструкции ниже, установилась ли eSIM. Если её ICCID отображается в настройках телефона, "
+            "eSIM установлена и активируется в стране назначения. Не удаляйте её.\n\n"
+            "<b>Как проверить, установилась ли eSIM</b>\n\n"
+            "ICCID — уникальный номер eSIM. Сравните его с ICCID в нужной карточке выше.\n\n"
+            "<b>iPhone:</b> включайте каждую eSIM по очереди — в том числе с названиями «Основная», «Рабочая» и другими. "
+            "Для каждой откройте Настройки → Основные → Об этом устройстве, прокрутите вниз до ICCID и сравните номер "
+            "с карточкой выше.\n\n"
+            "<b>Android:</b> проверьте ICCID согласно инструкции производителя вашего телефона."
+        )
         if not _supplier_int(row[14]):
             bot.send_message(
                 user_id, details, parse_mode="HTML", disable_web_page_preview=True,
